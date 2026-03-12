@@ -209,6 +209,10 @@ type DeliverOutboundPayloadsCoreParams = {
   onPayload?: (payload: NormalizedOutboundPayload) => void;
   /** Active agent id for media local-root scoping. */
   agentId?: string;
+  session?: {
+    key?: string;
+    agentId?: string;
+  };
   mirror?: {
     sessionKey: string;
     agentId?: string;
@@ -294,7 +298,7 @@ async function deliverOutboundPayloadsCore(
   const sendSignal = params.deps?.sendSignal ?? sendMessageSignal;
   const mediaLocalRoots = getAgentScopedMediaLocalRoots(
     cfg,
-    params.agentId ?? params.mirror?.agentId,
+    params.agentId ?? params.mirror?.agentId ?? params.session?.agentId,
   );
   const results: OutboundDeliveryResult[] = [];
   const handler = await createChannelHandler({
@@ -444,7 +448,9 @@ async function deliverOutboundPayloadsCore(
     return normalized ? [normalized] : [];
   });
   const hookRunner = getGlobalHookRunner();
-  const sessionKeyForInternalHooks = params.mirror?.sessionKey;
+  const messageHookSessionKey = params.mirror?.sessionKey ?? params.session?.key;
+  const messageHookAgentId = params.mirror?.agentId ?? params.session?.agentId;
+  const sessionKeyForInternalHooks = messageHookSessionKey;
   for (const payload of normalizedPayloads) {
     const payloadSummary: NormalizedOutboundPayload = {
       text: payload.text ?? "",
@@ -470,6 +476,8 @@ async function deliverOutboundPayloadsCore(
               channelId: channel,
               accountId: accountId ?? undefined,
               conversationId: to,
+              sessionKey: messageHookSessionKey,
+              agentId: messageHookAgentId,
             },
           )
           .catch(() => {});
@@ -506,6 +514,9 @@ async function deliverOutboundPayloadsCore(
             {
               channelId: channel,
               accountId: accountId ?? undefined,
+              conversationId: to,
+              sessionKey: messageHookSessionKey,
+              agentId: messageHookAgentId,
             },
           );
           if (sendingResult?.cancel) {

@@ -93,6 +93,7 @@ export async function dispatchReplyFromConfig(params: {
   const chatId = ctx.To ?? ctx.From;
   const messageId = ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
   const sessionKey = ctx.SessionKey;
+  const agentId = sessionKey ? resolveSessionAgentId({ sessionKey, config: cfg }) : undefined;
   const startTime = diagnosticsEnabled ? Date.now() : 0;
   const canTrackSession = diagnosticsEnabled && Boolean(sessionKey);
 
@@ -192,6 +193,8 @@ export async function dispatchReplyFromConfig(params: {
           channelId,
           accountId: ctx.AccountId,
           conversationId,
+          sessionKey,
+          agentId,
         },
       )
       .catch((err) => {
