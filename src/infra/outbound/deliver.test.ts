@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 const hookMocks = vi.hoisted(() => ({
   runner: {
-    hasHooks: vi.fn(() => false),
+    hasHooks: vi.fn<(name: string) => boolean>((_name) => false),
     runMessageSending: vi.fn(async () => undefined),
     runMessageSent: vi.fn(async () => {}),
   },
