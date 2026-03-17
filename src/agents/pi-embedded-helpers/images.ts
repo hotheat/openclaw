@@ -4,12 +4,12 @@ import type { ToolCallIdMode } from "../tool-call-id.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../tool-call-id.js";
 import { sanitizeContentBlocksImages } from "../tool-images.js";
 import { stripThoughtSignatures } from "./bootstrap.js";
+import { formatRawAssistantErrorForUi } from "./errors.js";
 
 type ContentBlock = AgentToolResult<unknown>["content"][number];
+type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 
-export function isEmptyAssistantMessageContent(
-  message: Extract<AgentMessage, { role: "assistant" }>,
-): boolean {
+export function isEmptyAssistantMessageContent(message: AssistantMessage): boolean {
   const content = message.content;
   if (content == null) {
     return true;
@@ -27,6 +27,40 @@ export function isEmptyAssistantMessageContent(
     }
     return typeof rec.text !== "string" || rec.text.trim().length === 0;
   });
+}
+
+function hasMeaningfulAssistantContent(content: AssistantMessage["content"]): boolean {
+  if (!Array.isArray(content)) {
+    return false;
+  }
+  return content.some((block) => {
+    if (!block || typeof block !== "object") {
+      return false;
+    }
+    const rec = block as { type?: unknown; text?: unknown };
+    if (rec.type !== "text") {
+      return true;
+    }
+    return typeof rec.text === "string" && rec.text.trim().length > 0;
+  });
+}
+
+export function materializeAssistantErrorMessage(message: AssistantMessage): AssistantMessage {
+  if (message.stopReason !== "error") {
+    return message;
+  }
+  if (hasMeaningfulAssistantContent(message.content)) {
+    return message;
+  }
+  return {
+    ...message,
+    content: [
+      {
+        type: "text",
+        text: formatRawAssistantErrorForUi(message.errorMessage),
+      },
+    ] as AssistantMessage["content"],
+  };
 }
 
 export async function sanitizeSessionMessagesImages(
@@ -104,9 +138,9 @@ export async function sanitizeSessionMessagesImages(
             label,
             imageSanitization,
           )) as unknown as typeof assistantMsg.content;
-          out.push({ ...assistantMsg, content: nextContent });
+          out.push(materializeAssistantErrorMessage({ ...assistantMsg, content: nextContent }));
         } else {
-          out.push(assistantMsg);
+          out.push(materializeAssistantErrorMessage(assistantMsg));
         }
         continue;
       }

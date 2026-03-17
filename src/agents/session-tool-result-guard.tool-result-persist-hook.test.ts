@@ -178,4 +178,29 @@ describe("before_message_write hook", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.role).toBe("user");
   });
+
+  it("materializes empty assistant error messages before persistence", () => {
+    const sm = guardSessionManager(SessionManager.inMemory(), {
+      agentId: "main",
+      sessionKey: "main",
+    });
+    const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
+    appendMessage({
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "400 Request failed",
+      content: [],
+    } as AgentMessage);
+
+    const messages = sm
+      .getEntries()
+      .filter((e) => e.type === "message")
+      .map((e) => (e as { message: AgentMessage }).message);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("assistant");
+    expect((messages[0] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      { type: "text", text: "HTTP 400: Request failed" },
+    ]);
+  });
 });

@@ -250,14 +250,20 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.role).toBe("user");
   });
-  it("keeps empty assistant error messages", async () => {
+  it("materializes empty assistant error messages into text", async () => {
     const input = castAgentMessages([
       { role: "user", content: "hello", timestamp: nextTimestamp() } satisfies UserMessage,
       {
         ...makeEmptyAssistantErrorMessage(),
+        stopReason: "error",
+        errorMessage: "400 Request failed",
+        timestamp: nextTimestamp(),
       },
       {
         ...makeEmptyAssistantErrorMessage(),
+        stopReason: "error",
+        errorMessage: "",
+        timestamp: nextTimestamp(),
       },
     ]);
 
@@ -267,6 +273,12 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out[0]?.role).toBe("user");
     expect(out[1]?.role).toBe("assistant");
     expect(out[2]?.role).toBe("assistant");
+    expect((out[1] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      { type: "text", text: "HTTP 400: Request failed" },
+    ]);
+    expect((out[2] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      { type: "text", text: "LLM request failed with an unknown error." },
+    ]);
   });
   it("leaves non-assistant messages unchanged", async () => {
     const input = [
