@@ -488,3 +488,60 @@ describe("messaging tool media URL tracking", () => {
     expect(ctx.state.pendingMessagingMediaUrls.has("tool-m3")).toBe(false);
   });
 });
+
+describe("lastToolError retention", () => {
+  it("retains non-mutating tool errors after later successful read-only calls", async () => {
+    const { ctx } = createTestContext();
+    ctx.state.lastToolError = {
+      toolName: "web_search",
+      meta: "query: ezh1/2",
+      error: "fetch failed",
+      mutatingAction: false,
+    };
+    ctx.state.toolMetaById.set("tool-keep", {
+      meta: "query: ezh1/2",
+      mutatingAction: false,
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "web_search",
+      toolCallId: "tool-keep",
+      isError: false,
+      result: { details: { status: "ok" } },
+    });
+
+    expect(ctx.state.lastToolError).toEqual(
+      expect.objectContaining({
+        toolName: "web_search",
+        error: "fetch failed",
+      }),
+    );
+  });
+
+  it("clears mutating tool errors when the same action succeeds", async () => {
+    const { ctx } = createTestContext();
+    ctx.state.lastToolError = {
+      toolName: "write",
+      meta: "/tmp/report.md",
+      error: "permission denied",
+      mutatingAction: true,
+      actionFingerprint: "tool=write|path=/tmp/report.md",
+    };
+    ctx.state.toolMetaById.set("tool-clear", {
+      meta: "/tmp/report.md",
+      mutatingAction: true,
+      actionFingerprint: "tool=write|path=/tmp/report.md",
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "write",
+      toolCallId: "tool-clear",
+      isError: false,
+      result: { details: { status: "ok" } },
+    });
+
+    expect(ctx.state.lastToolError).toBeUndefined();
+  });
+});
