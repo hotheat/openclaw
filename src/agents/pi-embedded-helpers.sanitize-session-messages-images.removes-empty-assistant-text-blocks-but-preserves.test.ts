@@ -250,6 +250,27 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.role).toBe("user");
   });
+  it("drops delivery-mirror assistant transcript messages", async () => {
+    const input = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        provider: "openclaw",
+        model: "delivery-mirror",
+        stopReason: "stop",
+        content: [{ type: "text", text: "file-name.pptx" }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "real reply" }] },
+    ] as unknown as AgentMessage[];
+
+    const out = await sanitizeSessionMessagesImages(input, "test");
+
+    expect(out).toHaveLength(2);
+    expect(out[0]?.role).toBe("user");
+    expect((out[1] as { content?: Array<{ text?: string }> }).content?.[0]?.text).toBe(
+      "real reply",
+    );
+  });
   it("materializes empty assistant error messages into text", async () => {
     const input = castAgentMessages([
       { role: "user", content: "hello", timestamp: nextTimestamp() } satisfies UserMessage,
