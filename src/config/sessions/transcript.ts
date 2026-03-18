@@ -44,15 +44,32 @@ function extractFileNameFromMediaUrl(value: string): string | null {
   }
 }
 
+export function resolveMirroredTranscriptFileNames(params: { mediaUrls?: string[] }): string[] {
+  const mediaUrls = params.mediaUrls?.filter((url) => url && url.trim()) ?? [];
+  if (mediaUrls.length === 0) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const url of mediaUrls) {
+    const name = extractFileNameFromMediaUrl(url);
+    const trimmed = name?.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    names.push(trimmed);
+  }
+  return names;
+}
+
 export function resolveMirroredTranscriptText(params: {
   text?: string;
   mediaUrls?: string[];
 }): string | null {
   const mediaUrls = params.mediaUrls?.filter((url) => url && url.trim()) ?? [];
   if (mediaUrls.length > 0) {
-    const names = mediaUrls
-      .map((url) => extractFileNameFromMediaUrl(url))
-      .filter((name): name is string => Boolean(name && name.trim()));
+    const names = resolveMirroredTranscriptFileNames({ mediaUrls });
     if (names.length > 0) {
       return names.join(", ");
     }

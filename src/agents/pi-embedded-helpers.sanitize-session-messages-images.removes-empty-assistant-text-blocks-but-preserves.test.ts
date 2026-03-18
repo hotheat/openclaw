@@ -118,7 +118,7 @@ describe("sanitizeSessionMessagesImages", () => {
     const toolCall = assistant.content?.find((b) => b.type === "toolCall");
     expect(toolCall).toBeTruthy();
     expect("input" in (toolCall ?? {})).toBe(false);
-    expect("arguments" in (toolCall ?? {})).toBe(false);
+    expect((toolCall as { arguments?: unknown } | undefined)?.arguments).toEqual({});
   });
 
   it("removes empty assistant text blocks but preserves tool calls", async () => {
@@ -250,7 +250,7 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.role).toBe("user");
   });
-  it("drops delivery-mirror assistant transcript messages", async () => {
+  it("preserves delivery-mirror assistant transcript messages", async () => {
     const input = [
       { role: "user", content: "hello" },
       {
@@ -265,11 +265,7 @@ describe("sanitizeSessionMessagesImages", () => {
 
     const out = await sanitizeSessionMessagesImages(input, "test");
 
-    expect(out).toHaveLength(2);
-    expect(out[0]?.role).toBe("user");
-    expect((out[1] as { content?: Array<{ text?: string }> }).content?.[0]?.text).toBe(
-      "real reply",
-    );
+    expect(out).toEqual(input);
   });
   it("materializes empty assistant error messages into text", async () => {
     const input = castAgentMessages([

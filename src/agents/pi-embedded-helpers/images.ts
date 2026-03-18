@@ -9,10 +9,6 @@ import { formatRawAssistantErrorForUi } from "./errors.js";
 type ContentBlock = AgentToolResult<unknown>["content"][number];
 type AssistantMessage = Extract<AgentMessage, { role: "assistant" }>;
 
-function isDeliveryMirrorAssistantMessage(message: AssistantMessage): boolean {
-  return message.provider === "openclaw" && message.model === "delivery-mirror";
-}
-
 export function isEmptyAssistantMessageContent(message: AssistantMessage): boolean {
   const content = message.content;
   if (content == null) {
@@ -134,9 +130,6 @@ export async function sanitizeSessionMessagesImages(
 
     if (role === "assistant") {
       const assistantMsg = msg as Extract<AgentMessage, { role: "assistant" }>;
-      if (isDeliveryMirrorAssistantMessage(assistantMsg)) {
-        continue;
-      }
       if (assistantMsg.stopReason === "error") {
         const content = assistantMsg.content;
         if (Array.isArray(content)) {

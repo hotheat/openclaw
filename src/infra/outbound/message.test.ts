@@ -95,4 +95,19 @@ describe("sendMessage", () => {
 
     expect(mocks.loadOpenClawPlugins).toHaveBeenCalledTimes(1);
   });
+
+  it("includes mirrored filenames in send results for attachment sends", async () => {
+    await expect(
+      sendMessage({
+        cfg: {},
+        channel: "telegram",
+        to: "123456",
+        content: "hi",
+        mediaUrl: "https://example.com/files/report.pdf?sig=1",
+      }),
+    ).resolves.toMatchObject({
+      mirroredFileNames: ["report.pdf"],
+      mediaUrls: ["https://example.com/files/report.pdf?sig=1"],
+    });
+  });
 });

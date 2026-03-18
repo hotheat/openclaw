@@ -120,6 +120,42 @@ describe("executeSendAction", () => {
     );
   });
 
+  it("adds mirrored filenames to plugin send tool results", async () => {
+    mocks.dispatchChannelMessageAction.mockResolvedValue({
+      content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
+      details: { ok: true },
+    });
+
+    const result = await executeSendAction({
+      ctx: {
+        cfg: {},
+        channel: "discord",
+        params: { to: "channel:123", message: "hello" },
+        agentId: "agent-1",
+        dryRun: false,
+        mirror: {
+          sessionKey: "agent:main:main",
+          mediaUrls: ["https://example.com/files/report.pdf?sig=1"],
+        },
+      },
+      to: "channel:123",
+      message: "hello",
+      mediaUrl: "https://example.com/files/report.pdf?sig=1",
+    });
+
+    expect(result.handledBy).toBe("plugin");
+    expect(result.payload).toEqual({
+      ok: true,
+      mirroredFileNames: ["report.pdf"],
+    });
+    expect(result.toolResult).toMatchObject({
+      details: {
+        ok: true,
+        mirroredFileNames: ["report.pdf"],
+      },
+    });
+  });
+
   it("forwards poll args to sendPoll on core outbound path", async () => {
     mocks.dispatchChannelMessageAction.mockResolvedValue(null);
     mocks.sendPoll.mockResolvedValue({
