@@ -322,7 +322,9 @@ export async function handleToolExecutionEnd(
       actionFingerprint: callSummary?.actionFingerprint,
     };
   } else if (ctx.state.lastToolError) {
-    // Keep unresolved mutating failures until the same action succeeds.
+    // Keep unresolved failures in memory so a run cannot end silently after an
+    // earlier tool error. For mutating actions we clear only when the same
+    // action fingerprint succeeds.
     if (ctx.state.lastToolError.mutatingAction) {
       if (
         isSameToolMutationAction(ctx.state.lastToolError, {
@@ -333,8 +335,6 @@ export async function handleToolExecutionEnd(
       ) {
         ctx.state.lastToolError = undefined;
       }
-    } else {
-      ctx.state.lastToolError = undefined;
     }
   }
 

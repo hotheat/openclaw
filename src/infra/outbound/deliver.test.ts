@@ -12,9 +12,6 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { createIMessageTestPlugin } from "../../test-utils/imessage-test-plugin.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 
-const mocks = vi.hoisted(() => ({
-  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true, sessionFile: "x" })),
-}));
 const hookMocks = vi.hoisted(() => ({
   runner: {
     hasHooks: vi.fn(() => false),
@@ -31,15 +28,6 @@ const queueMocks = vi.hoisted(() => ({
   failDelivery: vi.fn(async () => {}),
 }));
 
-vi.mock("../../config/sessions.js", async () => {
-  const actual = await vi.importActual<typeof import("../../config/sessions.js")>(
-    "../../config/sessions.js",
-  );
-  return {
-    ...actual,
-    appendAssistantMessageToSessionTranscript: mocks.appendAssistantMessageToSessionTranscript,
-  };
-});
 vi.mock("../../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => hookMocks.runner,
 }));
@@ -566,9 +554,8 @@ describe("deliverOutboundPayloads", () => {
     );
   });
 
-  it("mirrors delivered output when mirror options are provided", async () => {
+  it("does not append transcript mirror entries after delivery", async () => {
     const sendTelegram = vi.fn().mockResolvedValue({ messageId: "m1", chatId: "c1" });
-    mocks.appendAssistantMessageToSessionTranscript.mockClear();
 
     await deliverOutboundPayloads({
       cfg: telegramChunkConfig,
@@ -582,10 +569,6 @@ describe("deliverOutboundPayloads", () => {
         mediaUrls: ["https://example.com/files/report.pdf?sig=1"],
       },
     });
-
-    expect(mocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "report.pdf" }),
-    );
   });
 
   it("emits message_sent success for text-only deliveries", async () => {

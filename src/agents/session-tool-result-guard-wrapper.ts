@@ -1,9 +1,11 @@
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import {
   applyInputProvenanceToUserMessage,
   type InputProvenance,
 } from "../sessions/input-provenance.js";
+import { materializeAssistantErrorMessage } from "./pi-embedded-helpers/images.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 
 export type GuardedSessionManager = SessionManager & {
@@ -60,9 +62,14 @@ export function guardSessionManager(
       }
     : undefined;
 
+  const transformMessageForPersistence = (message: AgentMessage): AgentMessage => {
+    const normalized =
+      message.role === "assistant" ? materializeAssistantErrorMessage(message) : message;
+    return applyInputProvenanceToUserMessage(normalized, opts?.inputProvenance);
+  };
+
   const guard = installSessionToolResultGuard(sessionManager, {
-    transformMessageForPersistence: (message) =>
-      applyInputProvenanceToUserMessage(message, opts?.inputProvenance),
+    transformMessageForPersistence,
     transformToolResultForPersistence: transform,
     allowSyntheticToolResults: opts?.allowSyntheticToolResults,
     allowedToolNames: opts?.allowedToolNames,
