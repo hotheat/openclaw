@@ -90,7 +90,7 @@ describe("sanitizeSessionMessagesImages", () => {
     const toolCall = assistant.content?.find((b) => b.type === "toolCall");
     expect(toolCall).toBeTruthy();
     expect("input" in (toolCall ?? {})).toBe(false);
-    expect("arguments" in (toolCall ?? {})).toBe(false);
+    expect((toolCall as { arguments?: unknown } | undefined)?.arguments).toEqual({});
   });
 
   it("removes empty assistant text blocks but preserves tool calls", async () => {
@@ -202,11 +202,37 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.role).toBe("user");
   });
-  it("keeps empty assistant error messages", async () => {
+  it("preserves delivery-mirror assistant transcript messages", async () => {
     const input = [
       { role: "user", content: "hello" },
-      { role: "assistant", stopReason: "error", content: [] },
-      { role: "assistant", stopReason: "error" },
+      {
+        role: "assistant",
+        provider: "openclaw",
+        model: "delivery-mirror",
+        stopReason: "stop",
+        content: [{ type: "text", text: "file-name.pptx" }],
+      },
+      { role: "assistant", content: [{ type: "text", text: "real reply" }] },
+    ] as unknown as AgentMessage[];
+
+    const out = await sanitizeSessionMessagesImages(input, "test");
+
+    expect(out).toEqual(input);
+  });
+  it("materializes empty assistant error messages into text", async () => {
+    const input = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "400 Request failed",
+        content: [],
+      },
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "",
+      },
     ] as unknown as AgentMessage[];
 
     const out = await sanitizeSessionMessagesImages(input, "test");
@@ -215,6 +241,12 @@ describe("sanitizeSessionMessagesImages", () => {
     expect(out[0]?.role).toBe("user");
     expect(out[1]?.role).toBe("assistant");
     expect(out[2]?.role).toBe("assistant");
+    expect((out[1] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      { type: "text", text: "HTTP 400: Request failed" },
+    ]);
+    expect((out[2] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      { type: "text", text: "LLM request failed with an unknown error." },
+    ]);
   });
   it("leaves non-assistant messages unchanged", async () => {
     const input = [

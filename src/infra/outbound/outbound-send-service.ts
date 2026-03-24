@@ -2,7 +2,7 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { dispatchChannelMessageAction } from "../../channels/plugins/message-actions.js";
 import type { ChannelId, ChannelThreadingToolContext } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { appendAssistantMessageToSessionTranscript } from "../../config/sessions.js";
+import { resolveMirroredTranscriptFileNames } from "../../config/sessions.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import type { GatewayClientMode, GatewayClientName } from "../../utils/message-channel.js";
 import { throwIfAborted } from "./abort.js";
@@ -47,10 +47,51 @@ type PluginHandledResult = {
   toolResult: AgentToolResult<unknown>;
 };
 
+function attachMirroredFileNamesToToolResult(
+  toolResult: AgentToolResult<unknown>,
+  mirroredFileNames: string[],
+): AgentToolResult<unknown> {
+  if (mirroredFileNames.length === 0) {
+    return toolResult;
+  }
+
+  const detailsBase =
+    toolResult.details &&
+    typeof toolResult.details === "object" &&
+    !Array.isArray(toolResult.details)
+      ? toolResult.details
+      : {};
+  const details = {
+    ...detailsBase,
+    mirroredFileNames,
+  };
+
+  const content = Array.isArray(toolResult.content) ? [...toolResult.content] : [];
+  const textBlockIndex = content.findIndex(
+    (block) =>
+      block &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string",
+  );
+  const jsonText = JSON.stringify(details, null, 2);
+  if (textBlockIndex >= 0) {
+    const block = content[textBlockIndex] as { type: "text"; text: string };
+    content[textBlockIndex] = { ...block, text: jsonText };
+  } else {
+    content.unshift({ type: "text", text: jsonText });
+  }
+
+  return {
+    ...toolResult,
+    content,
+    details,
+  };
+}
+
 async function tryHandleWithPluginAction(params: {
   ctx: OutboundSendContext;
   action: "send" | "poll";
-  onHandled?: () => Promise<void> | void;
 }): Promise<PluginHandledResult | null> {
   if (params.ctx.dryRun) {
     return null;
@@ -73,11 +114,17 @@ async function tryHandleWithPluginAction(params: {
   if (!handled) {
     return null;
   }
-  await params.onHandled?.();
+  const mirroredFileNames =
+    params.action === "send"
+      ? resolveMirroredTranscriptFileNames({
+          mediaUrls: params.ctx.mirror?.mediaUrls,
+        })
+      : [];
+  const toolResult = attachMirroredFileNamesToToolResult(handled, mirroredFileNames);
   return {
     handledBy: "plugin",
-    payload: extractToolPayload(handled),
-    toolResult: handled,
+    payload: extractToolPayload(toolResult),
+    toolResult,
   };
 }
 
@@ -101,22 +148,6 @@ export async function executeSendAction(params: {
   const pluginHandled = await tryHandleWithPluginAction({
     ctx: params.ctx,
     action: "send",
-    onHandled: async () => {
-      if (!params.ctx.mirror) {
-        return;
-      }
-      const mirrorText = params.ctx.mirror.text ?? params.message;
-      const mirrorMediaUrls =
-        params.ctx.mirror.mediaUrls ??
-        params.mediaUrls ??
-        (params.mediaUrl ? [params.mediaUrl] : undefined);
-      await appendAssistantMessageToSessionTranscript({
-        agentId: params.ctx.mirror.agentId,
-        sessionKey: params.ctx.mirror.sessionKey,
-        text: mirrorText,
-        mediaUrls: mirrorMediaUrls,
-      });
-    },
   });
   if (pluginHandled) {
     return pluginHandled;

@@ -1,6 +1,7 @@
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadConfig } from "../../config/config.js";
+import { resolveMirroredTranscriptFileNames } from "../../config/sessions.js";
 import { callGatewayLeastPrivilege, randomIdempotencyKey } from "../../gateway/call.js";
 import type { PollInput } from "../../polls.js";
 import { normalizePollInput } from "../../polls.js";
@@ -62,6 +63,7 @@ export type MessageSendResult = {
   via: "direct" | "gateway";
   mediaUrl: string | null;
   mediaUrls?: string[];
+  mirroredFileNames?: string[];
   result?: OutboundDeliveryResult | { messageId: string };
   dryRun?: boolean;
 };
@@ -182,6 +184,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
   const mirrorMediaUrls = normalizedPayloads.flatMap(
     (payload) => payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []),
   );
+  const mirroredFileNames = resolveMirroredTranscriptFileNames({ mediaUrls: mirrorMediaUrls });
   const primaryMediaUrl = mirrorMediaUrls[0] ?? params.mediaUrl ?? null;
 
   if (params.dryRun) {
@@ -191,6 +194,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       via: deliveryMode === "gateway" ? "gateway" : "direct",
       mediaUrl: primaryMediaUrl,
       mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
+      mirroredFileNames: mirroredFileNames.length ? mirroredFileNames : undefined,
       dryRun: true,
     };
   }
@@ -237,6 +241,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       via: "direct",
       mediaUrl: primaryMediaUrl,
       mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
+      mirroredFileNames: mirroredFileNames.length ? mirroredFileNames : undefined,
       result: results.at(-1),
     };
   }
@@ -263,6 +268,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
     via: "gateway",
     mediaUrl: primaryMediaUrl,
     mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
+    mirroredFileNames: mirroredFileNames.length ? mirroredFileNames : undefined,
     result,
   };
 }

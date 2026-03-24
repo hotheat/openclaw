@@ -13,10 +13,6 @@ import type {
 } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
-import {
-  appendAssistantMessageToSessionTranscript,
-  resolveMirroredTranscriptText,
-} from "../../config/sessions.js";
 import type { sendMessageDiscord } from "../../discord/send.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import type { sendMessageIMessage } from "../../imessage/send.js";
@@ -595,19 +591,5 @@ async function deliverOutboundPayloadsCore(
       params.onError?.(err, payloadSummary);
     }
   }
-  if (params.mirror && results.length > 0) {
-    const mirrorText = resolveMirroredTranscriptText({
-      text: params.mirror.text,
-      mediaUrls: params.mirror.mediaUrls,
-    });
-    if (mirrorText) {
-      await appendAssistantMessageToSessionTranscript({
-        agentId: params.mirror.agentId,
-        sessionKey: params.mirror.sessionKey,
-        text: mirrorText,
-      });
-    }
-  }
-
   return results;
 }
