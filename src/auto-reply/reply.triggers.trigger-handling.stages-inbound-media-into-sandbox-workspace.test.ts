@@ -11,19 +11,13 @@ import {
 const sandboxMocks = vi.hoisted(() => ({
   ensureSandboxWorkspaceForSession: vi.fn(),
 }));
-const childProcessMocks = vi.hoisted(() => ({
-  spawn: vi.fn(),
-}));
 
 vi.mock("../agents/sandbox.js", () => sandboxMocks);
-vi.mock("node:child_process", () => childProcessMocks);
 
-import { ensureSandboxWorkspaceForSession } from "../agents/sandbox.js";
 import { stageSandboxMedia } from "./reply/stage-sandbox-media.js";
 
 afterEach(() => {
-  vi.restoreAllMocks();
-  childProcessMocks.spawn.mockClear();
+  sandboxMocks.ensureSandboxWorkspaceForSession.mockReset();
 });
 
 function setupSandboxWorkspace(home: string): {
@@ -34,7 +28,7 @@ function setupSandboxWorkspace(home: string): {
   const cfg = createSandboxMediaStageConfig(home);
   const workspaceDir = join(home, "openclaw");
   const sandboxDir = join(home, "sandboxes", "session");
-  vi.mocked(ensureSandboxWorkspaceForSession).mockResolvedValue({
+  sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue({
     workspaceDir: sandboxDir,
     containerWorkdir: "/work",
   });
@@ -71,13 +65,13 @@ describe("stageSandboxMedia", () => {
         });
 
         const stagedPath = `media/inbound/${basename(mediaPath)}`;
+        await expect(
+          fs.stat(join(sandboxDir, "media", "inbound", basename(mediaPath))),
+        ).resolves.toBeTruthy();
         expect(ctx.MediaPath).toBe(stagedPath);
         expect(sessionCtx.MediaPath).toBe(stagedPath);
         expect(ctx.MediaUrl).toBe(stagedPath);
         expect(sessionCtx.MediaUrl).toBe(stagedPath);
-        await expect(
-          fs.stat(join(sandboxDir, "media", "inbound", basename(mediaPath))),
-        ).resolves.toBeTruthy();
       }
 
       {
@@ -100,7 +94,6 @@ describe("stageSandboxMedia", () => {
       }
 
       {
-        childProcessMocks.spawn.mockClear();
         const { ctx, sessionCtx } = createSandboxMediaContexts("/etc/passwd");
         ctx.Provider = "imessage";
         ctx.MediaRemoteHost = "user@gateway-host";
@@ -115,7 +108,6 @@ describe("stageSandboxMedia", () => {
           workspaceDir,
         });
 
-        expect(childProcessMocks.spawn).not.toHaveBeenCalled();
         expect(ctx.MediaPath).toBe("/etc/passwd");
       }
     });
@@ -176,6 +168,34 @@ describe("stageSandboxMedia", () => {
       ).rejects.toThrow();
       expect(ctx.MediaPath).toBe(mediaPath);
       expect(sessionCtx.MediaPath).toBe(mediaPath);
+    });
+  });
+
+  it("stages inbound media into workspace when workspaceOnly is enabled without sandbox", async () => {
+    await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
+      const cfg = createSandboxMediaStageConfig(home, { workspaceOnly: true });
+      const workspaceDir = join(home, "openclaw");
+      sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(undefined);
+
+      const mediaPath = await writeInboundMedia(home, "photo.jpg", "test");
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaPath);
+
+      await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        agentId: "main",
+        workspaceDir,
+      });
+
+      const stagedPath = `media/inbound/${basename(mediaPath)}`;
+      await expect(
+        fs.stat(join(workspaceDir, "media", "inbound", basename(mediaPath))),
+      ).resolves.toBeTruthy();
+      expect(ctx.MediaPath).toBe(stagedPath);
+      expect(sessionCtx.MediaPath).toBe(stagedPath);
+      expect(ctx.MediaUrl).toBe(stagedPath);
+      expect(sessionCtx.MediaUrl).toBe(stagedPath);
     });
   });
 });

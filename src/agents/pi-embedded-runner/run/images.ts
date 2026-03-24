@@ -213,6 +213,7 @@ export async function loadImageFromRef(
             workspaceOnly: options.workspaceOnly,
           },
           mediaPath: targetPath,
+          inboundFallbackDir: "media/inbound",
         });
         targetPath = resolved.resolved;
       } catch (err) {

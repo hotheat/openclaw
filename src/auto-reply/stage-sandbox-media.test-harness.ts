@@ -27,7 +27,10 @@ export function createSandboxMediaContexts(mediaPath: string): {
   return { ctx, sessionCtx: { ...ctx } };
 }
 
-export function createSandboxMediaStageConfig(home: string): OpenClawConfig {
+export function createSandboxMediaStageConfig(
+  home: string,
+  options?: { workspaceOnly?: boolean },
+): OpenClawConfig {
   return {
     agents: {
       defaults: {
@@ -39,6 +42,7 @@ export function createSandboxMediaStageConfig(home: string): OpenClawConfig {
         },
       },
     },
+    ...(options?.workspaceOnly ? { tools: { fs: { workspaceOnly: true } } } : {}),
     channels: { whatsapp: { allowFrom: ["*"] } },
     session: { store: join(home, "sessions.json") },
   } as OpenClawConfig;

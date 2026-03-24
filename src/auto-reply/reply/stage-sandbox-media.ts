@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
+import { resolveEffectiveToolFsWorkspaceOnly } from "../../agents/tool-fs-policy.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { logVerbose } from "../../globals.js";
 import { copyFileWithinRoot, SafeOpenError } from "../../infra/fs-safe.js";
@@ -23,27 +24,36 @@ export async function stageSandboxMedia(params: {
   ctx: MsgContext;
   sessionCtx: TemplateContext;
   cfg: OpenClawConfig;
+  agentId?: string;
   sessionKey?: string;
   workspaceDir: string;
 }) {
   const { ctx, sessionCtx, cfg, sessionKey, workspaceDir } = params;
   const hasPathsArray = Array.isArray(ctx.MediaPaths) && ctx.MediaPaths.length > 0;
   const rawPaths = resolveRawPaths(ctx);
-  if (rawPaths.length === 0 || !sessionKey) {
+  if (rawPaths.length === 0) {
     return;
   }
-
-  const sandbox = await ensureSandboxWorkspaceForSession({
-    config: cfg,
-    sessionKey,
-    workspaceDir,
+  const workspaceOnly = resolveEffectiveToolFsWorkspaceOnly({
+    cfg,
+    agentId: params.agentId,
   });
 
+  const sandbox = sessionKey
+    ? await ensureSandboxWorkspaceForSession({
+        config: cfg,
+        sessionKey,
+        workspaceDir,
+      })
+    : undefined;
+
   // For remote attachments without sandbox, use ~/.openclaw/media (not agent workspace for privacy)
-  const remoteMediaCacheDir = ctx.MediaRemoteHost
-    ? path.join(CONFIG_DIR, "media", "remote-cache", sessionKey)
-    : null;
-  const effectiveWorkspaceDir = sandbox?.workspaceDir ?? remoteMediaCacheDir;
+  const remoteMediaCacheDir =
+    ctx.MediaRemoteHost && sessionKey
+      ? path.join(CONFIG_DIR, "media", "remote-cache", sessionKey)
+      : null;
+  const effectiveWorkspaceDir =
+    sandbox?.workspaceDir ?? (workspaceOnly ? workspaceDir : remoteMediaCacheDir);
   if (!effectiveWorkspaceDir) {
     return;
   }
@@ -74,7 +84,8 @@ export async function stageSandboxMedia(params: {
     if (!fileName) {
       continue;
     }
-    const relativeDest = sandbox ? path.join("media", "inbound", fileName) : fileName;
+    const relativeDest =
+      sandbox || workspaceOnly ? path.join("media", "inbound", fileName) : fileName;
     const dest = path.join(effectiveWorkspaceDir, relativeDest);
 
     try {
@@ -106,7 +117,8 @@ export async function stageSandboxMedia(params: {
     }
 
     // For sandbox use relative path, for remote cache use absolute path
-    const stagedPath = sandbox ? path.posix.join("media", "inbound", fileName) : dest;
+    const stagedPath =
+      sandbox || workspaceOnly ? path.posix.join("media", "inbound", fileName) : dest;
     staged.set(source, stagedPath);
   }
 

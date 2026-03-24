@@ -251,6 +251,42 @@ describe("loadImageFromRef", () => {
       await fs.rm(sandboxParent, { recursive: true, force: true });
     }
   });
+
+  it("rewrites inbound absolute paths into sandbox media/inbound", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-native-image-inbound-"));
+    try {
+      const sandboxRoot = path.join(stateDir, "sandbox");
+      await fs.mkdir(path.join(sandboxRoot, "media", "inbound"), { recursive: true });
+      const pngB64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+      await fs.writeFile(
+        path.join(sandboxRoot, "media", "inbound", "photo.png"),
+        Buffer.from(pngB64, "base64"),
+      );
+
+      const image = await loadImageFromRef(
+        {
+          raw: "/home/test/.openclaw/media/inbound/photo.png",
+          type: "path",
+          resolved: "/home/test/.openclaw/media/inbound/photo.png",
+        },
+        sandboxRoot,
+        {
+          workspaceOnly: true,
+          sandbox: {
+            root: sandboxRoot,
+            bridge: createHostSandboxFsBridge(sandboxRoot),
+          },
+        },
+      );
+
+      expect(image).not.toBeNull();
+      expect(image?.type).toBe("image");
+      expect(image?.data.length).toBeGreaterThan(0);
+    } finally {
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("detectAndLoadPromptImages", () => {

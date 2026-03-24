@@ -351,6 +351,7 @@ export async function getReplyFromConfig(
     ctx,
     sessionCtx,
     cfg,
+    agentId,
     sessionKey,
     workspaceDir,
   });
