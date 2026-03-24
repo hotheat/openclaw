@@ -118,4 +118,35 @@ describe("stageSandboxMedia", () => {
       expect(ctx.MediaPath).toBe("/etc/passwd");
     });
   });
+
+  it("stages inbound media into workspace when workspaceOnly is enabled without sandbox", async () => {
+    await withSandboxMediaTempHome("openclaw-triggers-", async (home) => {
+      const cfg = createSandboxMediaStageConfig(home, { workspaceOnly: true });
+      const workspaceDir = join(home, "openclaw");
+      sandboxMocks.ensureSandboxWorkspaceForSession.mockResolvedValue(undefined);
+
+      const inboundDir = join(home, ".openclaw", "media", "inbound");
+      await fs.mkdir(inboundDir, { recursive: true });
+      const mediaPath = join(inboundDir, "photo.jpg");
+      await fs.writeFile(mediaPath, "test");
+      const { ctx, sessionCtx } = createSandboxMediaContexts(mediaPath);
+
+      await stageSandboxMedia({
+        ctx,
+        sessionCtx,
+        cfg,
+        agentId: "main",
+        workspaceDir,
+      });
+
+      const stagedPath = `media/inbound/${basename(mediaPath)}`;
+      await expect(
+        fs.stat(join(workspaceDir, "media", "inbound", basename(mediaPath))),
+      ).resolves.toBeTruthy();
+      expect(ctx.MediaPath).toBe(stagedPath);
+      expect(sessionCtx.MediaPath).toBe(stagedPath);
+      expect(ctx.MediaUrl).toBe(stagedPath);
+      expect(sessionCtx.MediaUrl).toBe(stagedPath);
+    });
+  });
 });

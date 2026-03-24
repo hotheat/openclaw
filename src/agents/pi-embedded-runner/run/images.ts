@@ -181,6 +181,7 @@ export async function loadImageFromRef(
   workspaceDir: string,
   options?: {
     maxBytes?: number;
+    workspaceOnly?: boolean;
     sandbox?: { root: string; bridge: SandboxFsBridge };
   },
 ): Promise<ImageContent | null> {
@@ -197,6 +198,18 @@ export async function loadImageFromRef(
     if (ref.type === "path") {
       if (options?.sandbox) {
         try {
+          if (
+            options.workspaceOnly &&
+            path.isAbsolute(targetPath) &&
+            targetPath.includes(`${path.sep}media${path.sep}inbound${path.sep}`)
+          ) {
+            targetPath = path.join(
+              options.sandbox.root,
+              "media",
+              "inbound",
+              path.basename(targetPath),
+            );
+          }
           const resolved = options.sandbox.bridge.resolvePath({
             filePath: targetPath,
             cwd: options.sandbox.root,

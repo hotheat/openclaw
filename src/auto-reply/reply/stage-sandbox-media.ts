@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
+import { resolveEffectiveToolFsWorkspaceOnly } from "../../agents/tool-fs-policy.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { logVerbose } from "../../globals.js";
 import { normalizeScpRemoteHost } from "../../infra/scp-host.js";
@@ -19,6 +20,7 @@ export async function stageSandboxMedia(params: {
   ctx: MsgContext;
   sessionCtx: TemplateContext;
   cfg: OpenClawConfig;
+  agentId?: string;
   sessionKey?: string;
   workspaceDir: string;
 }) {
@@ -31,21 +33,29 @@ export async function stageSandboxMedia(params: {
       : ctx.MediaPath?.trim()
         ? [ctx.MediaPath.trim()]
         : [];
-  if (rawPaths.length === 0 || !sessionKey) {
+  if (rawPaths.length === 0) {
     return;
   }
-
-  const sandbox = await ensureSandboxWorkspaceForSession({
-    config: cfg,
-    sessionKey,
-    workspaceDir,
+  const workspaceOnly = resolveEffectiveToolFsWorkspaceOnly({
+    cfg,
+    agentId: params.agentId,
   });
 
+  const sandbox = sessionKey
+    ? await ensureSandboxWorkspaceForSession({
+        config: cfg,
+        sessionKey,
+        workspaceDir,
+      })
+    : undefined;
+
   // For remote attachments without sandbox, use ~/.openclaw/media (not agent workspace for privacy)
-  const remoteMediaCacheDir = ctx.MediaRemoteHost
-    ? path.join(CONFIG_DIR, "media", "remote-cache", sessionKey)
-    : null;
-  const effectiveWorkspaceDir = sandbox?.workspaceDir ?? remoteMediaCacheDir;
+  const remoteMediaCacheDir =
+    ctx.MediaRemoteHost && sessionKey
+      ? path.join(CONFIG_DIR, "media", "remote-cache", sessionKey)
+      : null;
+  const effectiveWorkspaceDir =
+    sandbox?.workspaceDir ?? (workspaceOnly ? workspaceDir : remoteMediaCacheDir);
   if (!effectiveWorkspaceDir) {
     return;
   }
@@ -70,9 +80,10 @@ export async function stageSandboxMedia(params: {
 
   try {
     // For sandbox: <workspace>/media/inbound, for remote cache: use dir directly
-    const destDir = sandbox
-      ? path.join(effectiveWorkspaceDir, "media", "inbound")
-      : effectiveWorkspaceDir;
+    const destDir =
+      sandbox || workspaceOnly
+        ? path.join(effectiveWorkspaceDir, "media", "inbound")
+        : effectiveWorkspaceDir;
     await fs.mkdir(destDir, { recursive: true });
     const remoteAttachmentRoots = resolveIMessageRemoteAttachmentRoots({
       cfg,
@@ -147,7 +158,8 @@ export async function stageSandboxMedia(params: {
         await fs.copyFile(source, dest);
       }
       // For sandbox use relative path, for remote cache use absolute path
-      const stagedPath = sandbox ? path.posix.join("media", "inbound", fileName) : dest;
+      const stagedPath =
+        sandbox || workspaceOnly ? path.posix.join("media", "inbound", fileName) : dest;
       staged.set(source, stagedPath);
     }
 
