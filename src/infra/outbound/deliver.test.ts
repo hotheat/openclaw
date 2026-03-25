@@ -15,6 +15,7 @@ import { createInternalHookEventPayload } from "../../test-utils/internal-hook-e
 const hookMocks = vi.hoisted(() => ({
   runner: {
     hasHooks: vi.fn(() => false),
+    runMessageSending: vi.fn(async () => undefined),
     runMessageSent: vi.fn(async () => {}),
   },
 }));
@@ -93,6 +94,8 @@ describe("deliverOutboundPayloads", () => {
     setActivePluginRegistry(defaultRegistry);
     hookMocks.runner.hasHooks.mockClear();
     hookMocks.runner.hasHooks.mockReturnValue(false);
+    hookMocks.runner.runMessageSending.mockClear();
+    hookMocks.runner.runMessageSending.mockResolvedValue(undefined);
     hookMocks.runner.runMessageSent.mockClear();
     hookMocks.runner.runMessageSent.mockResolvedValue(undefined);
     internalHookMocks.createInternalHookEvent.mockClear();
@@ -586,6 +589,47 @@ describe("deliverOutboundPayloads", () => {
     expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(
       expect.objectContaining({ to: "+1555", content: "hello", success: true }),
       expect.objectContaining({ channelId: "whatsapp" }),
+    );
+  });
+
+  it("passes agent context to message hooks", async () => {
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName: string) => hookName === "message_sending" || hookName === "message_sent",
+    );
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
+
+    await deliverOutboundPayloads({
+      cfg: {
+        agents: {
+          defaults: { workspace: "/tmp/main-workspace" },
+          list: [{ id: "research", workspace: "/tmp/research-workspace" }],
+        },
+      },
+      channel: "whatsapp",
+      to: "+1555",
+      payloads: [{ text: "hello" }],
+      agentId: "research",
+      mirror: { sessionKey: "agent:research:main", agentId: "research" },
+      deps: { sendWhatsApp },
+    });
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "+1555", content: "hello" }),
+      expect.objectContaining({
+        channelId: "whatsapp",
+        conversationId: "+1555",
+        agentId: "research",
+        sessionKey: "agent:research:main",
+      }),
+    );
+    expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "+1555", content: "hello", success: true }),
+      expect.objectContaining({
+        channelId: "whatsapp",
+        conversationId: "+1555",
+        agentId: "research",
+        sessionKey: "agent:research:main",
+      }),
     );
   });
 

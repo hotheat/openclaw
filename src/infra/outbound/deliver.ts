@@ -441,6 +441,7 @@ async function deliverOutboundPayloadsCore(
   });
   const hookRunner = getGlobalHookRunner();
   const sessionKeyForInternalHooks = params.mirror?.sessionKey;
+  const outboundAgentId = params.agentId;
   for (const payload of normalizedPayloads) {
     const payloadSummary: NormalizedOutboundPayload = {
       text: payload.text ?? "",
@@ -466,6 +467,8 @@ async function deliverOutboundPayloadsCore(
               channelId: channel,
               accountId: accountId ?? undefined,
               conversationId: to,
+              agentId: outboundAgentId,
+              sessionKey: sessionKeyForInternalHooks,
             },
           )
           .catch(() => {});
@@ -502,6 +505,9 @@ async function deliverOutboundPayloadsCore(
             {
               channelId: channel,
               accountId: accountId ?? undefined,
+              conversationId: to,
+              agentId: outboundAgentId,
+              sessionKey: sessionKeyForInternalHooks,
             },
           );
           if (sendingResult?.cancel) {
