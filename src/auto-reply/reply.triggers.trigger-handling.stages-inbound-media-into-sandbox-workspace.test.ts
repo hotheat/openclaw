@@ -15,13 +15,19 @@ const childProcessMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../agents/sandbox.js", () => sandboxMocks);
-vi.mock("node:child_process", () => childProcessMocks);
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return {
+    ...actual,
+    spawn: childProcessMocks.spawn,
+  };
+});
 
 import { ensureSandboxWorkspaceForSession } from "../agents/sandbox.js";
 import { stageSandboxMedia } from "./reply/stage-sandbox-media.js";
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  sandboxMocks.ensureSandboxWorkspaceForSession.mockReset();
   childProcessMocks.spawn.mockClear();
 });
 
