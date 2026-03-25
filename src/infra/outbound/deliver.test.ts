@@ -666,6 +666,47 @@ describe("deliverOutboundPayloads", () => {
     );
   });
 
+  it("passes agent context to message hooks", async () => {
+    hookMocks.runner.hasHooks.mockImplementation(
+      (hookName: string) => hookName === "message_sending" || hookName === "message_sent",
+    );
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
+
+    await deliverOutboundPayloads({
+      cfg: {
+        agents: {
+          defaults: { workspace: "/tmp/main-workspace" },
+          list: [{ id: "research", workspace: "/tmp/research-workspace" }],
+        },
+      },
+      channel: "whatsapp",
+      to: "+1555",
+      payloads: [{ text: "hello" }],
+      agentId: "research",
+      mirror: { sessionKey: "agent:research:main", agentId: "research" },
+      deps: { sendWhatsApp },
+    });
+
+    expect(hookMocks.runner.runMessageSending).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "+1555", content: "hello" }),
+      expect.objectContaining({
+        channelId: "whatsapp",
+        conversationId: "+1555",
+        agentId: "research",
+        sessionKey: "agent:research:main",
+      }),
+    );
+    expect(hookMocks.runner.runMessageSent).toHaveBeenCalledWith(
+      expect.objectContaining({ to: "+1555", content: "hello", success: true }),
+      expect.objectContaining({
+        channelId: "whatsapp",
+        conversationId: "+1555",
+        agentId: "research",
+        sessionKey: "agent:research:main",
+      }),
+    );
+  });
+
   it("emits message_sent success for sendPayload deliveries", async () => {
     hookMocks.runner.hasHooks.mockReturnValue(true);
     const sendPayload = vi.fn().mockResolvedValue({ channel: "matrix", messageId: "mx-1" });
