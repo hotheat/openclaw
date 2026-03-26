@@ -48,7 +48,7 @@ export type SpawnSubagentContext = {
 };
 
 export const SUBAGENT_SPAWN_ACCEPTED_NOTE =
-  "auto-announces on completion, do not poll/sleep. The response will be sent back as an user message.";
+  "auto-announces on completion, do not poll/sleep. Completion may be delivered directly to the bound channel instead of appearing as a parent user message.";
 export const SUBAGENT_SPAWN_SESSION_ACCEPTED_NOTE =
   "thread-bound session stays active after this task; continue in-thread for follow-ups.";
 

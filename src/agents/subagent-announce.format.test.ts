@@ -21,6 +21,10 @@ type SubagentDeliveryTargetResult = {
 
 const agentSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "run-main", status: "ok" }));
 const sendSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "send-main", status: "ok" }));
+const appendAssistantMessageToSessionTranscriptMock = vi.fn(async () => ({
+  ok: true as const,
+  sessionFile: "/tmp/requester-session.jsonl",
+}));
 const sessionsDeleteSpy = vi.fn((_req: AgentCallRequest) => undefined);
 const readLatestAssistantReplyMock = vi.fn(
   async (_sessionKey?: string): Promise<string | undefined> => "raw subagent reply",
@@ -117,6 +121,7 @@ vi.mock("./tools/agent-step.js", () => ({
 }));
 
 vi.mock("../config/sessions.js", () => ({
+  appendAssistantMessageToSessionTranscript: appendAssistantMessageToSessionTranscriptMock,
   loadSessionStore: vi.fn(() => loadSessionStoreFixture()),
   resolveAgentIdFromSessionKey: () => "main",
   resolveStorePath: () => "/tmp/sessions.json",
@@ -165,6 +170,9 @@ describe("subagent announce formatting", () => {
     sendSpy
       .mockClear()
       .mockImplementation(async (_req: AgentCallRequest) => ({ runId: "send-main", status: "ok" }));
+    appendAssistantMessageToSessionTranscriptMock
+      .mockClear()
+      .mockResolvedValue({ ok: true, sessionFile: "/tmp/requester-session.jsonl" });
     sessionsDeleteSpy.mockClear().mockImplementation((_req: AgentCallRequest) => undefined);
     embeddedRunMock.isEmbeddedPiRunActive.mockClear().mockReturnValue(false);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockClear().mockReturnValue(false);
@@ -399,6 +407,11 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("✅ Subagent main finished");
     expect(msg).toContain("final answer: 2");
     expect(msg).not.toContain("Convert the result above into your normal assistant voice");
+    expect(appendAssistantMessageToSessionTranscriptMock).toHaveBeenCalledWith({
+      sessionKey: "agent:main:main",
+      agentId: "main",
+      text: msg,
+    });
   });
 
   it("keeps completion-mode delivery coordinated when sibling runs are still active", async () => {
@@ -429,6 +442,7 @@ describe("subagent announce formatting", () => {
 
     expect(didAnnounce).toBe(true);
     expect(sendSpy).not.toHaveBeenCalled();
+    expect(appendAssistantMessageToSessionTranscriptMock).not.toHaveBeenCalled();
     expect(agentSpy).toHaveBeenCalledTimes(1);
     const call = agentSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
     const rawMessage = call?.params?.message;

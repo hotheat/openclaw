@@ -3,6 +3,7 @@ import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH } from "../config/agent-limits.js";
 import { loadConfig } from "../config/config.js";
 import {
+  appendAssistantMessageToSessionTranscript,
   loadSessionStore,
   resolveAgentIdFromSessionKey,
   resolveMainSessionKey,
@@ -56,6 +57,26 @@ type SubagentAnnounceDeliveryResult = {
   path: SubagentDeliveryPath;
   error?: string;
 };
+
+async function mirrorCompletionDirectSendToTranscript(params: {
+  sessionKey: string;
+  text?: string;
+}): Promise<void> {
+  const text = typeof params.text === "string" ? params.text.trim() : "";
+  if (!text) {
+    return;
+  }
+  const result = await appendAssistantMessageToSessionTranscript({
+    sessionKey: params.sessionKey,
+    agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+    text,
+  });
+  if (!result.ok) {
+    defaultRuntime.warn?.(
+      `Subagent completion transcript mirror failed for ${params.sessionKey}: ${result.reason}`,
+    );
+  }
+}
 
 function resolveSubagentAnnounceTimeoutMs(cfg: ReturnType<typeof loadConfig>): number {
   const configured = cfg.agents?.defaults?.subagents?.announceTimeoutMs;
@@ -720,6 +741,10 @@ async function sendSubagentAnnounceDirectly(params: {
             idempotencyKey: params.directIdempotencyKey,
           },
           timeoutMs: announceTimeoutMs,
+        });
+        await mirrorCompletionDirectSendToTranscript({
+          sessionKey: canonicalRequesterSessionKey,
+          text: params.completionMessage,
         });
 
         return {
