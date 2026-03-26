@@ -48,6 +48,8 @@ var restoreAttempted = false;
 const SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
 const MIN_ANNOUNCE_RETRY_DELAY_MS = 1_000;
 const MAX_ANNOUNCE_RETRY_DELAY_MS = 8_000;
+const SUBAGENT_COMPLETION_END_STABILIZE_MS = 2_000;
+const SUBAGENT_COMPLETION_ERROR_STABILIZE_MS = 15_000;
 /**
  * Maximum number of announce delivery attempts before giving up.
  * Prevents infinite retry loops when `runSubagentAnnounceFlow` repeatedly
@@ -84,6 +86,7 @@ function persistSubagentRuns() {
 
 const resumedRuns = new Set<string>();
 const endedHookInFlightRunIds = new Set<string>();
+const pendingCompletionTimers = new Map<string, NodeJS.Timeout>();
 
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
@@ -104,6 +107,33 @@ function shouldEmitEndedHookForRun(params: {
   reason: SubagentLifecycleEndedReason;
 }) {
   return !shouldKeepThreadBindingAfterRun(params);
+}
+
+function clearPendingSubagentCompletion(runId: string) {
+  const pending = pendingCompletionTimers.get(runId);
+  if (!pending) {
+    return false;
+  }
+  clearTimeout(pending);
+  pendingCompletionTimers.delete(runId);
+  return true;
+}
+
+function resolveCompletionStabilizeDelayMs(outcome: SubagentRunOutcome) {
+  if (outcome.status === "ok") {
+    return SUBAGENT_COMPLETION_END_STABILIZE_MS;
+  }
+  return SUBAGENT_COMPLETION_ERROR_STABILIZE_MS;
+}
+
+function shouldStabilizeCompletion(entry: SubagentRunRecord, outcome: SubagentRunOutcome) {
+  if (entry.expectsCompletionMessage !== true) {
+    return false;
+  }
+  // Completion-mode subagents can briefly emit a terminal state before the
+  // same run resumes on provider/model failover. Stabilize terminal snapshots
+  // so a later `start` can cancel stale cleanup before the handoff is lost.
+  return outcome.status === "ok" || outcome.status === "error" || outcome.status === "timeout";
 }
 
 async function emitSubagentEndedHookForRun(params: {
@@ -188,6 +218,33 @@ async function completeSubagentRun(params: {
     return;
   }
   startSubagentAnnounceCleanupFlow(params.runId, entry);
+}
+
+function scheduleSubagentRunCompletion(params: {
+  runId: string;
+  endedAt?: number;
+  outcome: SubagentRunOutcome;
+  reason: SubagentLifecycleEndedReason;
+  sendFarewell?: boolean;
+  accountId?: string;
+  triggerCleanup: boolean;
+}) {
+  const entry = subagentRuns.get(params.runId);
+  if (!entry) {
+    return;
+  }
+  clearPendingSubagentCompletion(params.runId);
+  if (!shouldStabilizeCompletion(entry, params.outcome)) {
+    void completeSubagentRun(params);
+    return;
+  }
+  const delayMs = resolveCompletionStabilizeDelayMs(params.outcome);
+  const timer = setTimeout(() => {
+    pendingCompletionTimers.delete(params.runId);
+    void completeSubagentRun(params);
+  }, delayMs);
+  timer.unref?.();
+  pendingCompletionTimers.set(params.runId, timer);
 }
 
 function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecord): boolean {
@@ -384,6 +441,7 @@ function ensureListener() {
       }
       const phase = evt.data?.phase;
       if (phase === "start") {
+        clearPendingSubagentCompletion(evt.runId);
         const startedAt = typeof evt.data?.startedAt === "number" ? evt.data.startedAt : undefined;
         if (startedAt) {
           entry.startedAt = startedAt;
@@ -402,7 +460,7 @@ function ensureListener() {
           : evt.data?.aborted
             ? { status: "timeout" }
             : { status: "ok" };
-      await completeSubagentRun({
+      scheduleSubagentRunCompletion({
         runId: evt.runId,
         endedAt,
         outcome,
@@ -747,14 +805,6 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       entry.startedAt = wait.startedAt;
       mutated = true;
     }
-    if (typeof wait.endedAt === "number") {
-      entry.endedAt = wait.endedAt;
-      mutated = true;
-    }
-    if (!entry.endedAt) {
-      entry.endedAt = Date.now();
-      mutated = true;
-    }
     const waitError = typeof wait.error === "string" ? wait.error : undefined;
     const outcome: SubagentRunOutcome =
       wait.status === "error"
@@ -762,16 +812,12 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         : wait.status === "timeout"
           ? { status: "timeout" }
           : { status: "ok" };
-    if (!runOutcomesEqual(entry.outcome, outcome)) {
-      entry.outcome = outcome;
-      mutated = true;
-    }
     if (mutated) {
       persistSubagentRuns();
     }
-    await completeSubagentRun({
+    scheduleSubagentRunCompletion({
       runId,
-      endedAt: entry.endedAt,
+      endedAt: typeof wait.endedAt === "number" ? wait.endedAt : Date.now(),
       outcome,
       reason:
         wait.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
@@ -788,6 +834,10 @@ export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   subagentRuns.clear();
   resumedRuns.clear();
   endedHookInFlightRunIds.clear();
+  for (const timer of pendingCompletionTimers.values()) {
+    clearTimeout(timer);
+  }
+  pendingCompletionTimers.clear();
   resetAnnounceQueuesForTests();
   stopSweeper();
   restoreAttempted = false;

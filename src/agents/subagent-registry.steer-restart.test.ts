@@ -159,6 +159,7 @@ describe("subagent registry steer restarts", () => {
 
   it("defers subagent_ended hook for completion-mode runs until announce delivery resolves", async () => {
     await withPendingAgentWait(async () => {
+      vi.useFakeTimers();
       let resolveAnnounce!: (value: boolean) => void;
       announceSpy.mockImplementationOnce(
         () =>
@@ -188,29 +189,110 @@ describe("subagent registry steer restarts", () => {
         data: { phase: "end" },
       });
 
-      await flushAnnounce();
-      expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
+      try {
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
 
-      resolveAnnounce(true);
-      await flushAnnounce();
+        resolveAnnounce(true);
+        await vi.advanceTimersByTimeAsync(0);
 
-      expect(runSubagentEndedHookMock).toHaveBeenCalledTimes(1);
-      expect(runSubagentEndedHookMock).toHaveBeenCalledWith(
+        expect(runSubagentEndedHookMock).toHaveBeenCalledTimes(1);
+        expect(runSubagentEndedHookMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            targetSessionKey: "agent:main:subagent:completion-delayed",
+            reason: "subagent-complete",
+            sendFarewell: true,
+          }),
+          expect.objectContaining({
+            runId: "run-completion-delayed",
+            requesterSessionKey: "agent:main:main",
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("ignores a provisional completion-mode agent.wait result when the same run restarts", async () => {
+    vi.useFakeTimers();
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    const originalCallGateway = callGateway.getMockImplementation();
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string; params?: { runId?: string } };
+      if (typed.method === "agent.wait" && typed.params?.runId === "run-completion-restart") {
+        return { status: "ok", endedAt: 200 };
+      }
+      if (originalCallGateway) {
+        return originalCallGateway(request as Parameters<typeof callGateway>[0]);
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-completion-restart",
+        childSessionKey: "agent:main:subagent:completion-restart",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        requesterOrigin: {
+          channel: "discord",
+          to: "channel:123",
+          accountId: "work",
+        },
+        task: "completion restart task",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(announceSpy).not.toHaveBeenCalled();
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-completion-restart",
+        data: { phase: "start", startedAt: 300 },
+      });
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(announceSpy).not.toHaveBeenCalled();
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-completion-restart",
+        data: { phase: "end", endedAt: 400 },
+      });
+
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(announceSpy).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+      expect(announceSpy).toHaveBeenCalledWith(
         expect.objectContaining({
-          targetSessionKey: "agent:main:subagent:completion-delayed",
-          reason: "subagent-complete",
-          sendFarewell: true,
-        }),
-        expect.objectContaining({
-          runId: "run-completion-delayed",
-          requesterSessionKey: "agent:main:main",
+          childRunId: "run-completion-restart",
+          startedAt: 300,
+          endedAt: 400,
+          outcome: { status: "ok" },
         }),
       );
-    });
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.startedAt).toBe(300);
+      expect(run?.endedAt).toBe(400);
+      expect(run?.cleanupCompletedAt).toBeTypeOf("number");
+    } finally {
+      if (originalCallGateway) {
+        callGateway.mockImplementation(originalCallGateway);
+      }
+      vi.useRealTimers();
+    }
   });
 
   it("does not emit subagent_ended on completion for persistent session-mode runs", async () => {
     await withPendingAgentWait(async () => {
+      vi.useFakeTimers();
       let resolveAnnounce!: (value: boolean) => void;
       announceSpy.mockImplementationOnce(
         () =>
@@ -241,17 +323,21 @@ describe("subagent registry steer restarts", () => {
         data: { phase: "end" },
       });
 
-      await flushAnnounce();
-      expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
+      try {
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
 
-      resolveAnnounce(true);
-      await flushAnnounce();
+        resolveAnnounce(true);
+        await vi.advanceTimersByTimeAsync(0);
 
-      expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
-      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
-      expect(run?.runId).toBe("run-persistent-session");
-      expect(run?.cleanupCompletedAt).toBeTypeOf("number");
-      expect(run?.endedHookEmittedAt).toBeUndefined();
+        expect(runSubagentEndedHookMock).not.toHaveBeenCalled();
+        const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(run?.runId).toBe("run-persistent-session");
+        expect(run?.cleanupCompletedAt).toBeTypeOf("number");
+        expect(run?.endedHookEmittedAt).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -480,7 +566,9 @@ describe("subagent registry steer restarts", () => {
           data: { phase: "end" },
         });
 
-        await vi.advanceTimersByTimeAsync(0);
+        await vi.advanceTimersByTimeAsync(1_999);
+        expect(announceSpy).toHaveBeenCalledTimes(0);
+        await vi.advanceTimersByTimeAsync(1);
         expect(announceSpy).toHaveBeenCalledTimes(1);
         expect(mod.listSubagentRunsForRequester("agent:main:main")[0]?.announceRetryCount).toBe(1);
 
@@ -508,46 +596,54 @@ describe("subagent registry steer restarts", () => {
   });
 
   it("emits subagent_ended when completion cleanup expires with active descendants", async () => {
-    announceSpy.mockResolvedValue(false);
+    await withPendingAgentWait(async () => {
+      vi.useFakeTimers();
+      announceSpy.mockResolvedValue(false);
 
-    mod.registerSubagentRun({
-      runId: "run-parent-expiry",
-      childSessionKey: "agent:main:subagent:parent-expiry",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "main",
-      task: "parent completion expiry",
-      cleanup: "keep",
-      expectsCompletionMessage: true,
-    });
-    mod.registerSubagentRun({
-      runId: "run-child-active",
-      childSessionKey: "agent:main:subagent:parent-expiry:subagent:child-active",
-      requesterSessionKey: "agent:main:subagent:parent-expiry",
-      requesterDisplayKey: "parent-expiry",
-      task: "child still running",
-      cleanup: "keep",
-    });
+      try {
+        mod.registerSubagentRun({
+          runId: "run-parent-expiry",
+          childSessionKey: "agent:main:subagent:parent-expiry",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "parent completion expiry",
+          cleanup: "keep",
+          expectsCompletionMessage: true,
+        });
+        mod.registerSubagentRun({
+          runId: "run-child-active",
+          childSessionKey: "agent:main:subagent:parent-expiry:subagent:child-active",
+          requesterSessionKey: "agent:main:subagent:parent-expiry",
+          requesterDisplayKey: "parent-expiry",
+          task: "child still running",
+          cleanup: "keep",
+        });
 
-    lifecycleHandler?.({
-      stream: "lifecycle",
-      runId: "run-parent-expiry",
-      data: {
-        phase: "end",
-        startedAt: Date.now() - 7 * 60_000,
-        endedAt: Date.now() - 6 * 60_000,
-      },
-    });
+        lifecycleHandler?.({
+          stream: "lifecycle",
+          runId: "run-parent-expiry",
+          data: {
+            phase: "end",
+            startedAt: Date.now() - 7 * 60_000,
+            endedAt: Date.now() - 6 * 60_000,
+          },
+        });
 
-    await flushAnnounce();
+        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.advanceTimersByTimeAsync(0);
 
-    const parentHookCall = runSubagentEndedHookMock.mock.calls.find((call) => {
-      const event = call[0] as { runId?: string; reason?: string };
-      return event.runId === "run-parent-expiry" && event.reason === "subagent-complete";
+        const parentHookCall = runSubagentEndedHookMock.mock.calls.find((call) => {
+          const event = call[0] as { runId?: string; reason?: string };
+          return event.runId === "run-parent-expiry" && event.reason === "subagent-complete";
+        });
+        expect(parentHookCall).toBeDefined();
+        const parent = mod
+          .listSubagentRunsForRequester("agent:main:main")
+          .find((entry) => entry.runId === "run-parent-expiry");
+        expect(parent?.cleanupCompletedAt).toBeTypeOf("number");
+      } finally {
+        vi.useRealTimers();
+      }
     });
-    expect(parentHookCall).toBeDefined();
-    const parent = mod
-      .listSubagentRunsForRequester("agent:main:main")
-      .find((entry) => entry.runId === "run-parent-expiry");
-    expect(parent?.cleanupCompletedAt).toBeTypeOf("number");
   });
 });
