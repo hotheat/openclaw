@@ -72,7 +72,7 @@ async function mirrorCompletionDirectSendToTranscript(params: {
     text,
   });
   if (!result.ok) {
-    defaultRuntime.warn?.(
+    defaultRuntime.error?.(
       `Subagent completion transcript mirror failed for ${params.sessionKey}: ${result.reason}`,
     );
   }
