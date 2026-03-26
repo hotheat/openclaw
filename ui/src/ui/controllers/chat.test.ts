@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { handleChatEvent, type ChatEventPayload, type ChatState } from "./chat.ts";
+import { describe, expect, it, vi } from "vitest";
+import { handleChatEvent, sendChatMessage, type ChatEventPayload, type ChatState } from "./chat.ts";
 
 function createState(overrides: Partial<ChatState> = {}): ChatState {
   return {
@@ -255,5 +255,27 @@ describe("handleChatEvent", () => {
     expect(state.chatStream).toBe(null);
     expect(state.chatStreamStartedAt).toBe(null);
     expect(state.chatMessages).toEqual([existingMessage]);
+  });
+});
+
+describe("sendChatMessage", () => {
+  it("requests external delivery for control chat sends", async () => {
+    const request = vi.fn(async () => ({ ok: true }));
+    const state = createState({
+      client: { request } as unknown as ChatState["client"],
+      connected: true,
+    });
+
+    const runId = await sendChatMessage(state, "hello");
+
+    expect(typeof runId).toBe("string");
+    expect(request).toHaveBeenCalledWith(
+      "chat.send",
+      expect.objectContaining({
+        sessionKey: "main",
+        message: "hello",
+        deliver: true,
+      }),
+    );
   });
 });

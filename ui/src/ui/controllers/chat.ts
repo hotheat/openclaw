@@ -175,7 +175,7 @@ export async function sendChatMessage(
     await state.client.request("chat.send", {
       sessionKey: state.sessionKey,
       message: msg,
-      deliver: false,
+      deliver: true,
       idempotencyKey: runId,
       attachments: apiAttachments,
     });

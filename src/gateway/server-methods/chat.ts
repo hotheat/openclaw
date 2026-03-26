@@ -6,10 +6,12 @@ import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
+import { isRoutableChannel, routeReply } from "../../auto-reply/reply/route-reply.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { deliveryContextFromSession } from "../../utils/delivery-context.js";
 import {
   stripInlineDirectiveTagsForDisplay,
   stripInlineDirectiveTagsFromMessageForDisplay,
@@ -733,6 +735,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     const rawSessionKey = p.sessionKey;
     const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const sessionDelivery = deliveryContextFromSession(entry);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -854,6 +857,29 @@ export const chatHandlers: GatewayRequestHandlers = {
             return;
           }
           finalReplyParts.push(text);
+          if (
+            p.deliver !== true ||
+            !sessionDelivery?.to ||
+            !isRoutableChannel(sessionDelivery.channel)
+          ) {
+            return;
+          }
+          const routed = await routeReply({
+            payload,
+            channel: sessionDelivery.channel,
+            to: sessionDelivery.to,
+            accountId: sessionDelivery.accountId,
+            threadId: sessionDelivery.threadId,
+            sessionKey,
+            cfg,
+            abortSignal: abortController.signal,
+            mirror: false,
+          });
+          if (!routed.ok) {
+            context.logGateway.warn(
+              `webchat external delivery failed: ${routed.error ?? "unknown error"}`,
+            );
+          }
         },
       });
 
