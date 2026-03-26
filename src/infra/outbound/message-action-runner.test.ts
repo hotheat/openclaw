@@ -195,6 +195,20 @@ describe("runMessageAction context isolation", () => {
     expect(result.kind).toBe("send");
   });
 
+  it("ignores empty legacy channelId when explicit target is provided", async () => {
+    const result = await runDrySend({
+      cfg: slackConfig,
+      actionParams: {
+        channel: "slack",
+        target: "#C12345678",
+        channelId: "",
+        message: "hi",
+      },
+    });
+
+    expect(result.kind).toBe("send");
+  });
+
   it("defaults to current channel when target is omitted", async () => {
     const result = await runDrySend({
       cfg: slackConfig,
