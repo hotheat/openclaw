@@ -512,11 +512,15 @@ export function resolveAllowedModelRef(params: {
 
 export function resolveThinkingDefault(params: {
   cfg: OpenClawConfig;
+  agentId?: string;
   provider: string;
   model: string;
   catalog?: ModelCatalogEntry[];
 }): ThinkLevel {
-  const configured = params.cfg.agents?.defaults?.thinkingDefault;
+  const configured =
+    (params.agentId
+      ? resolveAgentConfig(params.cfg, params.agentId)?.thinkingDefault
+      : undefined) ?? params.cfg.agents?.defaults?.thinkingDefault;
   if (configured) {
     return configured;
   }

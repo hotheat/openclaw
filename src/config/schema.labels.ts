@@ -391,6 +391,7 @@ export const FIELD_LABELS: Record<string, string> = {
     "Compaction Memory Flush Soft Threshold",
   "agents.defaults.compaction.memoryFlush.prompt": "Compaction Memory Flush Prompt",
   "agents.defaults.compaction.memoryFlush.systemPrompt": "Compaction Memory Flush System Prompt",
+  "agents.defaults.heartbeat.thinking": "Heartbeat Thinking Override",
   "agents.defaults.heartbeat.suppressToolErrorWarnings": "Heartbeat Suppress Tool Error Warnings",
   "agents.defaults.sandbox.browser.network": "Sandbox Browser Network",
   "agents.defaults.sandbox.browser.cdpSourceRange": "Sandbox Browser CDP Source Port Range",
@@ -683,7 +684,9 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.signal.account": "Signal Account",
   "channels.imessage.cliPath": "iMessage CLI Path",
   "agents.list[].skills": "Agent Skill Filter",
+  "agents.list[].thinkingDefault": "Agent Thinking Default",
   "agents.list[].identity.avatar": "Agent Avatar",
+  "agents.list[].heartbeat.thinking": "Agent Heartbeat Thinking Override",
   "agents.list[].heartbeat.suppressToolErrorWarnings":
     "Agent Heartbeat Suppress Tool Error Warnings",
   "agents.list[].sandbox.browser.network": "Agent Sandbox Browser Network",

@@ -139,8 +139,14 @@ export const FIELD_HELP: Record<string, string> = {
     "Shared default settings inherited by agents unless overridden per entry in agents.list. Use defaults to enforce consistent baseline behavior and reduce duplicated per-agent configuration.",
   "agents.list":
     "Explicit list of configured agents with IDs and optional overrides for model, tools, identity, and workspace. Keep IDs stable over time so bindings, approvals, and session routing remain deterministic.",
+  "agents.list[].thinkingDefault":
+    "Per-agent default thinking level used when the session has no stored override and the message does not include an inline thinking directive.",
   "agents.list[].identity.avatar":
     "Avatar image path (relative to the agent workspace only) or a remote URL/data URL.",
+  "agents.defaults.heartbeat.thinking":
+    "Thinking override applied only to heartbeat runs. Use this to keep routine heartbeat checks lighter or turn thinking off without changing the agent's normal session behavior.",
+  "agents.list[].heartbeat.thinking":
+    "Thinking override applied only to heartbeat runs for this agent. It takes precedence over the agent's normal session/default thinking level for heartbeat messages.",
   "agents.defaults.heartbeat.suppressToolErrorWarnings":
     "Suppress tool error warning payloads during heartbeat runs.",
   "agents.list[].heartbeat.suppressToolErrorWarnings":

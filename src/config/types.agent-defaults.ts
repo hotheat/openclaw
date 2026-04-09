@@ -211,6 +211,8 @@ export type AgentDefaultsConfig = {
     model?: string;
     /** Session key for heartbeat runs ("main" or explicit session key). */
     session?: string;
+    /** Thinking override for heartbeat runs. */
+    thinking?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
     /** Delivery target ("last", "none", or a channel id). */
     target?: "last" | "none" | ChannelId;
     /** Optional delivery override (E.164 for WhatsApp, chat id for Telegram). Supports :topic:NNN suffix for Telegram topics. */

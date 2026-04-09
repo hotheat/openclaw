@@ -8,6 +8,7 @@ import {
   buildModelAliasIndex,
   normalizeProviderId,
   modelKey,
+  resolveThinkingDefault,
 } from "./model-selection.js";
 
 describe("model-selection", () => {
@@ -196,6 +197,28 @@ describe("model-selection", () => {
         defaultModel: "gpt-4",
       });
       expect(result).toEqual({ provider: "openai", model: "gpt-4" });
+    });
+  });
+
+  describe("resolveThinkingDefault", () => {
+    it("prefers per-agent thinkingDefault over global defaults", () => {
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            thinkingDefault: "off",
+          },
+          list: [{ id: "researcher", thinkingDefault: "medium" }],
+        },
+      };
+
+      const result = resolveThinkingDefault({
+        cfg,
+        agentId: "researcher",
+        provider: "openai",
+        model: "gpt-5.4",
+      });
+
+      expect(result).toBe("medium");
     });
   });
 });

@@ -338,6 +338,7 @@ export async function resolveReplyDirectives(params: {
   const defaultActivation = defaultGroupActivation(requireMention);
   const resolvedThinkLevel =
     directives.thinkLevel ??
+    (opts?.heartbeatThinkingOverride as ThinkLevel | undefined) ??
     (sessionEntry?.thinkingLevel as ThinkLevel | undefined) ??
     (agentCfg?.thinkingDefault as ThinkLevel | undefined);
 
@@ -373,6 +374,7 @@ export async function resolveReplyDirectives(params: {
 
   const modelState = await createModelSelectionState({
     cfg,
+    agentId,
     agentCfg,
     sessionEntry,
     sessionStore,

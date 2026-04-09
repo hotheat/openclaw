@@ -1,4 +1,5 @@
 import {
+  resolveAgentConfig,
   resolveAgentDir,
   resolveAgentWorkspaceDir,
   resolveSessionAgentId,
@@ -51,6 +52,24 @@ function mergeSkillFilters(channelFilter?: string[], agentFilter?: string[]): st
   return channel.filter((name) => agentSet.has(name));
 }
 
+function mergeAgentDefaults(
+  cfg: OpenClawConfig,
+  agentId: string,
+): NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]> | undefined {
+  const defaults = cfg.agents?.defaults;
+  const overrides = resolveAgentConfig(cfg, agentId);
+  if (!defaults && !overrides) {
+    return undefined;
+  }
+  const merged = Object.assign({}, defaults, overrides) as NonNullable<
+    NonNullable<OpenClawConfig["agents"]>["defaults"]
+  >;
+  if (defaults?.heartbeat || overrides?.heartbeat) {
+    merged.heartbeat = { ...defaults?.heartbeat, ...overrides?.heartbeat };
+  }
+  return merged;
+}
+
 export async function getReplyFromConfig(
   ctx: MsgContext,
   opts?: GetReplyOptions,
@@ -69,9 +88,19 @@ export async function getReplyFromConfig(
     opts?.skillFilter,
     resolveAgentSkillsFilter(cfg, agentId),
   );
+  const agentCfg = mergeAgentDefaults(cfg, agentId);
+  const heartbeatThinkingOverride =
+    opts?.isHeartbeat && opts.heartbeatThinkingOverride === undefined
+      ? agentCfg?.heartbeat?.thinking
+      : opts?.heartbeatThinkingOverride;
   const resolvedOpts =
-    mergedSkillFilter !== undefined ? { ...opts, skillFilter: mergedSkillFilter } : opts;
-  const agentCfg = cfg.agents?.defaults;
+    mergedSkillFilter !== undefined || heartbeatThinkingOverride !== undefined
+      ? {
+          ...opts,
+          ...(mergedSkillFilter !== undefined ? { skillFilter: mergedSkillFilter } : {}),
+          ...(heartbeatThinkingOverride !== undefined ? { heartbeatThinkingOverride } : {}),
+        }
+      : opts;
   const sessionCfg = cfg.session;
   const { defaultProvider, defaultModel, aliasIndex } = resolveDefaultModel({
     cfg,
