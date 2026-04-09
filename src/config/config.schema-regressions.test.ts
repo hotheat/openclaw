@@ -105,4 +105,29 @@ describe("config schema regressions", () => {
       expect(res.issues[0]?.path).toBe("channels.imessage.attachmentRoots.0");
     }
   });
+
+  it("accepts per-agent thinkingDefault and heartbeat.thinking overrides", () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          thinkingDefault: "off",
+          heartbeat: {
+            thinking: "low",
+          },
+        },
+        list: [
+          {
+            id: "researcher",
+            thinkingDefault: "medium",
+            heartbeat: {
+              every: "2h",
+              thinking: "off",
+            },
+          },
+        ],
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
 });

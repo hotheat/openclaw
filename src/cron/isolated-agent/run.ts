@@ -351,6 +351,7 @@ export async function runCronIsolatedAgentTurn(params: {
   if (!thinkLevel) {
     thinkLevel = resolveThinkingDefault({
       cfg: cfgWithAgentDefaults,
+      agentId,
       provider,
       model,
       catalog: await loadCatalog(),

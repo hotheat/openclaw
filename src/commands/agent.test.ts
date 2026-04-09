@@ -59,7 +59,7 @@ function mockConfig(
   storePath: string,
   agentOverrides?: Partial<NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>>,
   telegramOverrides?: Partial<NonNullable<NonNullable<OpenClawConfig["channels"]>["telegram"]>>,
-  agentsList?: Array<{ id: string; default?: boolean }>,
+  agentsList?: NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>,
 ) {
   configSpy.mockReturnValue({
     agents: {
@@ -479,6 +479,39 @@ describe("agentCommand", () => {
 
       const callArgs = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0];
       expect(callArgs?.thinkLevel).toBe("low");
+    });
+  });
+
+  it("uses per-agent thinkingDefault when no thinking override is provided", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, { thinkingDefault: "off" }, undefined, [
+        { id: "researcher", thinkingDefault: "medium" },
+      ]);
+
+      await agentCommand({ message: "hi", agentId: "researcher" }, runtime);
+
+      const callArgs = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0];
+      expect(callArgs?.thinkLevel).toBe("medium");
+    });
+  });
+
+  it("uses configured default agent when no --agent is provided", async () => {
+    await withTempHome(async (home) => {
+      const store = path.join(home, "sessions.json");
+      mockConfig(home, store, { thinkingDefault: "off" }, undefined, [
+        { id: "main" },
+        { id: "researcher", default: true, thinkingDefault: "medium" },
+      ]);
+
+      await agentCommand({ message: "hi", to: "+1555" }, runtime);
+
+      const callArgs = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0];
+      expect(callArgs?.thinkLevel).toBe("medium");
+      expect(callArgs?.sessionKey).toBe("agent:researcher:main");
+      expect(callArgs?.sessionFile).toContain(
+        `${path.sep}agents${path.sep}researcher${path.sep}sessions`,
+      );
     });
   });
 

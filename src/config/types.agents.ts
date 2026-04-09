@@ -17,6 +17,8 @@ export type AgentConfig = {
   memorySearch?: MemorySearchConfig;
   /** Human-like delay between block replies for this agent. */
   humanDelay?: HumanDelayConfig;
+  /** Per-agent default thinking level when no session or inline override is present. */
+  thinkingDefault?: AgentDefaultsConfig["thinkingDefault"];
   /** Optional per-agent heartbeat overrides. */
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   identity?: IdentityConfig;

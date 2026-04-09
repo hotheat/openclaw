@@ -1,6 +1,8 @@
 import {
   listAgentIds,
+  resolveAgentConfig,
   resolveAgentDir,
+  resolveDefaultAgentId,
   resolveEffectiveModelFallbacks,
   resolveAgentModelPrimary,
   resolveAgentSkillsFilter,
@@ -49,6 +51,7 @@ import {
   type SessionEntry,
   updateSessionStore,
 } from "../config/sessions.js";
+import type { AgentDefaultsConfig } from "../config/types.js";
 import {
   clearAgentRunContext,
   emitAgentEvent,
@@ -217,8 +220,24 @@ export async function agentCommand(
       );
     }
   }
-  const agentCfg = cfg.agents?.defaults;
-  const sessionAgentId = agentIdOverride ?? resolveAgentIdFromSessionKey(opts.sessionKey?.trim());
+  const sessionAgentIdFromKey = opts.sessionKey?.trim()
+    ? resolveAgentIdFromSessionKey(opts.sessionKey)
+    : undefined;
+  const sessionAgentId = agentIdOverride ?? sessionAgentIdFromKey ?? resolveDefaultAgentId(cfg);
+  const agentOverrides = resolveAgentConfig(cfg, sessionAgentId);
+  const { model: agentModelOverride, ...agentOverrideRest } = agentOverrides ?? {};
+  const agentCfg: AgentDefaultsConfig = Object.assign(
+    {},
+    cfg.agents?.defaults,
+    agentOverrideRest as Partial<AgentDefaultsConfig>,
+  );
+  const mergedAgentModel =
+    agentCfg.model && typeof agentCfg.model === "object" ? agentCfg.model : {};
+  if (typeof agentModelOverride === "string") {
+    agentCfg.model = { ...mergedAgentModel, primary: agentModelOverride };
+  } else if (agentModelOverride) {
+    agentCfg.model = { ...mergedAgentModel, ...agentModelOverride };
+  }
   const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
   const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const workspace = await ensureAgentWorkspace({
@@ -271,7 +290,7 @@ export async function agentCommand(
     to: opts.to,
     sessionId: opts.sessionId,
     sessionKey: opts.sessionKey,
-    agentId: agentIdOverride,
+    agentId: sessionAgentId,
   });
 
   const {
@@ -487,6 +506,7 @@ export async function agentCommand(
       }
       resolvedThinkLevel = resolveThinkingDefault({
         cfg,
+        agentId: sessionAgentId,
         provider,
         model,
         catalog: catalogForThinking,
