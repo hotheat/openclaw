@@ -107,4 +107,30 @@ describe("group intro prompts", () => {
       );
     });
   });
+
+  it("keeps inline replies for group text but requires message tool for attachments", async () => {
+    await withTempHome(async (home) => {
+      mockRunEmbeddedPiAgentOk();
+
+      await getReplyFromConfig(
+        {
+          Body: "把 PDF 直接发当前群",
+          From: "feishu:group:oc_39a949e3a5b7a49edfafdd39eaf7e5b5",
+          To: "ou_example",
+          ChatType: "group",
+          GroupSubject: "OTR",
+          GroupMembers: "Alice, Bob",
+          Provider: "feishu",
+        },
+        {},
+        makeCfg(home),
+      );
+
+      expect(getRunEmbeddedPiAgentMock()).toHaveBeenCalledOnce();
+      const extraSystemPrompt = getLastExtraSystemPrompt();
+      expect(extraSystemPrompt).toContain(
+        'Your plain-text replies to this group chat are automatically sent here, so for ordinary text replies do not use the message tool and just reply normally. If you need to send a file, image, PDF, or other media to this same group, use the message tool instead of a normal reply. If the destination is this current chat, you may omit `target`; add an explicit target only when needed.',
+      );
+    });
+  });
 });
