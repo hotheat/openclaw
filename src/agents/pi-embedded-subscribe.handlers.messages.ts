@@ -4,6 +4,7 @@ import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import { createInlineCodeState } from "../markdown/code-spans.js";
 import {
+  normalizeSilentAssistantCompletionMessage,
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
@@ -259,11 +260,12 @@ export function handleMessageEnd(
   }
 
   const assistantMessage = msg;
-  ctx.noteLastAssistant(assistantMessage);
-  ctx.recordAssistantUsage((assistantMessage as { usage?: unknown }).usage);
   promoteThinkingTagsToBlocks(assistantMessage);
+  const normalizedAssistantMessage = normalizeSilentAssistantCompletionMessage(assistantMessage);
+  ctx.noteLastAssistant(normalizedAssistantMessage);
+  ctx.recordAssistantUsage((normalizedAssistantMessage as { usage?: unknown }).usage);
 
-  const rawText = extractAssistantText(assistantMessage);
+  const rawText = extractAssistantText(normalizedAssistantMessage);
   appendRawStream({
     ts: Date.now(),
     event: "assistant_message_end",
@@ -279,7 +281,7 @@ export function handleMessageEnd(
   });
   const rawThinking =
     ctx.state.includeReasoning || ctx.state.streamReasoning
-      ? extractAssistantThinking(assistantMessage) || extractThinkingFromTaggedText(rawText)
+      ? extractAssistantThinking(normalizedAssistantMessage) || extractThinkingFromTaggedText(rawText)
       : "";
   const formattedReasoning = rawThinking ? formatReasoningMessage(rawThinking) : "";
   const trimmedText = text.trim();

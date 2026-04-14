@@ -503,4 +503,38 @@ describe("subscribeEmbeddedPiSession", () => {
     expect(lifecycleError).toBeDefined();
     expect(lifecycleError?.data?.error).toContain("API rate limit reached");
   });
+
+  it("treats empty openai-responses stop completions as lifecycle errors", () => {
+    const { emit, onAgentEvent } = createAgentEventHarness({
+      runId: "run-silent-openai",
+      sessionKey: "test-session",
+    });
+
+    emit({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-5.2",
+        stopReason: "stop",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        timestamp: 0,
+        content: [],
+      } as AssistantMessage,
+    });
+    emit({ type: "agent_end" });
+
+    const lifecycleError = findLifecycleErrorAgentEvent(onAgentEvent.mock.calls);
+
+    expect(lifecycleError).toBeDefined();
+    expect(lifecycleError?.data?.error).toContain("without response.completed or assistant output");
+  });
 });

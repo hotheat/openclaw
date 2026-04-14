@@ -1,6 +1,7 @@
 import type { AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ImageSanitizationLimits } from "../image-sanitization.js";
 import type { ToolCallIdMode } from "../tool-call-id.js";
+import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "../usage.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../tool-call-id.js";
 import { sanitizeContentBlocksImages } from "../tool-images.js";
 import { stripThoughtSignatures } from "./bootstrap.js";
@@ -45,21 +46,46 @@ function hasMeaningfulAssistantContent(content: AssistantMessage["content"]): bo
   });
 }
 
-export function materializeAssistantErrorMessage(message: AssistantMessage): AssistantMessage {
-  if (message.stopReason !== "error") {
+export function normalizeSilentAssistantCompletionMessage(
+  message: AssistantMessage,
+): AssistantMessage {
+  if (message.api !== "openai-responses" || message.stopReason !== "stop") {
     return message;
   }
-  if (hasMeaningfulAssistantContent(message.content)) {
+  if (typeof message.errorMessage === "string" && message.errorMessage.trim().length > 0) {
+    return message;
+  }
+  if (!isEmptyAssistantMessageContent(message)) {
+    return message;
+  }
+  const usage = normalizeUsage(message.usage as UsageLike | undefined);
+  if (hasNonzeroUsage(usage)) {
     return message;
   }
   return {
     ...message,
+    stopReason: "error",
+    errorMessage:
+      "OpenAI Responses stream ended without response.completed or assistant output.",
+  };
+}
+
+export function materializeAssistantErrorMessage(message: AssistantMessage): AssistantMessage {
+  const normalized = normalizeSilentAssistantCompletionMessage(message);
+  if (normalized.stopReason !== "error") {
+    return normalized;
+  }
+  if (hasMeaningfulAssistantContent(normalized.content)) {
+    return normalized;
+  }
+  return {
+    ...normalized,
     content: [
       {
         type: "text",
-        text: formatRawAssistantErrorForUi(message.errorMessage),
+        text: formatRawAssistantErrorForUi(normalized.errorMessage),
       },
-    ] as AssistantMessage["content"],
+    ] as typeof normalized.content,
   };
 }
 
