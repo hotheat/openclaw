@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import {
+  normalizeSilentAssistantCompletionMessage,
   sanitizeGoogleTurnOrdering,
   sanitizeSessionMessagesImages,
 } from "./pi-embedded-helpers.js";
@@ -247,6 +248,50 @@ describe("sanitizeSessionMessagesImages", () => {
     expect((out[2] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
       { type: "text", text: "LLM request failed with an unknown error." },
     ]);
+  });
+  it("converts empty openai-responses stop messages with zero usage into errors", () => {
+    const out = normalizeSilentAssistantCompletionMessage({
+      role: "assistant",
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.2",
+      stopReason: "stop",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      timestamp: 0,
+      content: [],
+    });
+
+    expect(out.stopReason).toBe("error");
+    expect(out.errorMessage).toContain("without response.completed or assistant output");
+  });
+  it("keeps empty openai-responses stop messages when usage is nonzero", () => {
+    const out = normalizeSilentAssistantCompletionMessage({
+      role: "assistant",
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.2",
+      stopReason: "stop",
+      usage: {
+        input: 10,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 10,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      timestamp: 0,
+      content: [],
+    });
+
+    expect(out.stopReason).toBe("stop");
+    expect(out.errorMessage).toBeUndefined();
   });
   it("leaves non-assistant messages unchanged", async () => {
     const input = [
