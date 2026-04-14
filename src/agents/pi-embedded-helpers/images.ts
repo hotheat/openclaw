@@ -155,7 +155,9 @@ export async function sanitizeSessionMessagesImages(
     }
 
     if (role === "assistant") {
-      const assistantMsg = msg as Extract<AgentMessage, { role: "assistant" }>;
+      const assistantMsg = normalizeSilentAssistantCompletionMessage(
+        msg as Extract<AgentMessage, { role: "assistant" }>,
+      );
       if (assistantMsg.stopReason === "error") {
         const content = assistantMsg.content;
         if (Array.isArray(content)) {
