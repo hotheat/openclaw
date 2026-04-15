@@ -504,7 +504,13 @@ export async function handleFeishuMessage(params: {
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
 }): Promise<void> {
-  const { cfg, event, botOpenId, runtime, chatHistories, accountId } = params;
+  let cfg = params.cfg;
+  const { event, botOpenId, runtime, chatHistories, accountId } = params;
+  try {
+    cfg = getFeishuRuntime().config.loadConfig() as ClawdbotConfig;
+  } catch {
+    // Tests and early startup paths can pass the config directly before runtime is ready.
+  }
 
   // Resolve account with merged config
   const account = resolveFeishuAccount({ cfg, accountId });
