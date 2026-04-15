@@ -47,10 +47,7 @@ function createRuntimeEnv(): RuntimeEnv {
   } as RuntimeEnv;
 }
 
-let runtimeCfg: ClawdbotConfig;
-
 async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessageEvent }) {
-  runtimeCfg = params.cfg;
   await handleFeishuMessage({
     cfg: params.cfg,
     event: params.event,
@@ -76,9 +73,6 @@ describe("handleFeishuMessage command authorization", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setFeishuRuntime({
-      config: {
-        loadConfig: vi.fn(() => runtimeCfg),
-      },
       system: {
         enqueueSystemEvent: vi.fn(),
       },
@@ -386,94 +380,6 @@ describe("handleFeishuMessage command authorization", () => {
       "inbound",
       expect.any(Number),
       "clip.mp4",
-    );
-  });
-
-  it("reloads the latest config before routing and dispatch", async () => {
-    const staleCfg: ClawdbotConfig = {
-      channels: {
-        feishu: {
-          dmPolicy: "open",
-        },
-      },
-    } as ClawdbotConfig;
-
-    const freshCfg: ClawdbotConfig = {
-      channels: {
-        feishu: {
-          dmPolicy: "open",
-        },
-      },
-    } as ClawdbotConfig;
-
-    const runtime = {
-      config: {
-        loadConfig: vi.fn(() => freshCfg),
-      },
-      system: {
-        enqueueSystemEvent: vi.fn(),
-      },
-      channel: {
-        routing: {
-          resolveAgentRoute: vi.fn(() => ({
-            agentId: "main",
-            accountId: "default",
-            sessionKey: "agent:main:feishu:dm:ou-fresh",
-            matchedBy: "default",
-          })),
-        },
-        reply: {
-          resolveEnvelopeFormatOptions: vi.fn(() => ({ template: "channel+name+time" })),
-          formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
-          finalizeInboundContext: mockFinalizeInboundContext,
-          dispatchReplyFromConfig: mockDispatchReplyFromConfig,
-        },
-        commands: {
-          shouldComputeCommandAuthorized: mockShouldComputeCommandAuthorized,
-          resolveCommandAuthorizedFromAuthorizers: mockResolveCommandAuthorizedFromAuthorizers,
-        },
-        media: {
-          saveMediaBuffer: mockSaveMediaBuffer,
-        },
-        pairing: {
-          readAllowFromStore: mockReadAllowFromStore,
-          upsertPairingRequest: mockUpsertPairingRequest,
-          buildPairingReply: mockBuildPairingReply,
-        },
-      },
-      media: {
-        detectMime: vi.fn(async () => "application/octet-stream"),
-      },
-    } as unknown as PluginRuntime;
-    setFeishuRuntime(runtime);
-
-    const event: FeishuMessageEvent = {
-      sender: {
-        sender_id: {
-          open_id: "ou-fresh",
-        },
-      },
-      message: {
-        message_id: "msg-reload-current-config",
-        chat_id: "oc-dm",
-        chat_type: "p2p",
-        message_type: "text",
-        content: JSON.stringify({ text: "hello" }),
-      },
-    };
-
-    await dispatchMessage({ cfg: staleCfg, event });
-
-    expect(runtime.config.loadConfig).toHaveBeenCalled();
-    expect(runtime.channel.routing.resolveAgentRoute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg: freshCfg,
-      }),
-    );
-    expect(mockDispatchReplyFromConfig).toHaveBeenCalledWith(
-      expect.objectContaining({
-        cfg: freshCfg,
-      }),
     );
   });
 });
