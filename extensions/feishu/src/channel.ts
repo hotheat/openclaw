@@ -65,7 +65,8 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
   },
   agentPrompt: {
     messageToolHints: () => [
-      "- Feishu targeting: omit `target` to reply to the current conversation (auto-inferred). Explicit targets: `user:open_id` or `chat:chat_id`.",
+      "- Feishu targeting: omit `target` to send to the current conversation (auto-inferred). Explicit targets: `user:open_id` or `chat:chat_id`.",
+      "- When sending a file, image, PDF, or other media in Feishu, use `message` with `action=send`, `channel=feishu`, and `filePath` (or `path`). If you are sending to the current conversation, you may omit `target`; use an explicit target when sending elsewhere or when you want to pin the destination.",
       "- Feishu supports interactive cards for rich messages.",
     ],
   },

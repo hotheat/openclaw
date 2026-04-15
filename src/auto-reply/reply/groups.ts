@@ -81,8 +81,8 @@ function resolveProviderLabel(rawProvider: string | undefined): string {
  * Build a persistent group-chat context block that is always included in the
  * system prompt for group-chat sessions (every turn, not just the first).
  *
- * Contains: group name, participants, and an explicit instruction to reply
- * directly instead of using the message tool.
+ * Contains: group name, participants, and explicit guidance for when to reply
+ * directly vs when attachments/media still require the message tool.
  */
 export function buildGroupChatContext(params: { sessionCtx: TemplateContext }): string {
   const subject = params.sessionCtx.GroupSubject?.trim();
@@ -99,7 +99,7 @@ export function buildGroupChatContext(params: { sessionCtx: TemplateContext }): 
     lines.push(`Participants: ${members}.`);
   }
   lines.push(
-    "Your replies are automatically sent to this group chat. Do not use the message tool to send to this same group — just reply normally.",
+    "Your plain-text replies to this group chat are automatically sent here, so for ordinary text replies do not use the message tool and just reply normally. If you need to send a file, image, PDF, or other media to this same group, use the message tool instead of a normal reply. If the destination is this current chat, you may omit `target`; add an explicit target only when needed.",
   );
   return lines.join(" ");
 }

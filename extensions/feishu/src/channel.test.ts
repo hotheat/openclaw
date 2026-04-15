@@ -46,3 +46,23 @@ describe("feishuPlugin.status.probeAccount", () => {
     expect(result).toMatchObject({ ok: true, appId: "cli_main" });
   });
 });
+
+describe("feishuPlugin.agentPrompt.messageToolHints", () => {
+  it("explains explicit targeting for current-group attachments", () => {
+    const hints = feishuPlugin.agentPrompt?.messageToolHints?.({ cfg: {} as OpenClawConfig }) ?? [];
+
+    expect(hints).toEqual(expect.any(Array));
+    expect(
+      hints.some((hint) =>
+        hint.includes("omit `target` to send to the current conversation"),
+      ),
+    ).toBe(true);
+    expect(
+      hints.some(
+        (hint) =>
+          hint.includes("filePath` (or `path`)") &&
+          hint.includes("If you are sending to the current conversation, you may omit `target`"),
+      ),
+    ).toBe(true);
+  });
+});
