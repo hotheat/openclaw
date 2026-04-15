@@ -91,7 +91,7 @@ describe("sanitizeSessionMessagesImages", () => {
     const toolCall = assistant.content?.find((b) => b.type === "toolCall");
     expect(toolCall).toBeTruthy();
     expect("input" in (toolCall ?? {})).toBe(false);
-    expect((toolCall as { arguments?: unknown } | undefined)?.arguments).toEqual({});
+    expect((toolCall as { arguments?: unknown } | undefined)?.arguments).toBeUndefined();
   });
 
   it("removes empty assistant text blocks but preserves tool calls", async () => {
@@ -247,6 +247,44 @@ describe("sanitizeSessionMessagesImages", () => {
     ]);
     expect((out[2] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
       { type: "text", text: "LLM request failed with an unknown error." },
+    ]);
+  });
+  it("preserves silent openai-responses completions as materialized errors during sanitize", async () => {
+    const input = [
+      { role: "user", content: "hello" },
+      {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-5.2",
+        stopReason: "stop",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        timestamp: 0,
+        content: [],
+      },
+    ] as unknown as AgentMessage[];
+
+    const out = await sanitizeSessionMessagesImages(input, "test");
+
+    expect(out).toHaveLength(2);
+    expect(out[0]?.role).toBe("user");
+    expect(out[1]?.role).toBe("assistant");
+    expect((out[1] as { stopReason?: string }).stopReason).toBe("error");
+    expect((out[1] as { errorMessage?: string }).errorMessage).toContain(
+      "without response.completed or assistant output",
+    );
+    expect((out[1] as { content?: Array<{ type?: string; text?: string }> }).content).toEqual([
+      {
+        type: "text",
+        text: "OpenAI Responses stream ended without response.completed or assistant output.",
+      },
     ]);
   });
   it("converts empty openai-responses stop messages with zero usage into errors", () => {
