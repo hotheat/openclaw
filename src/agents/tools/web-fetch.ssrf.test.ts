@@ -73,12 +73,14 @@ describe("web_fetch SSRF protection", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     global.fetch = priorFetch;
     lookupMock.mockClear();
     vi.restoreAllMocks();
   });
 
-  it("blocks localhost hostnames before fetch/firecrawl", async () => {
+  it("blocks localhost hostnames before fetch/scrape/firecrawl", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     const fetchSpy = setMockFetch();
     const tool = await createWebFetchToolForTest({
       firecrawl: { apiKey: "firecrawl-test" },

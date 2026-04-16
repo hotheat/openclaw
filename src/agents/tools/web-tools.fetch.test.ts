@@ -50,6 +50,44 @@ function firecrawlError(): MockResponse {
   };
 }
 
+function scrapeResponse(
+  markdown: string,
+  url = "https://example.com/",
+  httpStatus = 200,
+): MockResponse {
+  return {
+    ok: true,
+    status: 200,
+    headers: makeHeaders({ "content-type": "application/json; charset=utf-8" }),
+    text: async () =>
+      JSON.stringify({
+        status: "success",
+        content: markdown,
+        url,
+        http_status: httpStatus,
+      }),
+  };
+}
+
+function scrapeErrorResponse(params?: {
+  status?: number;
+  body?: Record<string, unknown>;
+}): MockResponse {
+  return {
+    ok: (params?.status ?? 200) >= 200 && (params?.status ?? 200) < 300,
+    status: params?.status ?? 200,
+    headers: makeHeaders({ "content-type": "application/json; charset=utf-8" }),
+    text: async () =>
+      JSON.stringify(
+        params?.body ?? {
+          status: "error",
+          error: "scrape blocked",
+          http_status: 403,
+        },
+      ),
+  };
+}
+
 function textResponse(
   text: string,
   url = "https://example.com/",
@@ -91,8 +129,21 @@ function requestUrl(input: RequestInfo | URL): string {
   return "";
 }
 
-function installMockFetch(impl: (input: RequestInfo | URL) => Promise<Response>) {
-  const mockFetch = vi.fn(async (input: RequestInfo | URL) => await impl(input));
+function requestBodyJson(mockFetch: ReturnType<typeof installMockFetch>, callIndex: number) {
+  const request = mockFetch.mock.calls[callIndex]?.[1];
+  const requestBody = request?.body;
+  return JSON.parse(typeof requestBody === "string" ? requestBody : "{}") as Record<
+    string,
+    unknown
+  >;
+}
+
+function installMockFetch(
+  impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+) {
+  const mockFetch = vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit) => await impl(input, init),
+  );
   global.fetch = withFetchPreconnect(mockFetch);
   return mockFetch;
 }
@@ -111,6 +162,15 @@ function createFetchTool(fetchOverrides: Record<string, unknown> = {}) {
     },
     sandboxed: false,
   });
+}
+
+function redirectResponse(location: string): MockResponse {
+  return {
+    ok: false,
+    status: 302,
+    headers: makeHeaders({ location }),
+    body: { cancel: vi.fn() } as { cancel: () => void },
+  } as MockResponse;
 }
 
 async function captureToolErrorMessage(params: {
@@ -141,6 +201,7 @@ describe("web_fetch extraction fallbacks", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     global.fetch = priorFetch;
     vi.restoreAllMocks();
   });
@@ -232,25 +293,27 @@ describe("web_fetch extraction fallbacks", () => {
   // NOTE: Test for wrapping url/finalUrl/warning fields requires DNS mocking.
   // The sanitization of these fields is verified by external-content.test.ts tests.
 
-  it("falls back to firecrawl when readability returns no content", async () => {
+  it("falls back to scraping-get when readability returns no content", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     installMockFetch((input: RequestInfo | URL) => {
       const url = requestUrl(input);
-      if (url.includes("api.firecrawl.dev")) {
-        return Promise.resolve(firecrawlResponse("firecrawl content")) as Promise<Response>;
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse("# scrape title\n\nscraped content", "https://mirror.example/article"),
+        ) as Promise<Response>;
       }
       return Promise.resolve(
         htmlResponse("<!doctype html><html><head></head><body></body></html>", url),
       ) as Promise<Response>;
     });
 
-    const tool = createFetchTool({
-      firecrawl: { apiKey: "firecrawl-test" },
-    });
+    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
 
     const result = await tool?.execute?.("call", { url: "https://example.com/empty" });
-    const details = result?.details as { extractor?: string; text?: string };
-    expect(details.extractor).toBe("firecrawl");
-    expect(details.text).toContain("firecrawl content");
+    const details = result?.details as { extractor?: string; text?: string; finalUrl?: string };
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.finalUrl).toBe("https://mirror.example/article");
+    expect(details.text).toContain("scraped content");
   });
 
   it("throws when readability is disabled and firecrawl is unavailable", async () => {
@@ -272,8 +335,12 @@ describe("web_fetch extraction fallbacks", () => {
   });
 
   it("throws when readability is empty and firecrawl fails", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     installMockFetch((input: RequestInfo | URL) => {
       const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
       if (url.includes("api.firecrawl.dev")) {
         return Promise.resolve(firecrawlError()) as Promise<Response>;
       }
@@ -288,12 +355,20 @@ describe("web_fetch extraction fallbacks", () => {
 
     await expect(
       tool?.execute?.("call", { url: "https://example.com/readability-empty" }),
-    ).rejects.toThrow("Readability and Firecrawl returned no content");
+    ).rejects.toThrow(
+      /Readability returned no content[\s\S]*scraping-get: Scraping-get fetch failed[\s\S]*firecrawl:/,
+    );
   });
 
-  it("uses firecrawl when direct fetch fails", async () => {
-    installMockFetch((input: RequestInfo | URL) => {
+  it("uses scraping-get before firecrawl when direct fetch returns 403", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
       const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse("# scraped fallback\n\nscrape body", "https://scraped.example/page", 403),
+        ) as Promise<Response>;
+      }
       if (url.includes("api.firecrawl.dev")) {
         return Promise.resolve(firecrawlResponse("firecrawl fallback", url)) as Promise<Response>;
       }
@@ -310,9 +385,220 @@ describe("web_fetch extraction fallbacks", () => {
     });
 
     const result = await tool?.execute?.("call", { url: "https://example.com/blocked" });
+    const details = result?.details as {
+      extractor?: string;
+      text?: string;
+      status?: number;
+      contentType?: string;
+    };
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.status).toBe(403);
+    expect(details.contentType).toBe("text/markdown");
+    expect(details.text).toContain("scrape body");
+
+    const scrapeRequest = requestBodyJson(mockFetch, 1);
+    expect(scrapeRequest).toMatchObject({
+      url: "https://example.com/blocked",
+      mode: "get",
+      output: "markdown",
+      timeout_ms: 30_000,
+    });
+    expect(
+      mockFetch.mock.calls.some(([input]) => requestUrl(input).includes("api.firecrawl.dev")),
+    ).toBe(false);
+  });
+
+  it("falls through to firecrawl when scraping-get fails", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlResponse("firecrawl fallback", url)) as Promise<Response>;
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 403,
+        headers: makeHeaders({ "content-type": "text/html" }),
+        text: async () => "blocked",
+      } as Response);
+    });
+
+    const tool = createFetchTool({
+      firecrawl: { apiKey: "firecrawl-test" },
+    });
+
+    const result = await tool?.execute?.("call", { url: "https://example.com/blocked-firecrawl" });
     const details = result?.details as { extractor?: string; text?: string };
     expect(details.extractor).toBe("firecrawl");
     expect(details.text).toContain("firecrawl fallback");
+  });
+
+  it("uses scraping-get for 404 fallback responses", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse(
+            "# missing page\n\nfallback content",
+            "https://mirror.example/missing",
+            404,
+          ),
+        ) as Promise<Response>;
+      }
+      return Promise.resolve(
+        errorHtmlResponse("<html><body><h1>missing</h1></body></html>", 404, url),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { enabled: false } });
+
+    const result = await tool?.execute?.("call", { url: "https://example.com/missing-fallback" });
+    const details = result?.details as { extractor?: string; status?: number; text?: string };
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.status).toBe(404);
+    expect(details.text).toContain("fallback content");
+  });
+
+  it("uses scraping-get after redirect-limit failures", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse("# redirected\n\nscraped redirect"),
+        ) as Promise<Response>;
+      }
+      if (url.endsWith("/redirect-start")) {
+        return Promise.resolve(redirectResponse("https://example.com/step-1")) as Promise<Response>;
+      }
+      if (url.endsWith("/step-1")) {
+        return Promise.resolve(redirectResponse("https://example.com/step-2")) as Promise<Response>;
+      }
+      if (url.endsWith("/step-2")) {
+        return Promise.resolve(redirectResponse("https://example.com/step-3")) as Promise<Response>;
+      }
+      return Promise.resolve(redirectResponse("https://example.com/step-4")) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { enabled: false } });
+    const result = await tool?.execute?.("call", { url: "https://example.com/redirect-start" });
+    const details = result?.details as { extractor?: string; text?: string };
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.text).toContain("scraped redirect");
+  });
+
+  it("falls through to firecrawl when scraping-get reports non-success", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeErrorResponse({
+            body: { status: "error", error: "blocked by bot wall", http_status: 403 },
+          }),
+        ) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlResponse("firecrawl content")) as Promise<Response>;
+      }
+      return Promise.resolve(
+        errorHtmlResponse("<html><body>blocked</body></html>", 403, url),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
+    const result = await tool?.execute?.("call", { url: "https://example.com/non-success" });
+    const details = result?.details as { extractor?: string; text?: string };
+    expect(details.extractor).toBe("firecrawl");
+    expect(details.text).toContain("firecrawl content");
+  });
+
+  it("falls through to firecrawl when scraping-get returns empty content", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeErrorResponse({
+            body: { status: "success", content: "", http_status: 200 },
+          }),
+        ) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlResponse("firecrawl empty fallback")) as Promise<Response>;
+      }
+      return Promise.resolve(
+        errorHtmlResponse("<html><body>empty</body></html>", 403, url),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
+    const result = await tool?.execute?.("call", { url: "https://example.com/empty-scrape" });
+    const details = result?.details as { extractor?: string; text?: string };
+    expect(details.extractor).toBe("firecrawl");
+    expect(details.text).toContain("firecrawl empty fallback");
+  });
+
+  it("converts scraping-get markdown to text in text mode", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse("# Heading\n\n[a link](https://example.com)\n\n- item"),
+        ) as Promise<Response>;
+      }
+      return Promise.resolve(
+        errorHtmlResponse("<html><body>blocked</body></html>", 403, url),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { enabled: false } });
+    const result = await tool?.execute?.("call", {
+      url: "https://example.com/text-fallback",
+      extractMode: "text",
+    });
+    const details = result?.details as { extractor?: string; text?: string; extractMode?: string };
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.extractMode).toBe("text");
+    expect(details.text).toContain("Heading");
+    expect(details.text).not.toContain("[a link](https://example.com)");
+  });
+
+  it("caches scraping-get fallback results under the normal cache key", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeResponse("# cached\n\nscraped once")) as Promise<Response>;
+      }
+      return Promise.resolve(
+        errorHtmlResponse("<html><body>blocked</body></html>", 404, url),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({
+      cacheTtlMinutes: 5,
+      firecrawl: { enabled: false },
+    });
+
+    const first = await tool?.execute?.("call", { url: "https://example.com/cached-fallback" });
+    const second = await tool?.execute?.("call", { url: "https://example.com/cached-fallback" });
+    const secondDetails = second?.details as {
+      cached?: boolean;
+      extractor?: string;
+      text?: string;
+    };
+
+    expect(first?.details).toMatchObject({ extractor: "scraping-get" });
+    expect(secondDetails.cached).toBe(true);
+    expect(secondDetails.extractor).toBe("scraping-get");
+    expect(secondDetails.text).toContain("scraped once");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
   it("wraps external content and clamps oversized maxChars", async () => {
@@ -385,8 +671,12 @@ describe("web_fetch extraction fallbacks", () => {
   });
 
   it("wraps firecrawl error details", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     installMockFetch((input: RequestInfo | URL) => {
       const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
       if (url.includes("api.firecrawl.dev")) {
         return Promise.resolve({
           ok: false,
@@ -406,7 +696,10 @@ describe("web_fetch extraction fallbacks", () => {
       url: "https://example.com/firecrawl-error",
     });
 
-    expect(message).toContain("Firecrawl fetch failed (403):");
+    expect(message).toContain("network down");
+    expect(message).toContain("Fallbacks also failed:");
+    expect(message).toContain("scraping-get: Scraping-get fetch failed (403):");
+    expect(message).toContain("firecrawl: Firecrawl fetch failed (403):");
     expect(message).toMatch(/<<<EXTERNAL_UNTRUSTED_CONTENT id="[a-f0-9]{16}">>>/);
     expect(message).toContain("blocked");
   });

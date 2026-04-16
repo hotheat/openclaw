@@ -1,7 +1,7 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import { fetchWithSsrFGuard } from "../../infra/net/fetch-guard.js";
-import { SsrFBlockedError } from "../../infra/net/ssrf.js";
+import { resolvePinnedHostname, SsrFBlockedError } from "../../infra/net/ssrf.js";
 import { logDebug } from "../../logger.js";
 import { wrapExternalContent, wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
@@ -41,6 +41,7 @@ const DEFAULT_ERROR_MAX_CHARS = 4_000;
 const DEFAULT_ERROR_MAX_BYTES = 64_000;
 const DEFAULT_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev";
 const DEFAULT_FIRECRAWL_MAX_AGE_MS = 172_800_000;
+const DEFAULT_SCRAPE_PATH = "/api/v1/scrape";
 const DEFAULT_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -189,6 +190,15 @@ function resolveFirecrawlMaxAgeMsOrDefault(firecrawl?: FirecrawlFetchConfig): nu
   return DEFAULT_FIRECRAWL_MAX_AGE_MS;
 }
 
+function resolveScrapeBaseUrl(): string | undefined {
+  const raw = process.env.SCRAPE_API_BASE_URL?.trim() ?? "";
+  return raw || undefined;
+}
+
+function resolveScrapeEnabled(scrapeBaseUrl?: string): boolean {
+  return Boolean(scrapeBaseUrl);
+}
+
 function resolveMaxChars(value: unknown, fallback: number, cap: number): number {
   const parsed = typeof value === "number" && Number.isFinite(value) ? value : fallback;
   const clamped = Math.max(100, Math.floor(parsed));
@@ -302,6 +312,35 @@ function wrapWebFetchField(value: string | undefined): string | undefined {
   return wrapExternalContent(value, { source: "web_fetch", includeWarning: false });
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string" && error) {
+    return error;
+  }
+  return "Unknown web_fetch error";
+}
+
+type RemoteFallbackError = {
+  label: "scraping-get" | "firecrawl";
+  message: string;
+};
+
+function buildWebFetchFallbackError(params: {
+  primaryError: unknown;
+  fallbackErrors: RemoteFallbackError[];
+}): Error {
+  const primaryMessage = toErrorMessage(params.primaryError);
+  if (params.fallbackErrors.length === 0) {
+    return params.primaryError instanceof Error ? params.primaryError : new Error(primaryMessage);
+  }
+  const details = params.fallbackErrors
+    .map((entry) => `${entry.label}: ${entry.message}`)
+    .join(" | ");
+  return new Error(`${primaryMessage} Fallbacks also failed: ${details}`);
+}
+
 function buildFirecrawlWebFetchPayload(params: {
   firecrawl: Awaited<ReturnType<typeof fetchFirecrawlContent>>;
   rawUrl: string;
@@ -336,6 +375,114 @@ function buildFirecrawlWebFetchPayload(params: {
     tookMs: params.tookMs,
     text: wrapped.text,
     warning: wrapWebFetchField(params.firecrawl.warning),
+  };
+}
+
+async function assertScrapeTargetAllowed(url: string): Promise<void> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    throw new Error("Invalid URL: must be http or https");
+  }
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    throw new Error("Invalid URL: must be http or https");
+  }
+  await resolvePinnedHostname(parsedUrl.hostname);
+}
+
+function resolveScrapeEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) {
+    return DEFAULT_SCRAPE_PATH;
+  }
+  try {
+    const url = new URL(trimmed);
+    if (url.pathname && url.pathname !== "/") {
+      return url.toString();
+    }
+    url.pathname = DEFAULT_SCRAPE_PATH;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
+type ScrapeApiResponse = {
+  status?: string;
+  content?: string;
+  url?: string;
+  http_status?: number;
+  warning?: string;
+  error?: string;
+};
+
+function parseScrapeApiResponse(rawBody: string): ScrapeApiResponse | null {
+  if (!rawBody.trim()) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as ScrapeApiResponse) : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildScrapeFailureDetail(params: {
+  payload: ScrapeApiResponse | null;
+  rawBody: string;
+  contentType?: string | null;
+}): string {
+  const payload = params.payload;
+  const detail =
+    typeof payload?.error === "string" && payload.error.trim()
+      ? payload.error
+      : typeof payload?.status === "string" && payload.status.trim() && payload.status !== "success"
+        ? `status=${payload.status}`
+        : typeof payload?.content === "string" && !payload.content.trim()
+          ? "empty content"
+          : params.rawBody.trim() || "invalid JSON response";
+  return formatWebFetchErrorDetail({
+    detail,
+    contentType: params.contentType,
+    maxChars: DEFAULT_ERROR_MAX_CHARS,
+  });
+}
+
+function buildScrapeWebFetchPayload(params: {
+  scrape: Awaited<ReturnType<typeof fetchScrapeContent>>;
+  rawUrl: string;
+  finalUrlFallback: string;
+  statusFallback: number;
+  extractMode: ExtractMode;
+  maxChars: number;
+  tookMs: number;
+}): Record<string, unknown> {
+  const wrapped = wrapWebFetchContent(params.scrape.text, params.maxChars);
+  return {
+    url: params.rawUrl, // Keep raw for tool chaining
+    finalUrl: params.scrape.finalUrl || params.finalUrlFallback, // Keep raw
+    status: params.scrape.status ?? params.statusFallback,
+    contentType: "text/markdown", // Protocol metadata, don't wrap
+    title: undefined,
+    extractMode: params.extractMode,
+    extractor: "scraping-get",
+    externalContent: {
+      untrusted: true,
+      source: "web_fetch",
+      wrapped: true,
+    },
+    truncated: wrapped.truncated,
+    length: wrapped.wrappedLength,
+    rawLength: wrapped.rawLength,
+    wrappedLength: wrapped.wrappedLength,
+    fetchedAt: new Date().toISOString(),
+    tookMs: params.tookMs,
+    text: wrapped.text,
+    warning: wrapWebFetchField(params.scrape.warning),
   };
 }
 
@@ -425,6 +572,66 @@ export async function fetchFirecrawlContent(params: {
   };
 }
 
+export async function fetchScrapeContent(params: {
+  url: string;
+  extractMode: ExtractMode;
+  baseUrl: string;
+  timeoutSeconds: number;
+}): Promise<{
+  text: string;
+  finalUrl?: string;
+  status?: number;
+  warning?: string;
+}> {
+  await assertScrapeTargetAllowed(params.url);
+
+  const endpoint = resolveScrapeEndpoint(params.baseUrl);
+  const timeoutMs = params.timeoutSeconds * 1000;
+  const body = {
+    url: params.url,
+    mode: "get",
+    output: "markdown",
+    timeout_ms: timeoutMs,
+  };
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal: withTimeout(undefined, timeoutMs),
+  });
+
+  const rawBody = await res.text().catch(() => "");
+  const payload = parseScrapeApiResponse(rawBody);
+  if (
+    !res.ok ||
+    !payload ||
+    payload.status !== "success" ||
+    typeof payload.content !== "string" ||
+    payload.content.trim().length === 0
+  ) {
+    const detail = buildScrapeFailureDetail({
+      payload,
+      rawBody,
+      contentType: res.headers.get("content-type"),
+    });
+    const wrappedDetail = wrapWebFetchContent(detail || res.statusText, DEFAULT_ERROR_MAX_CHARS);
+    const statusCode = typeof payload?.http_status === "number" ? payload.http_status : res.status;
+    throw new Error(`Scraping-get fetch failed (${statusCode}): ${wrappedDetail.text}`);
+  }
+
+  const content = payload.content;
+  const text = params.extractMode === "text" ? markdownToText(content) : content;
+  return {
+    text,
+    finalUrl: typeof payload.url === "string" && payload.url ? payload.url : undefined,
+    status: typeof payload.http_status === "number" ? payload.http_status : undefined,
+    warning: typeof payload.warning === "string" ? payload.warning : undefined,
+  };
+}
+
 type FirecrawlRuntimeParams = {
   firecrawlEnabled: boolean;
   firecrawlApiKey?: string;
@@ -436,16 +643,30 @@ type FirecrawlRuntimeParams = {
   firecrawlTimeoutSeconds: number;
 };
 
-type WebFetchRuntimeParams = FirecrawlRuntimeParams & {
-  url: string;
-  extractMode: ExtractMode;
-  maxChars: number;
-  maxResponseBytes: number;
-  maxRedirects: number;
-  timeoutSeconds: number;
-  cacheTtlMs: number;
-  userAgent: string;
-  readabilityEnabled: boolean;
+type ScrapeRuntimeParams = {
+  scrapeEnabled: boolean;
+  scrapeBaseUrl?: string;
+};
+
+type WebFetchRuntimeParams = FirecrawlRuntimeParams &
+  ScrapeRuntimeParams & {
+    url: string;
+    extractMode: ExtractMode;
+    maxChars: number;
+    maxResponseBytes: number;
+    maxRedirects: number;
+    timeoutSeconds: number;
+    cacheTtlMs: number;
+    userAgent: string;
+    readabilityEnabled: boolean;
+  };
+
+type RemoteFallbackRuntimeParams = WebFetchRuntimeParams & {
+  urlToFetch: string;
+  finalUrlFallback: string;
+  statusFallback: number;
+  cacheKey: string;
+  startedAt: number;
 };
 
 function toFirecrawlContentParams(
@@ -499,6 +720,73 @@ async function maybeFetchFirecrawlWebFetchPayload(
   return payload;
 }
 
+async function maybeFetchScrapeWebFetchPayload(
+  params: WebFetchRuntimeParams & {
+    urlToFetch: string;
+    finalUrlFallback: string;
+    statusFallback: number;
+    cacheKey: string;
+    tookMs: number;
+  },
+): Promise<Record<string, unknown> | null> {
+  if (!params.scrapeEnabled || !params.scrapeBaseUrl) {
+    return null;
+  }
+
+  const scrape = await fetchScrapeContent({
+    url: params.urlToFetch,
+    extractMode: params.extractMode,
+    baseUrl: params.scrapeBaseUrl,
+    timeoutSeconds: params.timeoutSeconds,
+  });
+  const payload = buildScrapeWebFetchPayload({
+    scrape,
+    rawUrl: params.url,
+    finalUrlFallback: params.finalUrlFallback,
+    statusFallback: params.statusFallback,
+    extractMode: params.extractMode,
+    maxChars: params.maxChars,
+    tookMs: params.tookMs,
+  });
+  writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
+  return payload;
+}
+
+async function maybeFetchFallbackWebFetchPayload(
+  params: RemoteFallbackRuntimeParams,
+): Promise<{ payload: Record<string, unknown> | null; errors: RemoteFallbackError[] }> {
+  const errors: RemoteFallbackError[] = [];
+
+  try {
+    const payload = await maybeFetchScrapeWebFetchPayload({
+      ...params,
+      tookMs: Date.now() - params.startedAt,
+    });
+    if (payload) {
+      return { payload, errors };
+    }
+  } catch (error) {
+    if (error instanceof SsrFBlockedError) {
+      throw error;
+    }
+    errors.push({ label: "scraping-get", message: toErrorMessage(error) });
+  }
+
+  try {
+    const payload = await maybeFetchFirecrawlWebFetchPayload({
+      ...params,
+      tookMs: Date.now() - params.startedAt,
+    });
+    if (payload) {
+      return { payload, errors };
+    }
+  } catch (error) {
+    errors.push({ label: "firecrawl", message: toErrorMessage(error) });
+  }
+
+  return { payload: null, errors };
+}
+
 async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string, unknown>> {
   const cacheKey = normalizeCacheKey(
     `fetch:${params.url}:${params.extractMode}:${params.maxChars}`,
@@ -550,33 +838,25 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
     if (error instanceof SsrFBlockedError) {
       throw error;
     }
-    const payload = await maybeFetchFirecrawlWebFetchPayload({
+    const fallback = await maybeFetchFallbackWebFetchPayload({
       ...params,
       urlToFetch: finalUrl,
       finalUrlFallback: finalUrl,
       statusFallback: 200,
       cacheKey,
-      tookMs: Date.now() - start,
+      startedAt: start,
     });
-    if (payload) {
-      return payload;
+    if (fallback.payload) {
+      return fallback.payload;
     }
-    throw error;
+    throw buildWebFetchFallbackError({
+      primaryError: error,
+      fallbackErrors: fallback.errors,
+    });
   }
 
   try {
     if (!res.ok) {
-      const payload = await maybeFetchFirecrawlWebFetchPayload({
-        ...params,
-        urlToFetch: params.url,
-        finalUrlFallback: finalUrl,
-        statusFallback: res.status,
-        cacheKey,
-        tookMs: Date.now() - start,
-      });
-      if (payload) {
-        return payload;
-      }
       const rawDetailResult = await readResponseText(res, { maxBytes: DEFAULT_ERROR_MAX_BYTES });
       const rawDetail = rawDetailResult.text;
       const detail = formatWebFetchErrorDetail({
@@ -585,7 +865,22 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
         maxChars: DEFAULT_ERROR_MAX_CHARS,
       });
       const wrappedDetail = wrapWebFetchContent(detail || res.statusText, DEFAULT_ERROR_MAX_CHARS);
-      throw new Error(`Web fetch failed (${res.status}): ${wrappedDetail.text}`);
+      const primaryError = new Error(`Web fetch failed (${res.status}): ${wrappedDetail.text}`);
+      const fallback = await maybeFetchFallbackWebFetchPayload({
+        ...params,
+        urlToFetch: params.url,
+        finalUrlFallback: finalUrl,
+        statusFallback: res.status,
+        cacheKey,
+        startedAt: start,
+      });
+      if (fallback.payload) {
+        return fallback.payload;
+      }
+      throw buildWebFetchFallbackError({
+        primaryError,
+        fallbackErrors: fallback.errors,
+      });
     }
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
@@ -617,21 +912,40 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
           title = readable.title;
           extractor = "readability";
         } else {
-          const firecrawl = await tryFirecrawlFallback({ ...params, url: finalUrl });
-          if (firecrawl) {
-            text = firecrawl.text;
-            title = firecrawl.title;
-            extractor = "firecrawl";
-          } else {
-            throw new Error(
-              "Web fetch extraction failed: Readability and Firecrawl returned no content.",
-            );
+          const fallback = await maybeFetchFallbackWebFetchPayload({
+            ...params,
+            urlToFetch: finalUrl,
+            finalUrlFallback: finalUrl,
+            statusFallback: res.status,
+            cacheKey,
+            startedAt: start,
+          });
+          if (fallback.payload) {
+            return fallback.payload;
           }
+          throw buildWebFetchFallbackError({
+            primaryError: new Error(
+              "Web fetch extraction failed: Readability returned no content.",
+            ),
+            fallbackErrors: fallback.errors,
+          });
         }
       } else {
-        throw new Error(
-          "Web fetch extraction failed: Readability disabled and Firecrawl unavailable.",
-        );
+        const fallback = await maybeFetchFallbackWebFetchPayload({
+          ...params,
+          urlToFetch: finalUrl,
+          finalUrlFallback: finalUrl,
+          statusFallback: res.status,
+          cacheKey,
+          startedAt: start,
+        });
+        if (fallback.payload) {
+          return fallback.payload;
+        }
+        throw buildWebFetchFallbackError({
+          primaryError: new Error("Web fetch extraction failed: Readability disabled."),
+          fallbackErrors: fallback.errors,
+        });
       }
     } else if (contentType.includes("application/json")) {
       try {
@@ -677,21 +991,6 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
   }
 }
 
-async function tryFirecrawlFallback(
-  params: FirecrawlRuntimeParams & { url: string; extractMode: ExtractMode },
-): Promise<{ text: string; title?: string } | null> {
-  const firecrawlParams = toFirecrawlContentParams(params);
-  if (!firecrawlParams) {
-    return null;
-  }
-  try {
-    const firecrawl = await fetchFirecrawlContent(firecrawlParams);
-    return { text: firecrawl.text, title: firecrawl.title };
-  } catch {
-    return null;
-  }
-}
-
 function resolveFirecrawlEndpoint(baseUrl: string): string {
   const trimmed = baseUrl.trim();
   if (!trimmed) {
@@ -718,6 +1017,8 @@ export function createWebFetchTool(options?: {
     return null;
   }
   const readabilityEnabled = resolveFetchReadabilityEnabled(fetch);
+  const scrapeBaseUrl = resolveScrapeBaseUrl();
+  const scrapeEnabled = resolveScrapeEnabled(scrapeBaseUrl);
   const firecrawl = resolveFirecrawlConfig(fetch);
   const firecrawlApiKey = resolveFirecrawlApiKey(firecrawl);
   const firecrawlEnabled = resolveFirecrawlEnabled({ firecrawl, apiKey: firecrawlApiKey });
@@ -758,6 +1059,8 @@ export function createWebFetchTool(options?: {
         cacheTtlMs: resolveCacheTtlMs(fetch?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
         userAgent,
         readabilityEnabled,
+        scrapeEnabled,
+        scrapeBaseUrl,
         firecrawlEnabled,
         firecrawlApiKey,
         firecrawlBaseUrl,

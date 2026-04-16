@@ -4,6 +4,7 @@ import { setTelegramRuntime } from "../../extensions/telegram/src/runtime.js";
 import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
 import { setWhatsAppRuntime } from "../../extensions/whatsapp/src/runtime.js";
 import * as replyModule from "../auto-reply/reply.js";
+import type { ThinkLevel } from "../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveAgentMainSessionKey, resolveMainSessionKey } from "../config/sessions.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
@@ -63,7 +64,7 @@ afterEach(() => {
 describe("runHeartbeatOnce – heartbeat model override", () => {
   async function runDefaultsHeartbeat(params: {
     model?: string;
-    thinking?: string;
+    thinking?: ThinkLevel;
     suppressToolErrorWarnings?: boolean;
   }) {
     return withHeartbeatFixture(async ({ tmpDir, storePath, seedSession }) => {

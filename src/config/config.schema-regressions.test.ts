@@ -130,4 +130,42 @@ describe("config schema regressions", () => {
 
     expect(res.ok).toBe(true);
   });
+
+  it("accepts tools.web.fetch.firecrawl config", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            firecrawl: {
+              enabled: true,
+              apiKey: "test-firecrawl-key",
+              baseUrl: "https://api.firecrawl.dev",
+              onlyMainContent: true,
+              maxAgeMs: 86_400_000,
+              timeoutSeconds: 45,
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects boolean tools.web.fetch.firecrawl selector syntax", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            firecrawl: true,
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues[0]?.path).toBe("tools.web.fetch.firecrawl");
+    }
+  });
 });

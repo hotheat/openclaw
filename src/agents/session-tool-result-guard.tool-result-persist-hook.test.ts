@@ -190,7 +190,7 @@ describe("before_message_write hook", () => {
       stopReason: "error",
       errorMessage: "400 Request failed",
       content: [],
-    } as AgentMessage);
+    } as unknown as AgentMessage);
 
     const messages = sm
       .getEntries()
