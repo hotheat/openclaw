@@ -571,8 +571,9 @@ export const FIELD_HELP: Record<string, string> = {
   "tools.web.fetch.userAgent": "Override User-Agent header for web_fetch requests.",
   "tools.web.fetch.readability":
     "Use Readability to extract main content from HTML (fallbacks to basic HTML cleanup).",
-  "tools.web.fetch.firecrawl.enabled": "Enable Firecrawl fallback for web_fetch (if configured).",
-  "tools.web.fetch.firecrawl.apiKey": "Firecrawl API key (fallback: FIRECRAWL_API_KEY env var).",
+  "tools.web.fetch.firecrawl.enabled": "Explicitly enable Firecrawl fallback for web_fetch.",
+  "tools.web.fetch.firecrawl.apiKey":
+    "Firecrawl API key used when Firecrawl fallback is enabled (fallback: FIRECRAWL_API_KEY env var).",
   "tools.web.fetch.firecrawl.baseUrl":
     "Firecrawl base URL (e.g. https://api.firecrawl.dev or custom endpoint).",
   "tools.web.fetch.firecrawl.onlyMainContent":

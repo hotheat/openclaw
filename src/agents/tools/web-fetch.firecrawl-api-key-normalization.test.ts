@@ -43,7 +43,7 @@ describe("web_fetch firecrawl apiKey normalization", () => {
           web: {
             fetch: {
               cacheTtlMinutes: 0,
-              firecrawl: { apiKey: "firecrawl-test-\r\nkey" },
+              firecrawl: { enabled: true, apiKey: "firecrawl-test-\r\nkey" },
               readability: false,
             },
           },

@@ -116,6 +116,27 @@ function errorHtmlResponse(
     text: async () => html,
   };
 }
+
+function largeClientShellHtml(params?: {
+  title?: string;
+  bodyText?: string;
+  rootAttributes?: string;
+  scriptCount?: number;
+  paddingChars?: number;
+}) {
+  const title = params?.title ?? "ClinicalTrials.gov";
+  const bodyText = params?.bodyText ?? "<p>Show glossary</p>";
+  const rootAttributes = params?.rootAttributes ?? 'id="root"';
+  const scriptCount = params?.scriptCount ?? 4;
+  const paddingChars = params?.paddingChars ?? 22_000;
+  const scripts = Array.from(
+    { length: scriptCount },
+    (_, index) =>
+      `<script>window.__boot${index}="${"x".repeat(Math.ceil(paddingChars / scriptCount))}";</script>`,
+  ).join("");
+  return `<!doctype html><html><head><title>${title}</title>${scripts}</head><body><div ${rootAttributes}></div>${bodyText}</body></html>`;
+}
+
 function requestUrl(input: RequestInfo | URL): string {
   if (typeof input === "string") {
     return input;
@@ -307,13 +328,48 @@ describe("web_fetch extraction fallbacks", () => {
       ) as Promise<Response>;
     });
 
-    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
+    const tool = createFetchTool({ firecrawl: { enabled: true, apiKey: "firecrawl-test" } });
 
     const result = await tool?.execute?.("call", { url: "https://example.com/empty" });
     const details = result?.details as { extractor?: string; text?: string; finalUrl?: string };
     expect(details.extractor).toBe("scraping-get");
     expect(details.finalUrl).toBe("https://mirror.example/article");
     expect(details.text).toContain("scraped content");
+  });
+
+  it("falls back to scraping-get when readability returns a short shell result", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(
+          scrapeResponse(
+            "# trial summary\n\nDose ranging study of rimegepant for the acute treatment of migraine.",
+            "https://mirror.example/nct01430442",
+          ),
+        ) as Promise<Response>;
+      }
+      return Promise.resolve(
+        htmlResponse(
+          largeClientShellHtml({
+            title: "ClinicalTrials.gov",
+            bodyText: "<p>Show glossary</p>",
+          }),
+          url,
+        ),
+      ) as Promise<Response>;
+    });
+
+    const tool = createFetchTool({ firecrawl: { enabled: true, apiKey: "firecrawl-test" } });
+    const result = await tool?.execute?.("call", {
+      url: "https://clinicaltrials.gov/study/NCT01430442",
+      maxChars: 12_000,
+    });
+    const details = result?.details as { extractor?: string; finalUrl?: string; text?: string };
+
+    expect(details.extractor).toBe("scraping-get");
+    expect(details.finalUrl).toBe("https://mirror.example/nct01430442");
+    expect(details.text).toContain("Dose ranging study of rimegepant");
   });
 
   it("throws when readability is disabled and firecrawl is unavailable", async () => {
@@ -334,6 +390,27 @@ describe("web_fetch extraction fallbacks", () => {
     ).rejects.toThrow("Readability disabled");
   });
 
+  it("does not auto-enable firecrawl from FIRECRAWL_API_KEY alone", async () => {
+    vi.stubEnv("FIRECRAWL_API_KEY", "firecrawl-test");
+    const mockFetch = installMockFetch(
+      (input: RequestInfo | URL) =>
+        Promise.resolve(
+          htmlResponse("<html><body>hi</body></html>", requestUrl(input)),
+        ) as Promise<Response>,
+    );
+
+    const tool = createFetchTool({
+      readability: false,
+    });
+
+    await expect(
+      tool?.execute?.("call", { url: "https://example.com/readability-off-env-key" }),
+    ).rejects.toThrow("Readability disabled");
+    expect(
+      mockFetch.mock.calls.some(([input]) => requestUrl(input).includes("api.firecrawl.dev")),
+    ).toBe(false);
+  });
+
   it("throws when readability is empty and firecrawl fails", async () => {
     vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     installMockFetch((input: RequestInfo | URL) => {
@@ -350,7 +427,7 @@ describe("web_fetch extraction fallbacks", () => {
     });
 
     const tool = createFetchTool({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     await expect(
@@ -381,7 +458,7 @@ describe("web_fetch extraction fallbacks", () => {
     });
 
     const tool = createFetchTool({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     const result = await tool?.execute?.("call", { url: "https://example.com/blocked" });
@@ -427,7 +504,7 @@ describe("web_fetch extraction fallbacks", () => {
     });
 
     const tool = createFetchTool({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     const result = await tool?.execute?.("call", { url: "https://example.com/blocked-firecrawl" });
@@ -510,7 +587,7 @@ describe("web_fetch extraction fallbacks", () => {
       ) as Promise<Response>;
     });
 
-    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
+    const tool = createFetchTool({ firecrawl: { enabled: true, apiKey: "firecrawl-test" } });
     const result = await tool?.execute?.("call", { url: "https://example.com/non-success" });
     const details = result?.details as { extractor?: string; text?: string };
     expect(details.extractor).toBe("firecrawl");
@@ -536,7 +613,7 @@ describe("web_fetch extraction fallbacks", () => {
       ) as Promise<Response>;
     });
 
-    const tool = createFetchTool({ firecrawl: { apiKey: "firecrawl-test" } });
+    const tool = createFetchTool({ firecrawl: { enabled: true, apiKey: "firecrawl-test" } });
     const result = await tool?.execute?.("call", { url: "https://example.com/empty-scrape" });
     const details = result?.details as { extractor?: string; text?: string };
     expect(details.extractor).toBe("firecrawl");
@@ -688,7 +765,7 @@ describe("web_fetch extraction fallbacks", () => {
     });
 
     const tool = createFetchTool({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     const message = await captureToolErrorMessage({

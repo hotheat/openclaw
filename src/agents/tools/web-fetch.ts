@@ -8,6 +8,7 @@ import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { stringEnum } from "../schema/typebox.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
+import { validateHtmlExtractionResult } from "./web-fetch-result-validation.js";
 import {
   extractReadableContent,
   htmlToMarkdown,
@@ -145,14 +146,8 @@ function resolveFirecrawlApiKey(firecrawl?: FirecrawlFetchConfig): string | unde
   return fromConfig || fromEnv || undefined;
 }
 
-function resolveFirecrawlEnabled(params: {
-  firecrawl?: FirecrawlFetchConfig;
-  apiKey?: string;
-}): boolean {
-  if (typeof params.firecrawl?.enabled === "boolean") {
-    return params.firecrawl.enabled;
-  }
-  return Boolean(params.apiKey);
+function resolveFirecrawlEnabled(params: { firecrawl?: FirecrawlFetchConfig }): boolean {
+  return params.firecrawl?.enabled === true;
 }
 
 function resolveFirecrawlBaseUrl(firecrawl?: FirecrawlFetchConfig): string {
@@ -908,6 +903,36 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
           extractMode: params.extractMode,
         });
         if (readable?.text) {
+          const validation = await validateHtmlExtractionResult({
+            html: body,
+            extractedText:
+              params.extractMode === "text" ? readable.text : markdownToText(readable.text),
+            title: readable.title,
+            contentType,
+            httpStatus: res.status,
+          });
+          if (validation.failureClass) {
+            logDebug(
+              `[web-fetch] downgraded readability result to ${validation.failureClass} body=${validation.metadata.bodyLength} text=${validation.metadata.textLength} scripts=${validation.metadata.scriptCount} root=${validation.metadata.htmlHasClientRenderRoot ? "yes" : "no"} (${redactUrlForDebugLog(finalUrl)})`,
+            );
+            const fallback = await maybeFetchFallbackWebFetchPayload({
+              ...params,
+              urlToFetch: finalUrl,
+              finalUrlFallback: finalUrl,
+              statusFallback: res.status,
+              cacheKey,
+              startedAt: start,
+            });
+            if (fallback.payload) {
+              return fallback.payload;
+            }
+            throw buildWebFetchFallbackError({
+              primaryError: new Error(
+                `Web fetch extraction failed: Post-validation classified readability result as ${validation.failureClass}.`,
+              ),
+              fallbackErrors: fallback.errors,
+            });
+          }
           text = readable.text;
           title = readable.title;
           extractor = "readability";
@@ -1021,7 +1046,7 @@ export function createWebFetchTool(options?: {
   const scrapeEnabled = resolveScrapeEnabled(scrapeBaseUrl);
   const firecrawl = resolveFirecrawlConfig(fetch);
   const firecrawlApiKey = resolveFirecrawlApiKey(firecrawl);
-  const firecrawlEnabled = resolveFirecrawlEnabled({ firecrawl, apiKey: firecrawlApiKey });
+  const firecrawlEnabled = resolveFirecrawlEnabled({ firecrawl });
   const firecrawlBaseUrl = resolveFirecrawlBaseUrl(firecrawl);
   const firecrawlOnlyMainContent = resolveFirecrawlOnlyMainContent(firecrawl);
   const firecrawlMaxAgeMs = resolveFirecrawlMaxAgeMsOrDefault(firecrawl);

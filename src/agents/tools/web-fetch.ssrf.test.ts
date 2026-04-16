@@ -83,7 +83,7 @@ describe("web_fetch SSRF protection", () => {
     vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     const fetchSpy = setMockFetch();
     const tool = await createWebFetchToolForTest({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     await expectBlockedUrl(tool, "http://localhost/test", /Blocked hostname/i);
@@ -125,7 +125,7 @@ describe("web_fetch SSRF protection", () => {
       redirectResponse("http://127.0.0.1/secret"),
     );
     const tool = await createWebFetchToolForTest({
-      firecrawl: { apiKey: "firecrawl-test" },
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
     });
 
     await expectBlockedUrl(tool, "https://example.com", /private|internal|blocked/i);

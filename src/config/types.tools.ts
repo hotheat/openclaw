@@ -477,9 +477,9 @@ export type ToolsConfig = {
       /** Use Readability to extract main content (default: true). */
       readability?: boolean;
       firecrawl?: {
-        /** Enable Firecrawl fallback (default: true when apiKey is set). */
+        /** Enable Firecrawl fallback explicitly. */
         enabled?: boolean;
-        /** Firecrawl API key (optional; defaults to FIRECRAWL_API_KEY env var). */
+        /** Firecrawl API key (used when enabled; defaults to FIRECRAWL_API_KEY env var). */
         apiKey?: string;
         /** Firecrawl base URL (default: https://api.firecrawl.dev). */
         baseUrl?: string;
