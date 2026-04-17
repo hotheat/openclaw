@@ -1,3 +1,4 @@
+import { request as httpRequest } from "node:http";
 import { describe, expect, test } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { A2UI_PATH, CANVAS_HOST_PATH, CANVAS_WS_PATH } from "../canvas-host/a2ui.js";
@@ -101,6 +102,43 @@ function makeWsClient(params: {
 
 function scopedCanvasPath(capability: string, path: string): string {
   return `${CANVAS_CAPABILITY_PATH_PREFIX}/${encodeURIComponent(capability)}${path}`;
+}
+
+async function withLoopbackNoProxy<T>(run: () => Promise<T>): Promise<T> {
+  const previousNoProxy = process.env.NO_PROXY;
+  const nextNoProxy = [previousNoProxy, "127.0.0.1", "localhost", "::1", "[::1]"]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(",");
+  process.env.NO_PROXY = nextNoProxy;
+  try {
+    return await run();
+  } finally {
+    if (previousNoProxy === undefined) {
+      delete process.env.NO_PROXY;
+    } else {
+      process.env.NO_PROXY = previousNoProxy;
+    }
+  }
+}
+
+async function directHttpGet(url: string): Promise<{ status: number; body: string }> {
+  return await new Promise((resolve, reject) => {
+    const req = httpRequest(url, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body,
+        });
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
 }
 
 const allowCanvasHostHttp: CanvasHostHandler["handleHttpRequest"] = async (req, res) => {
@@ -306,47 +344,51 @@ describe("gateway canvas host auth", () => {
   }, 60_000);
 
   test("accepts capability-scoped paths over IPv6 loopback", async () => {
-    await withTempConfig({
-      cfg: {
-        gateway: {
-          trustedProxies: ["::1"],
+    await withLoopbackNoProxy(async () => {
+      await withTempConfig({
+        cfg: {
+          gateway: {
+            trustedProxies: ["::1"],
+          },
         },
-      },
-      run: async () => {
-        try {
-          await withCanvasGatewayHarness({
-            resolvedAuth: tokenResolvedAuth,
-            listenHost: "::1",
-            handleHttpRequest: allowCanvasHostHttp,
-            run: async ({ listener, clients }) => {
-              const capability = "ipv6-node";
-              clients.add(
-                makeWsClient({
-                  connId: "c-ipv6-node",
-                  clientIp: "fd12:3456:789a::2",
-                  role: "node",
-                  mode: "node",
-                  canvasCapability: capability,
-                  canvasCapabilityExpiresAtMs: Date.now() + 60_000,
-                }),
-              );
+        run: async () => {
+          try {
+            await withCanvasGatewayHarness({
+              resolvedAuth: tokenResolvedAuth,
+              listenHost: "::1",
+              handleHttpRequest: allowCanvasHostHttp,
+              run: async ({ listener, clients }) => {
+                const capability = "ipv6-node";
+                clients.add(
+                  makeWsClient({
+                    connId: "c-ipv6-node",
+                    clientIp: "fd12:3456:789a::2",
+                    role: "node",
+                    mode: "node",
+                    canvasCapability: capability,
+                    canvasCapabilityExpiresAtMs: Date.now() + 60_000,
+                  }),
+                );
 
-              const canvasPath = scopedCanvasPath(capability, `${CANVAS_HOST_PATH}/`);
-              const wsPath = scopedCanvasPath(capability, CANVAS_WS_PATH);
-              const scopedCanvas = await fetch(`http://[::1]:${listener.port}${canvasPath}`);
-              expect(scopedCanvas.status).toBe(200);
+                const canvasPath = scopedCanvasPath(capability, `${CANVAS_HOST_PATH}/`);
+                const wsPath = scopedCanvasPath(capability, CANVAS_WS_PATH);
+                const scopedCanvas = await directHttpGet(
+                  `http://[::1]:${listener.port}${canvasPath}`,
+                );
+                expect(scopedCanvas.status).toBe(200);
 
-              await expectWsConnected(`ws://[::1]:${listener.port}${wsPath}`);
-            },
-          });
-        } catch (err) {
-          const message = String(err);
-          if (message.includes("EAFNOSUPPORT") || message.includes("EADDRNOTAVAIL")) {
-            return;
+                await expectWsConnected(`ws://[::1]:${listener.port}${wsPath}`);
+              },
+            });
+          } catch (err) {
+            const message = String(err);
+            if (message.includes("EAFNOSUPPORT") || message.includes("EADDRNOTAVAIL")) {
+              return;
+            }
+            throw err;
           }
-          throw err;
-        }
-      },
+        },
+      });
     });
   }, 60_000);
 
