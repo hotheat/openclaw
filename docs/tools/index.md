@@ -146,7 +146,9 @@ Available groups:
 - `group:fs`: `read`, `write`, `edit`, `apply_patch`
 - `group:sessions`: `sessions_list`, `sessions_history`, `sessions_send`, `sessions_spawn`, `session_status`
 - `group:memory`: `memory_search`, `memory_get`
-- `group:web`: `web_search`, `web_fetch`
+- `group:web`: `web_search`, `grok_search`, `web_fetch`
+- `group:web-structured`: `web_search`
+- `group:web-synthesized`: `grok_search`
 - `group:ui`: `browser`, `canvas`
 - `group:automation`: `cron`, `gateway`
 - `group:messaging`: `message`
@@ -268,6 +270,23 @@ Notes:
 - Enable via `tools.web.search.enabled`.
 - Responses are cached (default 15 min).
 - See [Web tools](/tools/web) for setup.
+
+### `grok_search`
+
+Search the web using xAI Grok for synthesized answers with citations.
+
+Core parameters:
+
+- `query` (required)
+- `source` (`web` by default, `x` for X/Twitter search)
+
+Notes:
+
+- Requires `XAI_API_KEY` or `tools.web.grokSearch.apiKey`.
+- Enable via `tools.web.grokSearch.enabled`.
+- Returns synthesized `content` plus `citations`.
+- Cache is disabled by default.
+- See [Web tools](/tools/web) for setup and migration notes.
 
 ### `web_fetch`
 
