@@ -26,4 +26,19 @@ describe("GitHub Actions workflow runners", () => {
       ]),
     );
   });
+
+  it("skips labeler jobs when the GitHub App private key is unavailable", async () => {
+    const labelerPath = path.resolve(process.cwd(), ".github", "workflows", "labeler.yml");
+    const content = await readFile(labelerPath, "utf8");
+
+    expect(content).toMatch(
+      /label:\n(?:.*\n)*?\s{4}if: \$\{\{ secrets\.GH_APP_PRIVATE_KEY != '' \}\}/,
+    );
+    expect(content).toMatch(
+      /backfill-pr-labels:\n(?:.*\n)*?\s{4}if: github\.event_name == 'workflow_dispatch' && secrets\.GH_APP_PRIVATE_KEY != ''/,
+    );
+    expect(content).toMatch(
+      /label-issues:\n(?:.*\n)*?\s{4}if: \$\{\{ secrets\.GH_APP_PRIVATE_KEY != '' \}\}/,
+    );
+  });
 });
