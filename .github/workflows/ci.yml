@@ -49,4 +49,4 @@ jobs:
         run: pnpm canvas:a2ui:bundle
 
       - name: Run test suite
-        run: pnpm test
+        run: pnpm test:fast

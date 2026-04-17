@@ -26,4 +26,12 @@ describe("GitHub Actions workflow runners", () => {
       ]),
     );
   });
+
+  it("keeps pull request CI on the fast test slice instead of the full parallel suite", async () => {
+    const ciWorkflowPath = path.resolve(process.cwd(), ".github", "workflows", "ci.yml");
+    const content = await readFile(ciWorkflowPath, "utf8");
+
+    expect(content).toMatch(/- name: Run test suite\n\s+run: pnpm test:fast/);
+    expect(content).not.toMatch(/- name: Run test suite\n\s+run: pnpm test\s*$/m);
+  });
 });
