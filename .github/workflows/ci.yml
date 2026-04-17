@@ -13,7 +13,7 @@ concurrency:
 jobs:
   check:
     name: check
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
 
   test:
     name: test
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     env:
       OPENCLAW_TEST_WORKERS: 2
       OPENCLAW_TEST_MAX_OLD_SPACE_SIZE_MB: 6144
