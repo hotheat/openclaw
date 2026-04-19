@@ -382,4 +382,48 @@ describe("handleFeishuMessage command authorization", () => {
       "clip.mp4",
     );
   });
+
+  it("replaces raw image_key payloads with a media placeholder in agent text", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockSaveMediaBuffer.mockResolvedValueOnce({
+      path: "/tmp/inbound-image.jpg",
+      contentType: "image/jpeg",
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-image-inbound",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "image",
+        content: JSON.stringify({
+          image_key: "img_v3_01abc123",
+        }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        BodyForAgent: "<media:image>",
+        RawBody: "<media:image>",
+        CommandBody: "<media:image>",
+        MediaPath: "/tmp/inbound-image.jpg",
+      }),
+    );
+  });
 });
