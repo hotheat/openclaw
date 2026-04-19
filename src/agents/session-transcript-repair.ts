@@ -188,6 +188,46 @@ export function sanitizeToolCallInputs(
   return repairToolCallInputs(messages, options).messages;
 }
 
+function shouldTrackAssistantToolCalls(
+  message: Extract<AgentMessage, { role: "assistant" }>,
+): boolean {
+  const stopReason = (message as { stopReason?: string }).stopReason;
+  return stopReason !== "error" && stopReason !== "aborted";
+}
+
+export function dropOrphanedToolResults(messages: AgentMessage[]): AgentMessage[] {
+  const validToolCallIds = new Set<string>();
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object" || msg.role !== "assistant") {
+      continue;
+    }
+    const assistant = msg;
+    if (!shouldTrackAssistantToolCalls(assistant)) {
+      continue;
+    }
+    for (const toolCall of extractToolCallsFromAssistant(assistant)) {
+      validToolCallIds.add(toolCall.id);
+    }
+  }
+
+  let changed = false;
+  const out: AgentMessage[] = [];
+  for (const msg of messages) {
+    if (!msg || typeof msg !== "object" || msg.role !== "toolResult") {
+      out.push(msg);
+      continue;
+    }
+    const id = extractToolResultId(msg);
+    if (id && validToolCallIds.has(id)) {
+      out.push(msg);
+      continue;
+    }
+    changed = true;
+  }
+
+  return changed ? out : messages;
+}
+
 export function sanitizeToolUseResultPairing(messages: AgentMessage[]): AgentMessage[] {
   return repairToolUseResultPairing(messages).messages;
 }
@@ -257,8 +297,7 @@ export function repairToolUseResultPairing(messages: AgentMessage[]): ToolUseRep
     // Creating synthetic results for incomplete tool calls causes API 400 errors:
     // "unexpected tool_use_id found in tool_result blocks"
     // See: https://github.com/openclaw/openclaw/issues/4597
-    const stopReason = (assistant as { stopReason?: string }).stopReason;
-    if (stopReason === "error" || stopReason === "aborted") {
+    if (!shouldTrackAssistantToolCalls(assistant)) {
       out.push(msg);
       continue;
     }
