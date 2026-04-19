@@ -386,6 +386,33 @@ describe("sanitizeSessionHistory", () => {
     expect(result).toEqual([]);
   });
 
+  it("drops orphaned toolResult entries after tool-call filtering for openai-responses", async () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_1", name: "write", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "write",
+        content: [{ type: "text", text: "ok" }],
+      } as unknown as AgentMessage,
+      { role: "user", content: "continue" },
+    ] as unknown as AgentMessage[];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-responses",
+      provider: "openai",
+      allowedToolNames: ["read"],
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(result.map((msg) => msg.role)).toEqual(["user"]);
+  });
+
   it("downgrades orphaned openai reasoning even when the model has not changed", async () => {
     const sessionEntries = [
       makeModelSnapshotEntry({
