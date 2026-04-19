@@ -46,6 +46,27 @@ async function withTempWorkspacePng(
   }
 }
 
+async function withTempWorkspaceInboundPng(
+  cb: (args: {
+    workspaceDir: string;
+    imagePath: string;
+    relativeImagePath: string;
+  }) => Promise<void>,
+) {
+  const workspaceParent = await fs.mkdtemp(path.join(process.cwd(), ".openclaw-workspace-image-"));
+  try {
+    const workspaceDir = path.join(workspaceParent, "workspace");
+    const inboundDir = path.join(workspaceDir, "media", "inbound");
+    await fs.mkdir(inboundDir, { recursive: true });
+    const imagePath = path.join(inboundDir, "photo.png");
+    const relativeImagePath = path.join("media", "inbound", "photo.png");
+    await fs.writeFile(imagePath, Buffer.from(ONE_PIXEL_PNG_B64, "base64"));
+    await cb({ workspaceDir, imagePath, relativeImagePath });
+  } finally {
+    await fs.rm(workspaceParent, { recursive: true, force: true });
+  }
+}
+
 function stubMinimaxOkFetch() {
   const fetch = vi.fn().mockResolvedValue({
     ok: true,
@@ -350,6 +371,32 @@ describe("image tool implicit imageModel config", () => {
     });
   });
 
+  it("resolves relative workspace image paths against workspaceDir", async () => {
+    await withTempWorkspaceInboundPng(async ({ workspaceDir, relativeImagePath, imagePath }) => {
+      const fetch = stubMinimaxOkFetch();
+      const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-"));
+      try {
+        const cfg = createMinimaxImageConfig();
+        const tool = requireImageTool(createImageTool({ config: cfg, agentDir, workspaceDir }));
+
+        const res = await tool.execute("t-relative", {
+          prompt: "Describe the image.",
+          image: relativeImagePath,
+        });
+
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(res).toMatchObject({
+          content: [{ type: "text", text: "ok" }],
+          details: {
+            image: imagePath,
+          },
+        });
+      } finally {
+        await fs.rm(agentDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("allows workspace images via createOpenClawCodingTools default workspace root", async () => {
     await withTempWorkspacePng(async ({ imagePath }) => {
       const fetch = stubMinimaxOkFetch();
@@ -428,6 +475,34 @@ describe("image tool implicit imageModel config", () => {
 
     expect(fetch).toHaveBeenCalledTimes(1);
     expect((res.details as { rewrittenFrom?: string }).rewrittenFrom).toContain("photo.png");
+  });
+
+  it("rejects unresolved external media keys with a clear error", async () => {
+    const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-"));
+    try {
+      const cfg = createMinimaxImageConfig();
+      const tool = requireImageTool(createImageTool({ config: cfg, agentDir }));
+
+      await expect(
+        tool.execute("t-feishu-key", {
+          prompt: "Describe the image.",
+          image: "img_v3_0210g_e35d9a4b-d91f-48b2-b732-d7562fcc05cg",
+        }),
+      ).resolves.toMatchObject({
+        content: [
+          {
+            type: "text",
+            text: expect.stringContaining("unresolved external media key"),
+          },
+        ],
+        details: {
+          error: "unresolved_external_media_key",
+          image: "img_v3_0210g_e35d9a4b-d91f-48b2-b732-d7562fcc05cg",
+        },
+      });
+    } finally {
+      await fs.rm(agentDir, { recursive: true, force: true });
+    }
   });
 });
 
