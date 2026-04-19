@@ -187,6 +187,14 @@ function parseMessageContent(content: string, messageType: string): string {
       const { textContent } = parsePostContent(content);
       return textContent;
     }
+    if (["image", "file", "audio", "video", "sticker"].includes(messageType)) {
+      const placeholder = inferPlaceholder(messageType);
+      const fileName =
+        typeof parsed.file_name === "string" && parsed.file_name.trim()
+          ? parsed.file_name.trim()
+          : "";
+      return fileName ? `${placeholder} ${fileName}` : placeholder;
+    }
     return content;
   } catch {
     return content;
