@@ -2,13 +2,12 @@ import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
 import { logWarn } from "../logger.js";
 import { estimateBase64DecodedBytes } from "./base64.js";
+import { extractPdfTextFromBuffer, loadPdfJsModule } from "./pdf-text.js";
 import { readResponseWithLimit } from "./read-response-with-limit.js";
 
 type CanvasModule = typeof import("@napi-rs/canvas");
-type PdfJsModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
 
 let canvasModulePromise: Promise<CanvasModule> | null = null;
-let pdfJsModulePromise: Promise<PdfJsModule> | null = null;
 
 // Lazy-load optional PDF/image deps so non-PDF paths don't require native installs.
 async function loadCanvasModule(): Promise<CanvasModule> {
@@ -21,18 +20,6 @@ async function loadCanvasModule(): Promise<CanvasModule> {
     });
   }
   return canvasModulePromise;
-}
-
-async function loadPdfJsModule(): Promise<PdfJsModule> {
-  if (!pdfJsModulePromise) {
-    pdfJsModulePromise = import("pdfjs-dist/legacy/build/pdf.mjs").catch((err) => {
-      pdfJsModulePromise = null;
-      throw new Error(
-        `Optional dependency pdfjs-dist is required for PDF extraction: ${String(err)}`,
-      );
-    });
-  }
-  return pdfJsModulePromise;
 }
 
 export type InputImageContent = {
@@ -246,30 +233,21 @@ async function extractPdfContent(params: {
   limits: InputFileLimits;
 }): Promise<{ text: string; images: InputImageContent[] }> {
   const { buffer, limits } = params;
+  const extractedText = await extractPdfTextFromBuffer({
+    buffer,
+    maxPages: limits.pdf.maxPages,
+  });
+  const text = extractedText.text;
+  if (text.trim().length >= limits.pdf.minTextChars) {
+    return { text, images: [] };
+  }
+
   const { getDocument } = await loadPdfJsModule();
   const pdf = await getDocument({
     data: new Uint8Array(buffer),
     disableWorker: true,
   }).promise;
   const maxPages = Math.min(pdf.numPages, limits.pdf.maxPages);
-  const textParts: string[] = [];
-
-  for (let pageNum = 1; pageNum <= maxPages; pageNum += 1) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      .map((item) => ("str" in item ? String(item.str) : ""))
-      .filter(Boolean)
-      .join(" ");
-    if (pageText) {
-      textParts.push(pageText);
-    }
-  }
-
-  const text = textParts.join("\n\n");
-  if (text.trim().length >= limits.pdf.minTextChars) {
-    return { text, images: [] };
-  }
 
   let canvasModule: CanvasModule;
   try {
