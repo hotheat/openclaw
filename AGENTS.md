@@ -8,6 +8,7 @@
 - Source code: `src/` (CLI wiring in `src/cli`, commands in `src/commands`, web provider in `src/provider-web.ts`, infra in `src/infra`, media pipeline in `src/media`).
 - Tests: colocated `*.test.ts`.
 - Docs: `docs/` (images, queue, Pi config). Built output lives in `dist/`.
+- Codex-local engineering notes: `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md`.
 - Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
 - Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
 - Installers served from `https://openclaw.ai/*`: live in the sibling repo `../openclaw.ai` (`public/install.sh`, `public/install-cli.sh`, `public/install.ps1`).
@@ -20,6 +21,7 @@
 ## Docs Linking (Mintlify)
 
 - Docs are hosted on Mintlify (docs.openclaw.ai).
+- For plugin, architecture, or test-impact work, read `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md` first.
 - Internal doc links in `docs/**/*.md`: root-relative, no `.md`/`.mdx` (example: `[Config](/configuration)`).
 - When working with documentation, read the mintlify skill.
 - Section cross-references: use anchors on root-relative paths (example: `[Hooks](/configuration#hooks)`).
