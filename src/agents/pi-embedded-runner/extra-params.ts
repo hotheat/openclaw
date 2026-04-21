@@ -178,11 +178,11 @@ function createOpenAIResponsesStoreWrapper(baseStreamFn: StreamFn | undefined): 
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload, payloadModel) => {
         if (payload && typeof payload === "object") {
           (payload as { store?: unknown }).store = true;
         }
-        return originalOnPayload?.(payload);
+        return originalOnPayload?.(payload, payloadModel);
       },
     });
   };
@@ -318,7 +318,7 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload, payloadModel) => {
         const messages = (payload as Record<string, unknown>)?.messages;
         if (Array.isArray(messages)) {
           for (const msg of messages as PayloadMessage[]) {
@@ -337,7 +337,7 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
             }
           }
         }
-        return originalOnPayload?.(payload);
+        return originalOnPayload?.(payload, payloadModel);
       },
     });
   };
@@ -373,7 +373,7 @@ function createOpenRouterWrapper(
         ...OPENROUTER_APP_HEADERS,
         ...options?.headers,
       },
-      onPayload: (payload) => {
+      onPayload: (payload, payloadModel) => {
         if (thinkingLevel && payload && typeof payload === "object") {
           const payloadObj = payload as Record<string, unknown>;
           const existingReasoning = payloadObj.reasoning;
@@ -396,7 +396,7 @@ function createOpenRouterWrapper(
             };
           }
         }
-        return onPayload?.(payload);
+        return onPayload?.(payload, payloadModel);
       },
     });
   };
@@ -424,12 +424,12 @@ function createZaiToolStreamWrapper(
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload, payloadModel) => {
         if (payload && typeof payload === "object") {
           // Inject tool_stream: true for Z.AI API
           (payload as Record<string, unknown>).tool_stream = true;
         }
-        return originalOnPayload?.(payload);
+        return originalOnPayload?.(payload, payloadModel);
       },
     });
   };

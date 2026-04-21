@@ -28,9 +28,35 @@ jobs:
       - name: Run lint, typecheck, and format checks
         run: pnpm check
 
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Build CLI and gateway bundle
+        run: pnpm build
+
+      - name: Smoke test built runtime entrypoints
+        run: pnpm smoke:build
+
+      - name: Build Control UI
+        run: pnpm ui:build
+
   test:
     name: test
     runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
     env:
       OPENCLAW_TEST_WORKERS: 2
       OPENCLAW_TEST_MAX_OLD_SPACE_SIZE_MB: 6144
@@ -44,9 +70,6 @@ jobs:
         uses: ./.github/actions/setup-node-env
         with:
           install-bun: "false"
-
-      - name: Build canvas bundle
-        run: pnpm canvas:a2ui:bundle
 
       - name: Run test suite
         run: pnpm test:fast

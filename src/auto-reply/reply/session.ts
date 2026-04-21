@@ -122,9 +122,25 @@ function forkSessionFromParent(params: {
     const manager = SessionManager.open(parentSessionFile);
     const leafId = manager.getLeafId();
     if (leafId) {
-      const sessionFile = manager.createBranchedSession(leafId) ?? manager.getSessionFile();
-      const sessionId = manager.getSessionId();
-      if (sessionFile && sessionId) {
+      const branchEntries = manager.getBranch(leafId);
+      if (branchEntries.length > 0) {
+        const sessionId = crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+        const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+        const sessionFile = path.join(
+          manager.getSessionDir(),
+          `${fileTimestamp}_${sessionId}.jsonl`,
+        );
+        const header = {
+          type: "session",
+          version: CURRENT_SESSION_VERSION,
+          id: sessionId,
+          timestamp,
+          cwd: manager.getCwd(),
+          parentSession: parentSessionFile,
+        };
+        const payload = [header, ...branchEntries].map((entry) => JSON.stringify(entry)).join("\n");
+        fs.writeFileSync(sessionFile, `${payload}\n`, "utf-8");
         return { sessionId, sessionFile };
       }
     }
