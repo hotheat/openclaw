@@ -34,4 +34,36 @@ describe("GitHub Actions workflow runners", () => {
     expect(content).toMatch(/- name: Run test suite\n\s+run: pnpm test:fast/);
     expect(content).not.toMatch(/- name: Run test suite\n\s+run: pnpm test\s*$/m);
   });
+
+  it("includes a Codex review workflow for pull requests", async () => {
+    const workflowPath = path.resolve(process.cwd(), ".github", "workflows", "codex-review.yml");
+    const content = await readFile(workflowPath, "utf8");
+
+    expect(content).toMatch(/name: Codex Review/);
+    expect(content).toMatch(/pull_request:/);
+    expect(content).toMatch(/CODEX_TOKEN/);
+    expect(content).toMatch(/\.github\/codex\/prompts\/review\.md/);
+    expect(content).toMatch(/codex exec/);
+    expect(content).toMatch(/--model gpt-5\.4/);
+    expect(content).toMatch(/ref:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}/);
+    expect(content).toMatch(
+      /PR_HEAD_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}/,
+    );
+    expect(content).not.toMatch(/curl -fsSL .*install-codex\.sh/);
+    expect(content).toMatch(/CODEX_VERSION:\s*\d+\.\d+\.\d+/);
+    expect(content).toMatch(/npm install --global .*@openai\/codex@\$\{CODEX_VERSION\}/);
+    expect(content).toMatch(/github\.rest\.issues\.listComments/);
+    expect(content).toMatch(/github\.rest\.issues\.updateComment/);
+    expect(content).toMatch(/const marker = ['"]<!-- codex-review -->['"]/);
+  });
+
+  it("includes an OpenClaw-specific Codex review prompt", async () => {
+    const promptPath = path.resolve(process.cwd(), ".github", "codex", "prompts", "review.md");
+    const content = await readFile(promptPath, "utf8");
+
+    expect(content).toMatch(/OpenClaw/i);
+    expect(content).toMatch(/plugin/i);
+    expect(content).toMatch(/routing/i);
+    expect(content).toMatch(/Output format/i);
+  });
 });

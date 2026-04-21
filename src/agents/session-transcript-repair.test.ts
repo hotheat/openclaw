@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import {
+  dropOrphanedToolResults,
   sanitizeToolCallInputs,
   sanitizeToolUseResultPairing,
   repairToolUseResultPairing,
@@ -313,5 +314,53 @@ describe("sanitizeToolCallInputs", () => {
       ? assistant.content.map((block) => (block as { type?: unknown }).type)
       : [];
     expect(types).toEqual(["text", "toolUse"]);
+  });
+});
+
+describe("dropOrphanedToolResults", () => {
+  it("drops tool results whose tool calls were filtered out", () => {
+    const input = [
+      {
+        role: "assistant",
+        content: [
+          { type: "toolCall", id: "call_read", name: "read", arguments: {} },
+          { type: "toolCall", id: "call_write", name: "write", arguments: {} },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_write",
+        toolName: "write",
+        content: [{ type: "text", text: "wrote file" }],
+        isError: false,
+      },
+      { role: "user", content: "continue" },
+    ] as unknown as AgentMessage[];
+
+    const sanitizedCalls = sanitizeToolCallInputs(input, { allowedToolNames: ["read"] });
+    const out = dropOrphanedToolResults(sanitizedCalls);
+
+    expect(out.map((msg) => msg.role)).toEqual(["assistant", "user"]);
+  });
+
+  it("keeps paired tool results for surviving tool calls", () => {
+    const input = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_read", name: "read", arguments: {} }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_read",
+        toolName: "read",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      { role: "user", content: "continue" },
+    ] as unknown as AgentMessage[];
+
+    const out = dropOrphanedToolResults(input);
+
+    expect(out.map((msg) => msg.role)).toEqual(["assistant", "toolResult", "user"]);
   });
 });

@@ -18,6 +18,7 @@ import {
 } from "../pi-embedded-helpers.js";
 import { cleanToolSchemaForGemini } from "../pi-tools.schema.js";
 import {
+  dropOrphanedToolResults,
   sanitizeToolCallInputs,
   stripToolResultDetails,
   sanitizeToolUseResultPairing,
@@ -487,12 +488,13 @@ export async function sanitizeSessionHistory(params: {
   const sanitizedToolCalls = sanitizeToolCallInputs(sanitizedThinking, {
     allowedToolNames: params.allowedToolNames,
   });
+  const sanitizedToolResults = dropOrphanedToolResults(sanitizedToolCalls);
   const repairedTools = policy.repairToolUseResultPairing
-    ? sanitizeToolUseResultPairing(sanitizedToolCalls)
-    : sanitizedToolCalls;
-  const sanitizedToolResults = stripToolResultDetails(repairedTools);
+    ? sanitizeToolUseResultPairing(sanitizedToolResults)
+    : sanitizedToolResults;
+  const strippedToolResults = stripToolResultDetails(repairedTools);
   const sanitizedCompactionUsage =
-    stripStaleAssistantUsageBeforeLatestCompaction(sanitizedToolResults);
+    stripStaleAssistantUsageBeforeLatestCompaction(strippedToolResults);
 
   const isOpenAIResponsesApi =
     params.modelApi === "openai-responses" || params.modelApi === "openai-codex-responses";
