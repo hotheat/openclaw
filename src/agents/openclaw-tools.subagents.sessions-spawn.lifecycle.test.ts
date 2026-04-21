@@ -92,6 +92,17 @@ async function emitLifecycleEndAndFlush(params: {
   }
 }
 
+async function runWithFakeTimersAndFlush<T>(work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers();
+  try {
+    const result = await work();
+    await vi.runAllTimersAsync();
+    return result;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
   let previousFastTestEnv: string | undefined;
 
@@ -151,14 +162,10 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     if (!child.runId) {
       throw new Error("missing child runId");
     }
-    emitAgentEvent({
+    await emitLifecycleEndAndFlush({
       runId: child.runId,
-      stream: "lifecycle",
-      data: {
-        phase: "end",
-        startedAt: 1000,
-        endedAt: 2000,
-      },
+      startedAt: 1000,
+      endedAt: 2000,
     });
 
     await waitFor(() => ctx.waitCalls.some((call) => call.runId === child.runId));
@@ -267,10 +274,12 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     });
 
     const tool = await getDiscordGroupSpawnTool();
-    await executeSpawnAndExpectAccepted({
-      tool,
-      callId: "call1b",
-      cleanup: "delete",
+    await runWithFakeTimersAndFlush(async () => {
+      await executeSpawnAndExpectAccepted({
+        tool,
+        callId: "call1b",
+        cleanup: "delete",
+      });
     });
 
     const child = ctx.getChild();
@@ -314,10 +323,12 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     });
 
     const tool = await getDiscordGroupSpawnTool();
-    await executeSpawnAndExpectAccepted({
-      tool,
-      callId: "call-timeout",
-      cleanup: "keep",
+    await runWithFakeTimersAndFlush(async () => {
+      await executeSpawnAndExpectAccepted({
+        tool,
+        callId: "call-timeout",
+        cleanup: "keep",
+      });
     });
 
     await waitFor(() => ctx.calls.filter((call) => call.method === "agent").length >= 2);

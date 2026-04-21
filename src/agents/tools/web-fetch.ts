@@ -3,6 +3,8 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { fetchWithSsrFGuard } from "../../infra/net/fetch-guard.js";
 import { resolvePinnedHostname, SsrFBlockedError } from "../../infra/net/ssrf.js";
 import { logDebug } from "../../logger.js";
+import { extractPdfTextFromBuffer } from "../../media/pdf-text.js";
+import { readResponseWithLimit } from "../../media/read-response-with-limit.js";
 import { wrapExternalContent, wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { stringEnum } from "../schema/typebox.js";
@@ -35,6 +37,9 @@ const EXTRACT_MODES = ["markdown", "text"] as const;
 
 const DEFAULT_FETCH_MAX_CHARS = 50_000;
 const DEFAULT_FETCH_MAX_RESPONSE_BYTES = 2_000_000;
+const DEFAULT_FETCH_PDF_MAX_RESPONSE_BYTES = 25_000_000;
+const DEFAULT_FETCH_PDF_MAX_PAGES = 12;
+const DEFAULT_FETCH_PDF_MIN_TEXT_CHARS = 200;
 const FETCH_MAX_RESPONSE_BYTES_MIN = 32_000;
 const FETCH_MAX_RESPONSE_BYTES_MAX = 10_000_000;
 const DEFAULT_FETCH_MAX_REDIRECTS = 3;
@@ -481,6 +486,41 @@ function buildScrapeWebFetchPayload(params: {
   };
 }
 
+function buildPdfWebFetchPayload(params: {
+  rawUrl: string;
+  finalUrl: string;
+  status: number;
+  normalizedContentType: string;
+  extractMode: ExtractMode;
+  text: string;
+  maxChars: number;
+  tookMs: number;
+}): Record<string, unknown> {
+  const wrapped = wrapWebFetchContent(params.text, params.maxChars);
+  return {
+    url: params.rawUrl,
+    finalUrl: params.finalUrl,
+    status: params.status,
+    contentType: params.normalizedContentType,
+    title: undefined,
+    extractMode: params.extractMode,
+    extractor: "pdfjs",
+    externalContent: {
+      untrusted: true,
+      source: "web_fetch",
+      wrapped: true,
+    },
+    truncated: wrapped.truncated,
+    length: wrapped.wrappedLength,
+    rawLength: wrapped.rawLength,
+    wrappedLength: wrapped.wrappedLength,
+    fetchedAt: new Date().toISOString(),
+    tookMs: params.tookMs,
+    text: wrapped.text,
+    warning: undefined,
+  };
+}
+
 function normalizeContentType(value: string | null | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -749,6 +789,7 @@ async function maybeFetchScrapeWebFetchPayload(
 
 async function maybeFetchFallbackWebFetchPayload(
   params: RemoteFallbackRuntimeParams,
+  options?: { allowFirecrawl?: boolean },
 ): Promise<{ payload: Record<string, unknown> | null; errors: RemoteFallbackError[] }> {
   const errors: RemoteFallbackError[] = [];
 
@@ -767,19 +808,81 @@ async function maybeFetchFallbackWebFetchPayload(
     errors.push({ label: "scraping-get", message: toErrorMessage(error) });
   }
 
-  try {
-    const payload = await maybeFetchFirecrawlWebFetchPayload({
-      ...params,
-      tookMs: Date.now() - params.startedAt,
-    });
-    if (payload) {
-      return { payload, errors };
+  if (options?.allowFirecrawl !== false) {
+    try {
+      const payload = await maybeFetchFirecrawlWebFetchPayload({
+        ...params,
+        tookMs: Date.now() - params.startedAt,
+      });
+      if (payload) {
+        return { payload, errors };
+      }
+    } catch (error) {
+      errors.push({ label: "firecrawl", message: toErrorMessage(error) });
     }
-  } catch (error) {
-    errors.push({ label: "firecrawl", message: toErrorMessage(error) });
   }
 
   return { payload: null, errors };
+}
+
+async function runPdfWebFetch(
+  params: WebFetchRuntimeParams & {
+    res: Response;
+    finalUrl: string;
+    status: number;
+    normalizedContentType: string;
+    cacheKey: string;
+    startedAt: number;
+  },
+): Promise<Record<string, unknown>> {
+  try {
+    const buffer = await readResponseWithLimit(
+      params.res,
+      Math.max(params.maxResponseBytes, DEFAULT_FETCH_PDF_MAX_RESPONSE_BYTES),
+    );
+    const extracted = await extractPdfTextFromBuffer({
+      buffer,
+      maxPages: DEFAULT_FETCH_PDF_MAX_PAGES,
+    });
+    const text = extracted.text.trim();
+    if (text.length < DEFAULT_FETCH_PDF_MIN_TEXT_CHARS) {
+      throw new Error(
+        `Extracted only ${text.length} characters across ${extracted.pageCount} page(s).`,
+      );
+    }
+
+    const payload = buildPdfWebFetchPayload({
+      rawUrl: params.url,
+      finalUrl: params.finalUrl,
+      status: params.status,
+      normalizedContentType: params.normalizedContentType,
+      extractMode: params.extractMode,
+      text,
+      maxChars: params.maxChars,
+      tookMs: Date.now() - params.startedAt,
+    });
+    writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
+    return payload;
+  } catch (error) {
+    const fallback = await maybeFetchFallbackWebFetchPayload(
+      {
+        ...params,
+        urlToFetch: params.finalUrl,
+        finalUrlFallback: params.finalUrl,
+        statusFallback: params.status,
+        cacheKey: params.cacheKey,
+        startedAt: params.startedAt,
+      },
+      { allowFirecrawl: false },
+    );
+    if (fallback.payload) {
+      return fallback.payload;
+    }
+    throw buildWebFetchFallbackError({
+      primaryError: new Error(`PDF extraction failed: ${toErrorMessage(error)}`),
+      fallbackErrors: fallback.errors,
+    });
+  }
 }
 
 async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string, unknown>> {
@@ -880,6 +983,18 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
 
     const contentType = res.headers.get("content-type") ?? "application/octet-stream";
     const normalizedContentType = normalizeContentType(contentType) ?? "application/octet-stream";
+    if (contentType.includes("application/pdf")) {
+      return await runPdfWebFetch({
+        ...params,
+        res,
+        finalUrl,
+        status: res.status,
+        normalizedContentType,
+        cacheKey,
+        startedAt: start,
+      });
+    }
+
     const bodyResult = await readResponseText(res, { maxBytes: params.maxResponseBytes });
     const body = bodyResult.text;
     const responseTruncatedWarning = bodyResult.truncated

@@ -129,7 +129,7 @@ describe("group intro prompts", () => {
       expect(getRunEmbeddedPiAgentMock()).toHaveBeenCalledOnce();
       const extraSystemPrompt = getLastExtraSystemPrompt();
       expect(extraSystemPrompt).toContain(
-        'Your plain-text replies to this group chat are automatically sent here, so for ordinary text replies do not use the message tool and just reply normally. If you need to send a file, image, PDF, or other media to this same group, use the message tool instead of a normal reply. If the destination is this current chat, you may omit `target`; add an explicit target only when needed.',
+        "Your plain-text replies to this group chat are automatically sent here, so for ordinary text replies do not use the message tool and just reply normally. If you need to send a file, image, PDF, or other media to this same group, use the message tool instead of a normal reply. If the destination is this current chat, you may omit `target`; add an explicit target only when needed.",
       );
     });
   });

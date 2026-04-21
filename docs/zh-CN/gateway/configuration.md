@@ -2163,7 +2163,9 @@ Z.AI 模型可通过 `zai/<model>` 使用（例如 `zai/glm-4.7`），需要环�
 - `group:fs`：`read`、`write`、`edit`、`apply_patch`
 - `group:sessions`：`sessions_list`、`sessions_history`、`sessions_send`、`sessions_spawn`、`session_status`
 - `group:memory`：`memory_search`、`memory_get`
-- `group:web`：`web_search`、`web_fetch`
+- `group:web`：`web_search`、`grok_search`、`web_fetch`
+- `group:web-structured`：`web_search`
+- `group:web-synthesized`：`grok_search`
 - `group:ui`：`browser`、`canvas`
 - `group:automation`：`cron`、`gateway`
 - `group:messaging`：`message`

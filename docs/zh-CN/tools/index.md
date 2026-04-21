@@ -153,7 +153,9 @@ OpenClaw 为 browser、canvas、nodes 和 cron 暴露**一流的智能体工具*
 - `group:fs`：`read`、`write`、`edit`、`apply_patch`
 - `group:sessions`：`sessions_list`、`sessions_history`、`sessions_send`、`sessions_spawn`、`session_status`
 - `group:memory`：`memory_search`、`memory_get`
-- `group:web`：`web_search`、`web_fetch`
+- `group:web`：`web_search`、`grok_search`、`web_fetch`
+- `group:web-structured`：`web_search`
+- `group:web-synthesized`：`grok_search`
 - `group:ui`：`browser`、`canvas`
 - `group:automation`：`cron`、`gateway`
 - `group:messaging`：`message`
@@ -245,6 +247,23 @@ OpenClaw 为 browser、canvas、nodes 和 cron 暴露**一流的智能体工具*
 - 通过 `tools.web.search.enabled` 启用。
 - 响应被缓存（默认 15 分钟）。
 - 参见 [Web 工具](/tools/web) 了解设置。
+
+### `grok_search`
+
+使用 xAI Grok 搜索网络，并返回带引用的综合答案。
+
+核心参数：
+
+- `query`（必需）
+- `source`（默认 `web`，传 `x` 时搜索 X/Twitter）
+
+注意：
+
+- 需要 `XAI_API_KEY` 或 `tools.web.grokSearch.apiKey`
+- 通过 `tools.web.grokSearch.enabled` 启用
+- 返回综合后的 `content` 和 `citations`
+- 默认不缓存
+- 参见 [Web 工具](/tools/web) 了解设置与迁移说明
 
 ### `web_fetch`
 

@@ -1,9 +1,9 @@
 import type { AgentMessage, AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ImageSanitizationLimits } from "../image-sanitization.js";
 import type { ToolCallIdMode } from "../tool-call-id.js";
-import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "../usage.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../tool-call-id.js";
 import { sanitizeContentBlocksImages } from "../tool-images.js";
+import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "../usage.js";
 import { stripThoughtSignatures } from "./bootstrap.js";
 import { formatRawAssistantErrorForUi } from "./errors.js";
 
@@ -65,8 +65,7 @@ export function normalizeSilentAssistantCompletionMessage(
   return {
     ...message,
     stopReason: "error",
-    errorMessage:
-      "OpenAI Responses stream ended without response.completed or assistant output.",
+    errorMessage: "OpenAI Responses stream ended without response.completed or assistant output.",
   };
 }
 

@@ -239,6 +239,24 @@ export function resolveWebSearchDetail(args: unknown): string | undefined {
   return count !== undefined ? `for "${query}" (top ${count})` : `for "${query}"`;
 }
 
+export function resolveGrokSearchDetail(args: unknown): string | undefined {
+  const record = asRecord(args);
+  if (!record) {
+    return undefined;
+  }
+
+  const query = typeof record.query === "string" ? record.query.trim() : undefined;
+  const source = typeof record.source === "string" ? record.source.trim().toLowerCase() : undefined;
+
+  if (!query) {
+    return undefined;
+  }
+  if (source && source !== "web") {
+    return `for "${query}" (source ${source})`;
+  }
+  return `for "${query}"`;
+}
+
 export function resolveWebFetchDetail(args: unknown): string | undefined {
   const record = asRecord(args);
   if (!record) {

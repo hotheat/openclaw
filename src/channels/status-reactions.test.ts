@@ -77,6 +77,11 @@ describe("resolveToolEmoji", () => {
       tool: "web_search",
       expected: DEFAULT_EMOJIS.web,
     },
+    {
+      name: "returns web emoji for grok_search tool",
+      tool: "grok_search",
+      expected: DEFAULT_EMOJIS.web,
+    },
     { name: "returns web emoji for browser tool", tool: "browser", expected: DEFAULT_EMOJIS.web },
     {
       name: "returns tool emoji for unknown tool",
