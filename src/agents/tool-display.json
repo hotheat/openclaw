@@ -299,6 +299,11 @@
       "title": "Web Search",
       "detailKeys": ["query", "count"]
     },
+    "grok_search": {
+      "emoji": "🧠",
+      "title": "Grok Search",
+      "detailKeys": ["query", "source"]
+    },
     "web_fetch": {
       "emoji": "📄",
       "title": "Web Fetch",

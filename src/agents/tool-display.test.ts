@@ -88,6 +88,17 @@ describe("tool display details", () => {
     expect(detail).toBe('for "OpenClaw docs" (top 3)');
   });
 
+  it("formats grok_search query with source", () => {
+    const detail = formatToolDetail(
+      resolveToolDisplay({
+        name: "grok_search",
+        args: { query: "Tesla earnings reaction", source: "x" },
+      }),
+    );
+
+    expect(detail).toBe('for "Tesla earnings reaction" (source x)');
+  });
+
   it("summarizes exec commands with context", () => {
     const detail = formatToolDetail(
       resolveToolDisplay({

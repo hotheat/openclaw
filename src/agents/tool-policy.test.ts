@@ -65,6 +65,15 @@ describe("tool-policy", () => {
     expect(group).toContain("message");
     expect(group).toContain("subagents");
     expect(group).toContain("session_status");
+    expect(group).toContain("grok_search");
+  });
+
+  it("defines structured and synthesized web groups", () => {
+    expect(TOOL_GROUPS["group:web"]).toContain("web_search");
+    expect(TOOL_GROUPS["group:web"]).toContain("grok_search");
+    expect(TOOL_GROUPS["group:web"]).toContain("web_fetch");
+    expect(TOOL_GROUPS["group:web-structured"]).toEqual(["web_search"]);
+    expect(TOOL_GROUPS["group:web-synthesized"]).toEqual(["grok_search"]);
   });
 
   it("normalizes tool names and aliases", () => {

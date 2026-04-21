@@ -50,25 +50,40 @@ describe("ui.seamColor", () => {
   });
 });
 
-describe("web search provider config", () => {
-  it("accepts perplexity provider and config", () => {
+describe("web search config", () => {
+  it("accepts grokSearch config", () => {
     const res = validateConfigObject({
       tools: {
         web: {
-          search: {
+          grokSearch: {
             enabled: true,
-            provider: "perplexity",
-            perplexity: {
-              apiKey: "test-key",
-              baseUrl: "https://api.perplexity.ai",
-              model: "perplexity/sonar-pro",
-            },
+            apiKey: "xai-test-key",
+            model: "grok-4-1-fast",
+            inlineCitations: true,
+            cacheTtlMinutes: 0,
           },
         },
       },
     });
 
     expect(res.ok).toBe(true);
+  });
+
+  it("rejects legacy routed-provider config", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          search: {
+            provider: "grok",
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues[0]?.path).toBe("tools.web.search.provider");
+    }
   });
 });
 

@@ -260,13 +260,7 @@ function resolveToolPolicies(params: {
 
 function hasWebSearchKey(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
   const search = cfg.tools?.web?.search;
-  return Boolean(
-    search?.apiKey ||
-    search?.perplexity?.apiKey ||
-    env.BRAVE_API_KEY ||
-    env.PERPLEXITY_API_KEY ||
-    env.OPENROUTER_API_KEY,
-  );
+  return Boolean(search?.apiKey || env.BRAVE_API_KEY);
 }
 
 function isWebSearchEnabled(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
@@ -278,6 +272,22 @@ function isWebSearchEnabled(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolea
     return true;
   }
   return hasWebSearchKey(cfg, env);
+}
+
+function hasGrokSearchKey(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
+  const grokSearch = cfg.tools?.web?.grokSearch;
+  return Boolean(grokSearch?.apiKey || env.XAI_API_KEY);
+}
+
+function isGrokSearchEnabled(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
+  const enabled = cfg.tools?.web?.grokSearch?.enabled;
+  if (enabled === false) {
+    return false;
+  }
+  if (enabled === true) {
+    return true;
+  }
+  return hasGrokSearchKey(cfg, env);
 }
 
 function isWebFetchEnabled(cfg: OpenClawConfig): boolean {
@@ -1010,6 +1020,11 @@ export function collectSmallModelRiskFindings(params: {
     if (isWebSearchEnabled(params.cfg, params.env)) {
       if (isToolAllowedByPolicies("web_search", policies)) {
         exposed.push("web_search");
+      }
+    }
+    if (isGrokSearchEnabled(params.cfg, params.env)) {
+      if (isToolAllowedByPolicies("grok_search", policies)) {
+        exposed.push("grok_search");
       }
     }
     if (isWebFetchEnabled(params.cfg)) {

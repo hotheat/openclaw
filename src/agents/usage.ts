@@ -20,6 +20,8 @@ export type UsageLike = {
   total_tokens?: number;
   cache_read?: number;
   cache_write?: number;
+  cachedInputTokens?: number;
+  cached_input_tokens?: number;
 };
 
 export type NormalizedUsage = {
@@ -65,6 +67,8 @@ export function normalizeUsage(raw?: UsageLike | null): NormalizedUsage | undefi
       raw.completion_tokens,
   );
   const cacheRead = asFiniteNumber(raw.cacheRead ?? raw.cache_read ?? raw.cache_read_input_tokens);
+  const cacheReadFromAlternate =
+    cacheRead ?? asFiniteNumber(raw.cachedInputTokens ?? raw.cached_input_tokens);
   const cacheWrite = asFiniteNumber(
     raw.cacheWrite ?? raw.cache_write ?? raw.cache_creation_input_tokens,
   );
@@ -73,7 +77,7 @@ export function normalizeUsage(raw?: UsageLike | null): NormalizedUsage | undefi
   if (
     input === undefined &&
     output === undefined &&
-    cacheRead === undefined &&
+    cacheReadFromAlternate === undefined &&
     cacheWrite === undefined &&
     total === undefined
   ) {
@@ -83,7 +87,7 @@ export function normalizeUsage(raw?: UsageLike | null): NormalizedUsage | undefi
   return {
     input,
     output,
-    cacheRead,
+    cacheRead: cacheReadFromAlternate,
     cacheWrite,
     total,
   };

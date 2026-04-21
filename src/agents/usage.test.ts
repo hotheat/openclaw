@@ -54,6 +54,22 @@ describe("normalizeUsage", () => {
     });
   });
 
+  it("normalizes xAI cachedInputTokens naming", () => {
+    const usage = normalizeUsage({
+      inputTokens: 1000,
+      outputTokens: 500,
+      cachedInputTokens: 250,
+      totalTokens: 1750,
+    });
+    expect(usage).toEqual({
+      input: 1000,
+      output: 500,
+      cacheRead: 250,
+      cacheWrite: undefined,
+      total: 1750,
+    });
+  });
+
   it("returns undefined when no valid fields are provided", () => {
     const usage = normalizeUsage(null);
     expect(usage).toBeUndefined();

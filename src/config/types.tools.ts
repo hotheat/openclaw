@@ -428,10 +428,8 @@ export type ToolsConfig = {
   byProvider?: Record<string, ToolPolicyConfig>;
   web?: {
     search?: {
-      /** Enable web search tool (default: true when API key is present). */
+      /** Enable Brave-backed web_search tool (default: true). */
       enabled?: boolean;
-      /** Search provider ("brave", "perplexity", or "grok"). */
-      provider?: "brave" | "perplexity" | "grok";
       /** Brave Search API key (optional; defaults to BRAVE_API_KEY env var). */
       apiKey?: string;
       /** Default search results count (1-10). */
@@ -440,24 +438,20 @@ export type ToolsConfig = {
       timeoutSeconds?: number;
       /** Cache TTL in minutes for search results. */
       cacheTtlMinutes?: number;
-      /** Perplexity-specific configuration (used when provider="perplexity"). */
-      perplexity?: {
-        /** API key for Perplexity or OpenRouter (defaults to PERPLEXITY_API_KEY or OPENROUTER_API_KEY env var). */
-        apiKey?: string;
-        /** Base URL for API requests (defaults to OpenRouter: https://openrouter.ai/api/v1). */
-        baseUrl?: string;
-        /** Model to use (defaults to "perplexity/sonar-pro"). */
-        model?: string;
-      };
-      /** Grok-specific configuration (used when provider="grok"). */
-      grok?: {
-        /** API key for xAI (defaults to XAI_API_KEY env var). */
-        apiKey?: string;
-        /** Model to use (defaults to "grok-4-1-fast"). */
-        model?: string;
-        /** Include inline citations in response text as markdown links (default: false). */
-        inlineCitations?: boolean;
-      };
+    };
+    grokSearch?: {
+      /** Enable synthesized Grok search tool (default: true). */
+      enabled?: boolean;
+      /** xAI API key (optional; defaults to XAI_API_KEY env var). */
+      apiKey?: string;
+      /** Model to use (defaults to "grok-4-1-fast"). */
+      model?: string;
+      /** Return structured inline citations when available (default: false). */
+      inlineCitations?: boolean;
+      /** Timeout in seconds for Grok search requests. */
+      timeoutSeconds?: number;
+      /** Cache TTL in minutes for Grok search results (default: 0 = disabled). */
+      cacheTtlMinutes?: number;
     };
     fetch?: {
       /** Enable web fetch tool (default: true). */
