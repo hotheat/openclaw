@@ -27,12 +27,18 @@ const DEFAULT_PROMPT = "Describe the image.";
 const ANTHROPIC_IMAGE_PRIMARY = "anthropic/claude-opus-4-6";
 const ANTHROPIC_IMAGE_FALLBACK = "anthropic/claude-opus-4-5";
 const DEFAULT_MAX_IMAGES = 20;
+const FEISHU_EXTERNAL_MEDIA_KEY_RE = /^(?:img|file)_v\d+_[A-Za-z0-9_-]+$/;
 
 export const __testing = {
   decodeDataUrl,
   coerceImageAssistantText,
   resolveImageToolMaxTokens,
+  looksLikeExternalMediaKey,
 } as const;
+
+function looksLikeExternalMediaKey(value: string): boolean {
+  return FEISHU_EXTERNAL_MEDIA_KEY_RE.test(value.trim());
+}
 
 function resolveImageToolMaxTokens(modelMaxTokens: number | undefined, requestedMaxTokens = 4096) {
   if (
@@ -369,6 +375,7 @@ export function createImageTool(options?: {
     }
     return Array.from(new Set([...roots, workspaceDir]));
   })();
+  const workspaceDir = normalizeWorkspaceDir(options?.workspaceDir);
 
   return {
     label: "Image",
@@ -472,6 +479,20 @@ export function createImageTool(options?: {
         const isFileUrl = /^file:/i.test(imageRaw);
         const isHttpUrl = /^https?:\/\//i.test(imageRaw);
         const isDataUrl = /^data:/i.test(imageRaw);
+        if (looksLikeExternalMediaKey(imageRaw)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Unsupported image reference: ${imageRawInput}. This looks like an unresolved external media key, not a local file. Pass a downloaded local path or a supported URL instead.`,
+              },
+            ],
+            details: {
+              error: "unresolved_external_media_key",
+              image: imageRawInput,
+            },
+          };
+        }
         if (hasScheme && !looksLikeWindowsDrivePath && !isFileUrl && !isHttpUrl && !isDataUrl) {
           return {
             content: [
@@ -497,6 +518,15 @@ export function createImageTool(options?: {
           }
           if (imageRaw.startsWith("~")) {
             return resolveUserPath(imageRaw);
+          }
+          if (
+            !isHttpUrl &&
+            !isDataUrl &&
+            !isFileUrl &&
+            !path.isAbsolute(imageRaw) &&
+            workspaceDir
+          ) {
+            return path.resolve(workspaceDir, imageRaw);
           }
           return imageRaw;
         })();
