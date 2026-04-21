@@ -45,7 +45,16 @@ describe("GitHub Actions workflow runners", () => {
     expect(content).toMatch(/\.github\/codex\/prompts\/review\.md/);
     expect(content).toMatch(/codex exec/);
     expect(content).toMatch(/--model gpt-5\.4/);
-    expect(content).toMatch(/issues\.createComment/);
+    expect(content).toMatch(/ref:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}/);
+    expect(content).toMatch(
+      /PR_HEAD_SHA:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha\s*\}\}/,
+    );
+    expect(content).not.toMatch(/curl -fsSL .*install-codex\.sh/);
+    expect(content).toMatch(/CODEX_VERSION:\s*\d+\.\d+\.\d+/);
+    expect(content).toMatch(/npm install --global .*@openai\/codex@\$\{CODEX_VERSION\}/);
+    expect(content).toMatch(/github\.rest\.issues\.listComments/);
+    expect(content).toMatch(/github\.rest\.issues\.updateComment/);
+    expect(content).toMatch(/const marker = ['"]<!-- codex-review -->['"]/);
   });
 
   it("includes an OpenClaw-specific Codex review prompt", async () => {
