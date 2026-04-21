@@ -1,6 +1,6 @@
 name: Codex Review
 
-'on':
+"on":
   pull_request:
     types:
       - opened
