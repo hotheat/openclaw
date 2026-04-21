@@ -95,6 +95,21 @@ export const LEGACY_CONFIG_RULES: LegacyConfigRule[] = [
     message: "tools.bash was removed; use tools.exec instead (auto-migrated on load).",
   },
   {
+    path: ["tools", "web", "search", "provider"],
+    message:
+      "tools.web.search.provider was removed. web_search is always Brave-backed now; remove this field. If you were using Grok, move that config to tools.web.grokSearch instead.",
+  },
+  {
+    path: ["tools", "web", "search", "perplexity"],
+    message:
+      "tools.web.search.perplexity was removed with routed-provider web_search. Remove this block; web_search is Brave-only now.",
+  },
+  {
+    path: ["tools", "web", "search", "grok"],
+    message:
+      "tools.web.search.grok was removed. Move Grok settings to tools.web.grokSearch and use the grok_search tool.",
+  },
+  {
     path: ["agent", "model"],
     message:
       "agent.model string was replaced by agents.defaults.model.primary/fallbacks and agents.defaults.models (auto-migrated on load).",

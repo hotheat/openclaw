@@ -281,7 +281,8 @@ export function handleMessageEnd(
   });
   const rawThinking =
     ctx.state.includeReasoning || ctx.state.streamReasoning
-      ? extractAssistantThinking(normalizedAssistantMessage) || extractThinkingFromTaggedText(rawText)
+      ? extractAssistantThinking(normalizedAssistantMessage) ||
+        extractThinkingFromTaggedText(rawText)
       : "";
   const formattedReasoning = rawThinking ? formatReasoningMessage(rawThinking) : "";
   const trimmedText = text.trim();

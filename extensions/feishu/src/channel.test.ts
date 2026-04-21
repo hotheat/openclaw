@@ -53,9 +53,7 @@ describe("feishuPlugin.agentPrompt.messageToolHints", () => {
 
     expect(hints).toEqual(expect.any(Array));
     expect(
-      hints.some((hint) =>
-        hint.includes("omit `target` to send to the current conversation"),
-      ),
+      hints.some((hint) => hint.includes("omit `target` to send to the current conversation")),
     ).toBe(true);
     expect(
       hints.some(

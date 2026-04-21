@@ -8,6 +8,7 @@ import {
   resolveActionSpec,
   resolveDetailFromKeys,
   resolveExecDetail,
+  resolveGrokSearchDetail,
   resolveReadDetail,
   resolveWebFetchDetail,
   resolveWebSearchDetail,
@@ -78,9 +79,11 @@ export function resolveToolDisplay(params: {
   const fallbackVerb =
     key === "web_search"
       ? "search"
-      : key === "web_fetch"
-        ? "fetch"
-        : key.replace(/_/g, " ").replace(/\./g, " ");
+      : key === "grok_search"
+        ? "search"
+        : key === "web_fetch"
+          ? "fetch"
+          : key.replace(/_/g, " ").replace(/\./g, " ");
   const verb = normalizeVerb(actionSpec?.label ?? action ?? fallbackVerb);
 
   let detail: string | undefined;
@@ -96,6 +99,10 @@ export function resolveToolDisplay(params: {
 
   if (!detail && key === "web_search") {
     detail = resolveWebSearchDetail(params.args);
+  }
+
+  if (!detail && key === "grok_search") {
+    detail = resolveGrokSearchDetail(params.args);
   }
 
   if (!detail && key === "web_fetch") {

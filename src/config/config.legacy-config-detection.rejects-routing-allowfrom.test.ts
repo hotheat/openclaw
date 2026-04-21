@@ -25,6 +25,21 @@ describe("legacy config detection", () => {
         input: { routing: { groupChat: { requireMention: false } } },
         expectedPath: "routing.groupChat.requireMention",
       },
+      {
+        name: "tools.web.search.provider",
+        input: { tools: { web: { search: { provider: "grok" } } } },
+        expectedPath: "tools.web.search.provider",
+      },
+      {
+        name: "tools.web.search.perplexity",
+        input: { tools: { web: { search: { perplexity: { apiKey: "pplx-test" } } } } },
+        expectedPath: "tools.web.search.perplexity",
+      },
+      {
+        name: "tools.web.search.grok",
+        input: { tools: { web: { search: { grok: { apiKey: "xai-test" } } } } },
+        expectedPath: "tools.web.search.grok",
+      },
     ] as const;
     for (const testCase of cases) {
       const res = validateConfigObject(testCase.input);

@@ -165,6 +165,13 @@ describe("external-content security", () => {
       expect(result).toContain("Source: Web Search");
     });
 
+    it("supports grok_search as a source label", () => {
+      const result = wrapWebContent("Synthesized answer", "grok_search");
+
+      expect(result).toContain("Source: Grok Search");
+      expect(result).not.toContain("SECURITY NOTICE");
+    });
+
     it("adds warnings for web fetch content", () => {
       const result = wrapWebContent("Full page content", "web_fetch");
 

@@ -182,7 +182,7 @@ function createOpenAIResponsesStoreWrapper(baseStreamFn: StreamFn | undefined): 
         if (payload && typeof payload === "object") {
           (payload as { store?: unknown }).store = true;
         }
-        return originalOnPayload?.(payload, model);
+        return originalOnPayload?.(payload);
       },
     });
   };
@@ -337,7 +337,7 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
             }
           }
         }
-        return originalOnPayload?.(payload, model);
+        return originalOnPayload?.(payload);
       },
     });
   };
@@ -396,7 +396,7 @@ function createOpenRouterWrapper(
             };
           }
         }
-        return onPayload?.(payload, model);
+        return onPayload?.(payload);
       },
     });
   };
@@ -429,7 +429,7 @@ function createZaiToolStreamWrapper(
           // Inject tool_stream: true for Z.AI API
           (payload as Record<string, unknown>).tool_stream = true;
         }
-        return originalOnPayload?.(payload, model);
+        return originalOnPayload?.(payload);
       },
     });
   };

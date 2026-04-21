@@ -249,27 +249,22 @@ export const ToolPolicySchema = ToolPolicyBaseSchema.superRefine((value, ctx) =>
 export const ToolsWebSearchSchema = z
   .object({
     enabled: z.boolean().optional(),
-    provider: z.union([z.literal("brave"), z.literal("perplexity"), z.literal("grok")]).optional(),
     apiKey: z.string().optional().register(sensitive),
     maxResults: z.number().int().positive().optional(),
     timeoutSeconds: z.number().int().positive().optional(),
     cacheTtlMinutes: z.number().nonnegative().optional(),
-    perplexity: z
-      .object({
-        apiKey: z.string().optional().register(sensitive),
-        baseUrl: z.string().optional(),
-        model: z.string().optional(),
-      })
-      .strict()
-      .optional(),
-    grok: z
-      .object({
-        apiKey: z.string().optional().register(sensitive),
-        model: z.string().optional(),
-        inlineCitations: z.boolean().optional(),
-      })
-      .strict()
-      .optional(),
+  })
+  .strict()
+  .optional();
+
+export const ToolsWebGrokSearchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    apiKey: z.string().optional().register(sensitive),
+    model: z.string().optional(),
+    inlineCitations: z.boolean().optional(),
+    timeoutSeconds: z.number().int().positive().optional(),
+    cacheTtlMinutes: z.number().nonnegative().optional(),
   })
   .strict()
   .optional();
@@ -301,6 +296,7 @@ export const ToolsWebFetchSchema = z
 export const ToolsWebSchema = z
   .object({
     search: ToolsWebSearchSchema,
+    grokSearch: ToolsWebGrokSearchSchema,
     fetch: ToolsWebFetchSchema,
   })
   .strict()

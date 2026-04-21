@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("GitHub Actions workflow runners", () => {
-  it("uses GitHub-hosted runner labels that are available in this repository", async () => {
+  it("does not require unavailable Blacksmith runners", async () => {
     const workflowsDir = path.resolve(process.cwd(), ".github", "workflows");
     const workflowFiles = (await readdir(workflowsDir)).filter((file) => file.endsWith(".yml"));
 
@@ -27,18 +27,11 @@ describe("GitHub Actions workflow runners", () => {
     );
   });
 
-  it("skips labeler jobs when the GitHub App private key is unavailable", async () => {
-    const labelerPath = path.resolve(process.cwd(), ".github", "workflows", "labeler.yml");
-    const content = await readFile(labelerPath, "utf8");
+  it("keeps pull request CI on the fast test slice instead of the full parallel suite", async () => {
+    const ciWorkflowPath = path.resolve(process.cwd(), ".github", "workflows", "ci.yml");
+    const content = await readFile(ciWorkflowPath, "utf8");
 
-    expect(content).toMatch(
-      /label:\n(?:.*\n)*?\s{4}if: \$\{\{ secrets\.GH_APP_PRIVATE_KEY != '' \}\}/,
-    );
-    expect(content).toMatch(
-      /backfill-pr-labels:\n(?:.*\n)*?\s{4}if: github\.event_name == 'workflow_dispatch' && secrets\.GH_APP_PRIVATE_KEY != ''/,
-    );
-    expect(content).toMatch(
-      /label-issues:\n(?:.*\n)*?\s{4}if: \$\{\{ secrets\.GH_APP_PRIVATE_KEY != '' \}\}/,
-    );
+    expect(content).toMatch(/- name: Run test suite\n\s+run: pnpm test:fast/);
+    expect(content).not.toMatch(/- name: Run test suite\n\s+run: pnpm test\s*$/m);
   });
 });
