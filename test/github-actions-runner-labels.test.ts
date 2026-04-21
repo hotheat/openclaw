@@ -41,4 +41,27 @@ describe("GitHub Actions workflow runners", () => {
       /label-issues:\n(?:.*\n)*?\s{4}if: \$\{\{ secrets\.GH_APP_PRIVATE_KEY != '' \}\}/,
     );
   });
+
+  it("includes a Codex review workflow for pull requests", async () => {
+    const workflowPath = path.resolve(process.cwd(), ".github", "workflows", "codex-review.yml");
+    const content = await readFile(workflowPath, "utf8");
+
+    expect(content).toMatch(/name: Codex Review/);
+    expect(content).toMatch(/pull_request:/);
+    expect(content).toMatch(/CODEX_TOKEN/);
+    expect(content).toMatch(/\.github\/codex\/prompts\/review\.md/);
+    expect(content).toMatch(/codex exec/);
+    expect(content).toMatch(/--model gpt-5\.4/);
+    expect(content).toMatch(/issues\.createComment/);
+  });
+
+  it("includes an OpenClaw-specific Codex review prompt", async () => {
+    const promptPath = path.resolve(process.cwd(), ".github", "codex", "prompts", "review.md");
+    const content = await readFile(promptPath, "utf8");
+
+    expect(content).toMatch(/OpenClaw/i);
+    expect(content).toMatch(/plugin/i);
+    expect(content).toMatch(/routing/i);
+    expect(content).toMatch(/Output format/i);
+  });
 });
