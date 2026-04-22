@@ -1,5 +1,5 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import { applyExtraParamsToAgent, resolveExtraParams } from "./pi-embedded-runner.js";
 
@@ -64,6 +64,17 @@ describe("resolveExtraParams", () => {
 });
 
 describe("applyExtraParamsToAgent", () => {
+  function invokeOnPayloadCompat(
+    options: SimpleStreamOptions | undefined,
+    payload: unknown,
+    model: Model<Api>,
+  ) {
+    (options?.onPayload as ((payload: unknown, model?: Model<Api>) => unknown) | undefined)?.(
+      payload,
+      model,
+    );
+  }
+
   function createOptionsCaptureAgent() {
     const calls: Array<SimpleStreamOptions | undefined> = [];
     const baseStreamFn: StreamFn = (_model, _context, options) => {
@@ -99,7 +110,7 @@ describe("applyExtraParamsToAgent", () => {
   }) {
     const payload = { store: false };
     const baseStreamFn: StreamFn = (model, _context, options) => {
-      options?.onPayload?.(payload, model);
+      invokeOnPayloadCompat(options, payload, model);
       return {} as ReturnType<StreamFn>;
     };
     const agent = { streamFn: baseStreamFn };

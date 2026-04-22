@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { MsgContext } from "../templating.js";
 import {
   attachRecentImageSnapshot,
   buildRecentImageSnapshot,
@@ -41,7 +42,7 @@ describe("recent media helpers", () => {
   });
 
   it("attaches the pending recent image to the next text-only message", () => {
-    const ctx = {
+    const ctx: MsgContext = {
       MessageSid: "msg-text",
       SenderId: "user-1",
       AccountId: "default",

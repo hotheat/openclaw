@@ -1,5 +1,5 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { Context, Model } from "@mariozechner/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import { describe, expect, it } from "vitest";
 import { applyExtraParamsToAgent } from "./extra-params.js";
@@ -11,9 +11,20 @@ type StreamPayload = {
   }>;
 };
 
+function invokeOnPayloadCompat(
+  options: SimpleStreamOptions | undefined,
+  payload: unknown,
+  model: Model<Api>,
+) {
+  (options?.onPayload as ((payload: unknown, model?: Model<Api>) => unknown) | undefined)?.(
+    payload,
+    model,
+  );
+}
+
 function runOpenRouterPayload(payload: StreamPayload, modelId: string) {
   const baseStreamFn: StreamFn = (model, _context, options) => {
-    options?.onPayload?.(payload, model);
+    invokeOnPayloadCompat(options, payload, model);
     return createAssistantMessageEventStream();
   };
   const agent = { streamFn: baseStreamFn };
