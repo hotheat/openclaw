@@ -373,7 +373,7 @@ export async function initSessionState(params: {
       }).fresh
     : false;
 
-  if (!isNewSession && freshEntry) {
+  if (!isNewSession && freshEntry && existingSessionEntry) {
     sessionId = existingSessionEntry.sessionId;
     systemSent = existingSessionEntry.systemSent ?? false;
     abortedLastRun = existingSessionEntry.abortedLastRun ?? false;

@@ -32,6 +32,8 @@ type PiAiOAuthModule = {
 };
 
 let piAiOAuthModulePromise: Promise<PiAiOAuthModule> | null = null;
+const PI_AI_OAUTH_SUBPATH = "@mariozechner/pi-ai/oauth";
+const PI_AI_PACKAGE = "@mariozechner/pi-ai";
 
 function isMissingOAuthSubpathError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
@@ -42,12 +44,12 @@ async function loadPiAiOAuthModule(): Promise<PiAiOAuthModule> {
   if (!piAiOAuthModulePromise) {
     piAiOAuthModulePromise = (async () => {
       try {
-        return (await import("@mariozechner/pi-ai/oauth")) as PiAiOAuthModule;
+        return (await import(PI_AI_OAUTH_SUBPATH)) as PiAiOAuthModule;
       } catch (error) {
         if (!isMissingOAuthSubpathError(error)) {
           throw error;
         }
-        return (await import("@mariozechner/pi-ai")) as PiAiOAuthModule;
+        return (await import(PI_AI_PACKAGE)) as PiAiOAuthModule;
       }
     })();
   }
