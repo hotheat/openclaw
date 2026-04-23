@@ -22,6 +22,20 @@ export type SessionOrigin = {
   threadId?: string | number;
 };
 
+export type SessionRecentMediaSnapshot = {
+  kind: "image";
+  messageId?: string;
+  messageIdFull?: string;
+  senderId?: string;
+  accountId?: string;
+  threadId?: string | number;
+  capturedAt: number;
+  paths: string[];
+  urls?: string[];
+  types?: string[];
+  pendingFollowup?: boolean;
+};
+
 export type SessionEntry = {
   /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
@@ -105,6 +119,13 @@ export type SessionEntry = {
   groupChannel?: string;
   space?: string;
   origin?: SessionOrigin;
+  recentMediaSnapshot?: SessionRecentMediaSnapshot;
+  /**
+   * Internal marker for an image snapshot staged before full session init
+   * completes. The next init should consume/clear it without treating the
+   * placeholder entry as a fully initialized session.
+   */
+  pendingRecentMediaSnapshotInit?: boolean;
   deliveryContext?: DeliveryContext;
   lastChannel?: SessionChannelId;
   lastTo?: string;

@@ -1,11 +1,7 @@
-import {
-  getOAuthApiKey,
-  getOAuthProviders,
-  type OAuthCredentials,
-  type OAuthProvider,
-} from "@mariozechner/pi-ai";
+import type { OAuthCredentials, OAuthProvider } from "@mariozechner/pi-ai";
 import type { OpenClawConfig } from "../../config/config.js";
 import { withFileLock } from "../../infra/file-lock.js";
+import { getPiAiOAuthApiKey, getPiAiOAuthProviders } from "../../infra/pi-ai-oauth.js";
 import { refreshQwenPortalCredentials } from "../../providers/qwen-portal-oauth.js";
 import { refreshChutesTokens } from "../chutes-oauth.js";
 import { AUTH_STORE_LOCK_OPTIONS, log } from "./constants.js";
@@ -15,13 +11,10 @@ import { suggestOAuthProfileIdForLegacyDefault } from "./repair.js";
 import { ensureAuthProfileStore, saveAuthProfileStore } from "./store.js";
 import type { AuthProfileStore } from "./types.js";
 
-const OAUTH_PROVIDER_IDS = new Set<string>(getOAuthProviders().map((provider) => provider.id));
-
-const isOAuthProvider = (provider: string): provider is OAuthProvider =>
-  OAUTH_PROVIDER_IDS.has(provider);
-
-const resolveOAuthProvider = (provider: string): OAuthProvider | null =>
-  isOAuthProvider(provider) ? provider : null;
+async function resolveOAuthProvider(provider: string): Promise<OAuthProvider | null> {
+  const providers = await getPiAiOAuthProviders();
+  return providers.some((candidate) => candidate.id === provider) ? provider : null;
+}
 
 /** Bearer-token auth modes that are interchangeable (oauth tokens and raw tokens). */
 const BEARER_AUTH_MODES = new Set(["oauth", "token"]);
@@ -173,11 +166,11 @@ async function refreshOAuthTokenWithLock(params: {
               return { apiKey: newCredentials.access, newCredentials };
             })()
           : await (async () => {
-              const oauthProvider = resolveOAuthProvider(cred.provider);
+              const oauthProvider = await resolveOAuthProvider(cred.provider);
               if (!oauthProvider) {
                 return null;
               }
-              return await getOAuthApiKey(oauthProvider, oauthCreds);
+              return await getPiAiOAuthApiKey(oauthProvider, oauthCreds);
             })();
     if (!result) {
       return null;

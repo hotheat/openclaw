@@ -179,6 +179,7 @@ export function createOpenClawCodingTools(options?: {
   sessionKey?: string;
   agentDir?: string;
   workspaceDir?: string;
+  inboundMediaPaths?: string[];
   config?: OpenClawConfig;
   abortSignal?: AbortSignal;
   /**
@@ -457,6 +458,7 @@ export function createOpenClawCodingTools(options?: {
       sandboxRoot,
       sandboxFsBridge,
       workspaceDir: workspaceRoot,
+      inboundMediaPaths: options?.inboundMediaPaths,
       sandboxed: !!sandbox,
       config: options?.config,
       pluginToolAllowlist: collectExplicitAllowlist([

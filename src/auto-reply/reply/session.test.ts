@@ -5,13 +5,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { buildModelAliasIndex } from "../../agents/model-selection.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { saveSessionStore } from "../../config/sessions.js";
+import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import { enqueueSystemEvent, resetSystemEventsForTest } from "../../infra/system-events.js";
 import { applyResetModelOverride } from "./session-reset-model.js";
 import { prependSystemEvents } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
-import { initSessionState } from "./session.js";
+import { initSessionState, persistRecentMediaSnapshotEarly } from "./session.js";
 
 // Perf: session-store locks are exercised elsewhere; most session tests don't need FS lock files.
 vi.mock("../../agents/session-write-lock.js", () => ({
@@ -50,6 +50,135 @@ async function makeStorePath(prefix: string): Promise<string> {
 }
 
 const createStorePath = makeStorePath;
+
+describe("initSessionState recent image snapshots", () => {
+  it("keeps the first full init as a new session after early image snapshot persistence", async () => {
+    const storePath = await createStorePath("openclaw-session-early-image-");
+    const cfg = {
+      session: { store: storePath },
+    } as OpenClawConfig;
+    const ctx = {
+      Body: "<media:image>",
+      BodyForAgent: "<media:image>",
+      RawBody: "<media:image>",
+      CommandBody: "<media:image>",
+      SessionKey: "agent:main:feishu:direct:ou_1",
+      SenderId: "ou_1",
+      AccountId: "default",
+      MediaPath: "/tmp/inbound-image.jpg",
+      MediaType: "image/jpeg",
+    };
+
+    await persistRecentMediaSnapshotEarly({ ctx, cfg });
+
+    const earlyStore = loadSessionStore(storePath, { skipCache: true });
+    expect(earlyStore[ctx.SessionKey]?.recentMediaSnapshot?.paths).toEqual([
+      "/tmp/inbound-image.jpg",
+    ]);
+    expect(earlyStore[ctx.SessionKey]?.pendingRecentMediaSnapshotInit).toBe(true);
+
+    const result = await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.sessionEntry.pendingRecentMediaSnapshotInit).toBeUndefined();
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[result.sessionKey]?.pendingRecentMediaSnapshotInit).toBeUndefined();
+    expect(store[result.sessionKey]?.recentMediaSnapshot?.paths).toEqual([
+      "/tmp/inbound-image.jpg",
+    ]);
+  });
+
+  it("persists the latest inbound image on the session entry", async () => {
+    const storePath = await createStorePath("openclaw-session-recent-image-");
+    const cfg = {
+      session: { store: storePath },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "<media:image>",
+        BodyForAgent: "<media:image>",
+        RawBody: "<media:image>",
+        CommandBody: "<media:image>",
+        SessionKey: "agent:main:feishu:direct:ou_1",
+        SenderId: "ou_1",
+        AccountId: "default",
+        MediaPath: "/tmp/inbound-image.jpg",
+        MediaType: "image/jpeg",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry.recentMediaSnapshot).toEqual({
+      kind: "image",
+      messageId: undefined,
+      messageIdFull: undefined,
+      senderId: "ou_1",
+      accountId: "default",
+      threadId: undefined,
+      capturedAt: expect.any(Number),
+      paths: ["/tmp/inbound-image.jpg"],
+      urls: undefined,
+      types: ["image/jpeg"],
+      pendingFollowup: true,
+    });
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[result.sessionKey]?.recentMediaSnapshot?.paths).toEqual([
+      "/tmp/inbound-image.jpg",
+    ]);
+  });
+
+  it("rehydrates the latest image onto the next text-only turn in the same session", async () => {
+    const storePath = await createStorePath("openclaw-session-rehydrate-image-");
+    const cfg = {
+      session: { store: storePath },
+    } as OpenClawConfig;
+
+    await initSessionState({
+      ctx: {
+        Body: "<media:image>",
+        BodyForAgent: "<media:image>",
+        RawBody: "<media:image>",
+        CommandBody: "<media:image>",
+        SessionKey: "agent:main:feishu:direct:ou_1",
+        SenderId: "ou_1",
+        AccountId: "default",
+        MediaPath: "/tmp/inbound-image.jpg",
+        MediaType: "image/jpeg",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "解释这个图片",
+        BodyForAgent: "解释这个图片",
+        RawBody: "解释这个图片",
+        CommandBody: "解释这个图片",
+        SessionKey: "agent:main:feishu:direct:ou_1",
+        SenderId: "ou_1",
+        AccountId: "default",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionCtx.MediaPath).toBe("/tmp/inbound-image.jpg");
+    expect(result.sessionCtx.MediaType).toBe("image/jpeg");
+    expect(result.sessionEntry.recentMediaSnapshot?.pendingFollowup).toBe(false);
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+    expect(store[result.sessionKey]?.recentMediaSnapshot?.pendingFollowup).toBe(false);
+  });
+});
 
 describe("initSessionState thread forking", () => {
   it("forks a new session from the parent session file", async () => {

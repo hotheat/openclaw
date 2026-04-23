@@ -107,6 +107,17 @@ type RunPreparedReplyParams = {
   abortedLastRun: boolean;
 };
 
+function collectInboundMediaPaths(sessionCtx: TemplateContext): string[] | undefined {
+  const mediaPaths = Array.isArray(sessionCtx.MediaPaths)
+    ? sessionCtx.MediaPaths.map((entry) => entry?.trim()).filter(Boolean)
+    : [];
+  if (mediaPaths.length > 0) {
+    return mediaPaths;
+  }
+  const mediaPath = sessionCtx.MediaPath?.trim();
+  return mediaPath ? [mediaPath] : undefined;
+}
+
 export async function runPreparedReply(
   params: RunPreparedReplyParams,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
@@ -419,6 +430,7 @@ export async function runPreparedReply(
       senderIsOwner: command.senderIsOwner,
       sessionFile,
       workspaceDir,
+      inboundMediaPaths: collectInboundMediaPaths(sessionCtx),
       config: cfg,
       skillsSnapshot,
       provider,

@@ -14,7 +14,7 @@ import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
-import type { MsgContext } from "../templating.js";
+import type { MsgContext, TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveDefaultModel } from "./directive-handling.js";
@@ -22,8 +22,9 @@ import { resolveReplyDirectives } from "./get-reply-directives.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
+import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { applyResetModelOverride } from "./session-reset-model.js";
-import { initSessionState } from "./session.js";
+import { initSessionState, persistRecentMediaSnapshotEarly } from "./session.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 import { createTypingController } from "./typing.js";
 
@@ -68,6 +69,30 @@ function mergeAgentDefaults(
     merged.heartbeat = { ...defaults?.heartbeat, ...overrides?.heartbeat };
   }
   return merged;
+}
+
+function hasInboundMedia(ctx: MsgContext): boolean {
+  return Boolean(
+    (Array.isArray(ctx.MediaPaths) && ctx.MediaPaths.length > 0) ||
+    (typeof ctx.MediaPath === "string" && ctx.MediaPath.trim().length > 0),
+  );
+}
+
+function buildSessionBodyStripped(ctx: MsgContext): string {
+  return normalizeInboundTextNewlines(
+    ctx.BodyForAgent ?? ctx.Body ?? ctx.CommandBody ?? ctx.RawBody ?? ctx.BodyForCommands ?? "",
+  );
+}
+
+function syncSessionContextFromInbound(params: {
+  ctx: MsgContext;
+  sessionCtx: TemplateContext;
+}): TemplateContext {
+  return {
+    ...params.sessionCtx,
+    ...params.ctx,
+    BodyStripped: buildSessionBodyStripped(params.ctx),
+  };
 }
 
 export async function getReplyFromConfig(
@@ -150,6 +175,11 @@ export async function getReplyFromConfig(
   opts?.onTypingController?.(typing);
 
   const finalized = finalizeInboundContext(ctx);
+  await persistRecentMediaSnapshotEarly({
+    ctx: finalized,
+    cfg,
+  });
+  const hadInboundMediaBeforeSessionInit = hasInboundMedia(finalized);
 
   if (!isFastTestEnv) {
     await applyMediaUnderstanding({
@@ -193,6 +223,19 @@ export async function getReplyFromConfig(
     triggerBodyNormalized,
     bodyStripped,
   } = sessionState;
+
+  if (!isFastTestEnv && !hadInboundMediaBeforeSessionInit && hasInboundMedia(finalized)) {
+    await applyMediaUnderstanding({
+      ctx: finalized,
+      cfg,
+      agentDir,
+      activeModel: { provider, model },
+    });
+    sessionCtx = syncSessionContextFromInbound({
+      ctx: finalized,
+      sessionCtx,
+    });
+  }
 
   await applyResetModelOverride({
     cfg,

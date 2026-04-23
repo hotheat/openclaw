@@ -88,6 +88,21 @@ function findLastAssistantUsage(messages: AgentMessage[]): Record<string, unknow
   return null;
 }
 
+type CompatOnPayload =
+  | ((payload: unknown) => unknown)
+  | ((payload: unknown, model: Model<Api>) => unknown);
+
+function invokeOnPayload(
+  onPayload: CompatOnPayload | undefined,
+  payload: unknown,
+  payloadModel: Model<Api> | undefined,
+) {
+  return (onPayload as ((payload: unknown, model?: Model<Api>) => unknown) | undefined)?.(
+    payload,
+    payloadModel,
+  );
+}
+
 export type AnthropicPayloadLogger = {
   enabled: true;
   wrapStreamFn: (streamFn: StreamFn) => StreamFn;
@@ -134,7 +149,8 @@ export function createAnthropicPayloadLogger(params: {
       if (!isAnthropicModel(model)) {
         return streamFn(model, context, options);
       }
-      const nextOnPayload = (payload: unknown) => {
+      const nextOnPayload = (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
         record({
           ...base,
           ts: new Date().toISOString(),
@@ -142,7 +158,7 @@ export function createAnthropicPayloadLogger(params: {
           payload,
           payloadDigest: digest(payload),
         });
-        return options?.onPayload?.(payload);
+        return invokeOnPayload(options?.onPayload, payload, payloadModel);
       };
       return streamFn(model, context, {
         ...options,

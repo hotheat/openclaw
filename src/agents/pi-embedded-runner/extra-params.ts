@@ -1,5 +1,5 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { Api, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/config.js";
@@ -36,6 +36,21 @@ type CacheRetention = "none" | "short" | "long";
 type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
   cacheRetention?: CacheRetention;
 };
+
+type CompatOnPayload =
+  | ((payload: unknown) => unknown)
+  | ((payload: unknown, model: Model<Api>) => unknown);
+
+function invokeOnPayload(
+  onPayload: CompatOnPayload | undefined,
+  payload: unknown,
+  payloadModel: Model<Api> | undefined,
+) {
+  return (onPayload as ((payload: unknown, model?: Model<Api>) => unknown) | undefined)?.(
+    payload,
+    payloadModel,
+  );
+}
 
 /**
  * Resolve cacheRetention from extraParams, supporting both new `cacheRetention`
@@ -178,11 +193,12 @@ function createOpenAIResponsesStoreWrapper(baseStreamFn: StreamFn | undefined): 
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
         if (payload && typeof payload === "object") {
           (payload as { store?: unknown }).store = true;
         }
-        return originalOnPayload?.(payload);
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
       },
     });
   };
@@ -318,7 +334,8 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
         const messages = (payload as Record<string, unknown>)?.messages;
         if (Array.isArray(messages)) {
           for (const msg of messages as PayloadMessage[]) {
@@ -337,7 +354,7 @@ function createOpenRouterSystemCacheWrapper(baseStreamFn: StreamFn | undefined):
             }
           }
         }
-        return originalOnPayload?.(payload);
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
       },
     });
   };
@@ -373,7 +390,8 @@ function createOpenRouterWrapper(
         ...OPENROUTER_APP_HEADERS,
         ...options?.headers,
       },
-      onPayload: (payload) => {
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
         if (thinkingLevel && payload && typeof payload === "object") {
           const payloadObj = payload as Record<string, unknown>;
           const existingReasoning = payloadObj.reasoning;
@@ -396,7 +414,7 @@ function createOpenRouterWrapper(
             };
           }
         }
-        return onPayload?.(payload);
+        return invokeOnPayload(onPayload, payload, payloadModel);
       },
     });
   };
@@ -424,12 +442,13 @@ function createZaiToolStreamWrapper(
     const originalOnPayload = options?.onPayload;
     return underlying(model, context, {
       ...options,
-      onPayload: (payload) => {
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
         if (payload && typeof payload === "object") {
           // Inject tool_stream: true for Z.AI API
           (payload as Record<string, unknown>).tool_stream = true;
         }
-        return originalOnPayload?.(payload);
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
       },
     });
   };

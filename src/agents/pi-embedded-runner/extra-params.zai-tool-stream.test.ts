@@ -1,5 +1,5 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { Api, Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { applyExtraParamsToAgent } from "./extra-params.js";
 
@@ -19,10 +19,21 @@ type ToolStreamCase = {
   options?: SimpleStreamOptions;
 };
 
+function invokeOnPayloadCompat(
+  options: SimpleStreamOptions | undefined,
+  payload: unknown,
+  model: Model<Api>,
+) {
+  (options?.onPayload as ((payload: unknown, model?: Model<Api>) => unknown) | undefined)?.(
+    payload,
+    model,
+  );
+}
+
 function runToolStreamCase(params: ToolStreamCase) {
   const payload: Record<string, unknown> = { model: params.model.id, messages: [] };
-  const baseStreamFn: StreamFn = (_model, _context, options) => {
-    options?.onPayload?.(payload);
+  const baseStreamFn: StreamFn = (model, _context, options) => {
+    invokeOnPayloadCompat(options, payload, model);
     return {} as ReturnType<StreamFn>;
   };
   const agent = { streamFn: baseStreamFn };

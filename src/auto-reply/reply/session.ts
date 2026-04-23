@@ -11,6 +11,7 @@ import {
   evaluateSessionFreshness,
   type GroupKeyResolution,
   loadSessionStore,
+  mergeSessionEntry,
   resolveAndPersistSessionFile,
   resolveChannelResetConfig,
   resolveThreadFlag,
@@ -42,8 +43,87 @@ import { resolveCommandAuthorization } from "../command-auth.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
+import {
+  attachRecentImageSnapshot,
+  buildRecentImageSnapshot,
+  shouldAttachRecentImageSnapshot,
+} from "./recent-media.js";
 
 const log = createSubsystemLogger("session-init");
+
+type ResolvedSessionStoreTarget = {
+  sessionCtxForState: MsgContext;
+  sessionScope: SessionScope;
+  agentId: string;
+  groupResolution?: GroupKeyResolution;
+  storePath: string;
+  sessionKey: string;
+};
+
+function resolveSessionStoreTarget(params: {
+  ctx: MsgContext;
+  cfg: OpenClawConfig;
+}): ResolvedSessionStoreTarget {
+  const { ctx, cfg } = params;
+  // Native slash commands (Telegram/Discord/Slack) are delivered on a separate
+  // "slash session" key, but should mutate the target chat session.
+  const targetSessionKey =
+    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
+  const sessionCtxForState =
+    targetSessionKey && targetSessionKey !== ctx.SessionKey
+      ? { ...ctx, SessionKey: targetSessionKey }
+      : ctx;
+  const sessionCfg = cfg.session;
+  const mainKey = normalizeMainKey(sessionCfg?.mainKey);
+  const agentId = resolveSessionAgentId({
+    sessionKey: sessionCtxForState.SessionKey,
+    config: cfg,
+  });
+  const groupResolution = resolveGroupSessionKey(sessionCtxForState) ?? undefined;
+  const sessionScope = sessionCfg?.scope ?? "per-sender";
+  const storePath = resolveStorePath(sessionCfg?.store, { agentId });
+  const sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
+  return {
+    sessionCtxForState,
+    sessionScope,
+    agentId,
+    groupResolution,
+    storePath,
+    sessionKey,
+  };
+}
+
+function isPendingRecentMediaSnapshotInit(entry?: SessionEntry): boolean {
+  return entry?.pendingRecentMediaSnapshotInit === true;
+}
+
+export async function persistRecentMediaSnapshotEarly(params: {
+  ctx: MsgContext;
+  cfg: OpenClawConfig;
+}): Promise<void> {
+  const snapshot = buildRecentImageSnapshot(params.ctx);
+  if (!snapshot) {
+    return;
+  }
+
+  const { storePath, sessionKey } = resolveSessionStoreTarget(params);
+  await updateSessionStore(
+    storePath,
+    (store) => {
+      const existing = store[sessionKey];
+      const patch: Partial<SessionEntry> = {
+        recentMediaSnapshot: snapshot,
+      };
+
+      if (!existing || isPendingRecentMediaSnapshotInit(existing)) {
+        patch.pendingRecentMediaSnapshotInit = true;
+      }
+
+      store[sessionKey] = mergeSessionEntry(existing, patch);
+    },
+    { activeSessionKey: sessionKey },
+  );
+}
 
 function resolveSessionKeyChannelHint(sessionKey?: string): string | undefined {
   const parsed = parseAgentSessionKey(sessionKey);
@@ -122,9 +202,25 @@ function forkSessionFromParent(params: {
     const manager = SessionManager.open(parentSessionFile);
     const leafId = manager.getLeafId();
     if (leafId) {
-      const sessionFile = manager.createBranchedSession(leafId) ?? manager.getSessionFile();
-      const sessionId = manager.getSessionId();
-      if (sessionFile && sessionId) {
+      const branchEntries = manager.getBranch(leafId);
+      if (branchEntries.length > 0) {
+        const sessionId = crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+        const fileTimestamp = timestamp.replace(/[:.]/g, "-");
+        const sessionFile = path.join(
+          manager.getSessionDir(),
+          `${fileTimestamp}_${sessionId}.jsonl`,
+        );
+        const header = {
+          type: "session",
+          version: CURRENT_SESSION_VERSION,
+          id: sessionId,
+          timestamp,
+          cwd: manager.getCwd(),
+          parentSession: parentSessionFile,
+        };
+        const payload = [header, ...branchEntries].map((entry) => JSON.stringify(entry)).join("\n");
+        fs.writeFileSync(sessionFile, `${payload}\n`, "utf-8");
         return { sessionId, sessionFile };
       }
     }
@@ -153,26 +249,12 @@ export async function initSessionState(params: {
   commandAuthorized: boolean;
 }): Promise<SessionInitResult> {
   const { ctx, cfg, commandAuthorized } = params;
-  // Native slash commands (Telegram/Discord/Slack) are delivered on a separate
-  // "slash session" key, but should mutate the target chat session.
-  const targetSessionKey =
-    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
-  const sessionCtxForState =
-    targetSessionKey && targetSessionKey !== ctx.SessionKey
-      ? { ...ctx, SessionKey: targetSessionKey }
-      : ctx;
   const sessionCfg = cfg.session;
-  const mainKey = normalizeMainKey(sessionCfg?.mainKey);
-  const agentId = resolveSessionAgentId({
-    sessionKey: sessionCtxForState.SessionKey,
-    config: cfg,
-  });
-  const groupResolution = resolveGroupSessionKey(sessionCtxForState) ?? undefined;
+  const { sessionCtxForState, sessionScope, agentId, groupResolution, storePath, sessionKey } =
+    resolveSessionStoreTarget({ ctx, cfg });
   const resetTriggers = sessionCfg?.resetTriggers?.length
     ? sessionCfg.resetTriggers
     : DEFAULT_RESET_TRIGGERS;
-  const sessionScope = sessionCfg?.scope ?? "per-sender";
-  const storePath = resolveStorePath(sessionCfg?.store, { agentId });
 
   // CRITICAL: Skip cache to ensure fresh data when resolving session identity.
   // Stale cache (especially with multiple gateway processes or on Windows where
@@ -181,7 +263,6 @@ export async function initSessionState(params: {
   const sessionStore: Record<string, SessionEntry> = loadSessionStore(storePath, {
     skipCache: true,
   });
-  let sessionKey: string | undefined;
   let sessionEntry: SessionEntry;
 
   let sessionId: string | undefined;
@@ -256,9 +337,12 @@ export async function initSessionState(params: {
     }
   }
 
-  sessionKey = resolveSessionKey(sessionScope, sessionCtxForState, mainKey);
   const entry = sessionStore[sessionKey];
-  const previousSessionEntry = resetTriggered && entry ? { ...entry } : undefined;
+  const pendingRecentMediaSnapshotInit = isPendingRecentMediaSnapshotInit(entry);
+  const existingSessionEntry = pendingRecentMediaSnapshotInit ? undefined : entry;
+  const storedRecentMediaSnapshot = entry?.recentMediaSnapshot;
+  const previousSessionEntry =
+    resetTriggered && existingSessionEntry ? { ...existingSessionEntry } : undefined;
   const now = Date.now();
   const isThread = resolveThreadFlag({
     sessionKey,
@@ -281,41 +365,46 @@ export async function initSessionState(params: {
     resetType,
     resetOverride: channelReset,
   });
-  const freshEntry = entry
-    ? evaluateSessionFreshness({ updatedAt: entry.updatedAt, now, policy: resetPolicy }).fresh
+  const freshEntry = existingSessionEntry
+    ? evaluateSessionFreshness({
+        updatedAt: existingSessionEntry.updatedAt,
+        now,
+        policy: resetPolicy,
+      }).fresh
     : false;
 
-  if (!isNewSession && freshEntry) {
-    sessionId = entry.sessionId;
-    systemSent = entry.systemSent ?? false;
-    abortedLastRun = entry.abortedLastRun ?? false;
-    persistedThinking = entry.thinkingLevel;
-    persistedVerbose = entry.verboseLevel;
-    persistedReasoning = entry.reasoningLevel;
-    persistedTtsAuto = entry.ttsAuto;
-    persistedModelOverride = entry.modelOverride;
-    persistedProviderOverride = entry.providerOverride;
-    persistedLabel = entry.label;
+  if (!isNewSession && freshEntry && existingSessionEntry) {
+    sessionId = existingSessionEntry.sessionId;
+    systemSent = existingSessionEntry.systemSent ?? false;
+    abortedLastRun = existingSessionEntry.abortedLastRun ?? false;
+    persistedThinking = existingSessionEntry.thinkingLevel;
+    persistedVerbose = existingSessionEntry.verboseLevel;
+    persistedReasoning = existingSessionEntry.reasoningLevel;
+    persistedTtsAuto = existingSessionEntry.ttsAuto;
+    persistedModelOverride = existingSessionEntry.modelOverride;
+    persistedProviderOverride = existingSessionEntry.providerOverride;
+    persistedLabel = existingSessionEntry.label;
   } else {
-    sessionId = crypto.randomUUID();
+    sessionId =
+      pendingRecentMediaSnapshotInit && entry?.sessionId ? entry.sessionId : crypto.randomUUID();
     isNewSession = true;
     systemSent = false;
     abortedLastRun = false;
     // When a reset trigger (/new, /reset) starts a new session, carry over
     // user-set behavior overrides (verbose, thinking, reasoning, ttsAuto)
     // so the user doesn't have to re-enable them every time.
-    if (resetTriggered && entry) {
-      persistedThinking = entry.thinkingLevel;
-      persistedVerbose = entry.verboseLevel;
-      persistedReasoning = entry.reasoningLevel;
-      persistedTtsAuto = entry.ttsAuto;
-      persistedModelOverride = entry.modelOverride;
-      persistedProviderOverride = entry.providerOverride;
-      persistedLabel = entry.label;
+    if (resetTriggered && existingSessionEntry) {
+      persistedThinking = existingSessionEntry.thinkingLevel;
+      persistedVerbose = existingSessionEntry.verboseLevel;
+      persistedReasoning = existingSessionEntry.reasoningLevel;
+      persistedTtsAuto = existingSessionEntry.ttsAuto;
+      persistedModelOverride = existingSessionEntry.modelOverride;
+      persistedProviderOverride = existingSessionEntry.providerOverride;
+      persistedLabel = existingSessionEntry.label;
     }
   }
 
-  const baseEntry = !isNewSession && freshEntry ? entry : undefined;
+  const baseEntry = !isNewSession && freshEntry ? existingSessionEntry : undefined;
   // Track the originating channel/to for announce routing (subagent announce-back).
   const originatingChannelRaw = ctx.OriginatingChannel as string | undefined;
   const lastChannelRaw = resolveLastChannelRaw({
@@ -435,6 +524,7 @@ export async function initSessionState(params: {
     sessionEntry.compactionCount = 0;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
+    sessionEntry.recentMediaSnapshot = undefined;
     // Clear stale token metrics from previous session so /status doesn't
     // display the old session's context usage after /new or /reset.
     sessionEntry.totalTokens = undefined;
@@ -442,6 +532,22 @@ export async function initSessionState(params: {
     sessionEntry.outputTokens = undefined;
     sessionEntry.contextTokens = undefined;
   }
+
+  const inboundRecentMediaSnapshot = buildRecentImageSnapshot(ctx);
+  if (inboundRecentMediaSnapshot) {
+    sessionEntry.recentMediaSnapshot = inboundRecentMediaSnapshot;
+  } else {
+    const recentMediaSnapshotForAttach =
+      sessionEntry.recentMediaSnapshot ?? storedRecentMediaSnapshot;
+    if (shouldAttachRecentImageSnapshot({ ctx, snapshot: recentMediaSnapshotForAttach })) {
+      sessionEntry.recentMediaSnapshot = attachRecentImageSnapshot({
+        ctx,
+        snapshot: recentMediaSnapshotForAttach!,
+      });
+    }
+  }
+  sessionEntry.pendingRecentMediaSnapshotInit = undefined;
+
   // Preserve per-session overrides while resetting compaction state on /new.
   sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
   await updateSessionStore(

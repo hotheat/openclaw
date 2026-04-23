@@ -160,6 +160,7 @@ export function buildEmbeddedRunBaseParams(params: {
   return {
     sessionFile: params.run.sessionFile,
     workspaceDir: params.run.workspaceDir,
+    inboundMediaPaths: params.run.inboundMediaPaths,
     agentDir: params.run.agentDir,
     config: params.run.config,
     skillsSnapshot: params.run.skillsSnapshot,
