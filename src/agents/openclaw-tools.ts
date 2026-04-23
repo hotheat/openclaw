@@ -46,6 +46,7 @@ export function createOpenClawTools(options?: {
   sandboxRoot?: string;
   sandboxFsBridge?: SandboxFsBridge;
   workspaceDir?: string;
+  inboundMediaPaths?: string[];
   sandboxed?: boolean;
   config?: OpenClawConfig;
   pluginToolAllowlist?: string[];
@@ -76,6 +77,7 @@ export function createOpenClawTools(options?: {
         config: options?.config,
         agentDir: options.agentDir,
         workspaceDir,
+        inboundMediaPaths: options?.inboundMediaPaths,
         sandbox:
           options?.sandboxRoot && options?.sandboxFsBridge
             ? { root: options.sandboxRoot, bridge: options.sandboxFsBridge }

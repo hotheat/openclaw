@@ -167,6 +167,7 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.prompt).toContain("[Thread history - for context]");
     expect(call?.followupRun.prompt).toContain("Earlier message in this thread");
     expect(call?.followupRun.prompt).toContain("[User sent media without caption]");
+    expect(call?.followupRun.run.inboundMediaPaths).toEqual(["/tmp/input.png"]);
   });
 
   it("keeps thread history context on follow-up turns", async () => {

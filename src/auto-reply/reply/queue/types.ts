@@ -58,6 +58,7 @@ export type FollowupRun = {
     senderIsOwner?: boolean;
     sessionFile: string;
     workspaceDir: string;
+    inboundMediaPaths?: string[];
     config: OpenClawConfig;
     skillsSnapshot?: SkillSnapshot;
     provider: string;

@@ -384,6 +384,7 @@ export async function runEmbeddedAttempt(
           sessionKey: params.sessionKey ?? params.sessionId,
           agentDir,
           workspaceDir: effectiveWorkspace,
+          inboundMediaPaths: params.inboundMediaPaths,
           config: params.config,
           abortSignal: runAbortController.signal,
           modelProvider: params.model.provider,

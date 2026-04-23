@@ -29,6 +29,11 @@ const ANTHROPIC_IMAGE_FALLBACK = "anthropic/claude-opus-4-5";
 const DEFAULT_MAX_IMAGES = 20;
 const FEISHU_EXTERNAL_MEDIA_KEY_RE = /^(?:img|file)_v\d+_[A-Za-z0-9_-]+$/;
 
+type InboundImageAliasResolution = {
+  path: string;
+  rewrittenFrom: string;
+};
+
 export const __testing = {
   decodeDataUrl,
   coerceImageAssistantText,
@@ -38,6 +43,49 @@ export const __testing = {
 
 function looksLikeExternalMediaKey(value: string): boolean {
   return FEISHU_EXTERNAL_MEDIA_KEY_RE.test(value.trim());
+}
+
+function normalizeInboundMediaPaths(paths?: string[]): string[] {
+  if (!Array.isArray(paths)) {
+    return [];
+  }
+  return paths.map((entry) => entry.trim()).filter(Boolean);
+}
+
+function resolveInboundImageAlias(params: {
+  imageRaw: string;
+  inboundMediaPaths?: string[];
+}): InboundImageAliasResolution | null {
+  const imageRaw = params.imageRaw.trim();
+  if (!imageRaw) {
+    return null;
+  }
+  const inboundMediaPaths = normalizeInboundMediaPaths(params.inboundMediaPaths);
+  if (inboundMediaPaths.length === 0) {
+    return null;
+  }
+  if (/^attachment(?:\.[a-z0-9]+)?$/i.test(imageRaw)) {
+    return {
+      path: inboundMediaPaths[0],
+      rewrittenFrom: imageRaw,
+    };
+  }
+  const queuedMatch = imageRaw.match(/^queued\/(\d+)(?:\.[a-z0-9]+)?$/i);
+  if (!queuedMatch) {
+    return null;
+  }
+  const aliasIndex = Number.parseInt(queuedMatch[1] ?? "", 10);
+  if (!Number.isFinite(aliasIndex) || aliasIndex <= 0) {
+    return null;
+  }
+  const candidate = inboundMediaPaths[aliasIndex - 1];
+  if (!candidate) {
+    return null;
+  }
+  return {
+    path: candidate,
+    rewrittenFrom: imageRaw,
+  };
 }
 
 function resolveImageToolMaxTokens(modelMaxTokens: number | undefined, requestedMaxTokens = 4096) {
@@ -341,6 +389,7 @@ export function createImageTool(options?: {
   config?: OpenClawConfig;
   agentDir?: string;
   workspaceDir?: string;
+  inboundMediaPaths?: string[];
   sandbox?: ImageSandboxConfig;
   /** If true, the model has native vision capability and images in the prompt are auto-injected */
   modelHasVision?: boolean;
@@ -468,18 +517,23 @@ export function createImageTool(options?: {
         if (!imageRaw) {
           throw new Error("image required (empty string in array)");
         }
+        const aliasResolution = resolveInboundImageAlias({
+          imageRaw,
+          inboundMediaPaths: options?.inboundMediaPaths,
+        });
+        const effectiveImageRaw = aliasResolution?.path ?? imageRaw;
 
         // The tool accepts file paths, file/data URLs, or http(s) URLs. In some
         // agent/model contexts, images can be referenced as pseudo-URIs like
         // `image:0` (e.g. "first image in the prompt"). We don't have access to a
         // shared image registry here, so fail gracefully instead of attempting to
         // `fs.readFile("image:0")` and producing a noisy ENOENT.
-        const looksLikeWindowsDrivePath = /^[a-zA-Z]:[\\/]/.test(imageRaw);
-        const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(imageRaw);
-        const isFileUrl = /^file:/i.test(imageRaw);
-        const isHttpUrl = /^https?:\/\//i.test(imageRaw);
-        const isDataUrl = /^data:/i.test(imageRaw);
-        if (looksLikeExternalMediaKey(imageRaw)) {
+        const looksLikeWindowsDrivePath = /^[a-zA-Z]:[\\/]/.test(effectiveImageRaw);
+        const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(effectiveImageRaw);
+        const isFileUrl = /^file:/i.test(effectiveImageRaw);
+        const isHttpUrl = /^https?:\/\//i.test(effectiveImageRaw);
+        const isDataUrl = /^data:/i.test(effectiveImageRaw);
+        if (looksLikeExternalMediaKey(effectiveImageRaw)) {
           return {
             content: [
               {
@@ -489,7 +543,7 @@ export function createImageTool(options?: {
             ],
             details: {
               error: "unresolved_external_media_key",
-              image: imageRawInput,
+              image: aliasResolution?.rewrittenFrom ?? imageRawInput,
             },
           };
         }
@@ -503,7 +557,7 @@ export function createImageTool(options?: {
             ],
             details: {
               error: "unsupported_image_reference",
-              image: imageRawInput,
+              image: aliasResolution?.rewrittenFrom ?? imageRawInput,
             },
           };
         }
@@ -514,21 +568,21 @@ export function createImageTool(options?: {
 
         const resolvedImage = (() => {
           if (sandboxConfig) {
-            return imageRaw;
+            return effectiveImageRaw;
           }
-          if (imageRaw.startsWith("~")) {
-            return resolveUserPath(imageRaw);
+          if (effectiveImageRaw.startsWith("~")) {
+            return resolveUserPath(effectiveImageRaw);
           }
           if (
             !isHttpUrl &&
             !isDataUrl &&
             !isFileUrl &&
-            !path.isAbsolute(imageRaw) &&
+            !path.isAbsolute(effectiveImageRaw) &&
             workspaceDir
           ) {
-            return path.resolve(workspaceDir, imageRaw);
+            return path.resolve(workspaceDir, effectiveImageRaw);
           }
-          return imageRaw;
+          return effectiveImageRaw;
         })();
         const resolvedPathInfo: { resolved: string; rewrittenFrom?: string } = isDataUrl
           ? { resolved: "" }
@@ -570,8 +624,8 @@ export function createImageTool(options?: {
           base64,
           mimeType,
           resolvedImage,
-          ...(resolvedPathInfo.rewrittenFrom
-            ? { rewrittenFrom: resolvedPathInfo.rewrittenFrom }
+          ...((resolvedPathInfo.rewrittenFrom ?? aliasResolution?.rewrittenFrom)
+            ? { rewrittenFrom: resolvedPathInfo.rewrittenFrom ?? aliasResolution?.rewrittenFrom }
             : {}),
         });
       }

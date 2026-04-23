@@ -477,6 +477,62 @@ describe("image tool implicit imageModel config", () => {
     expect((res.details as { rewrittenFrom?: string }).rewrittenFrom).toContain("photo.png");
   });
 
+  it("resolves the attachment alias to the current inbound media path", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      await withTempWorkspaceInboundPng(async ({ workspaceDir, relativeImagePath }) => {
+        const fetch = stubMinimaxOkFetch();
+        const cfg = createMinimaxImageConfig();
+        const tool = requireImageTool(
+          createImageTool({
+            config: cfg,
+            agentDir,
+            workspaceDir,
+            inboundMediaPaths: [relativeImagePath],
+          }),
+        );
+
+        const res = await tool.execute("t-attachment", {
+          prompt: "Describe the image.",
+          image: "attachment",
+        });
+
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect((res.details as { image?: string; rewrittenFrom?: string }).image).toContain(
+          path.join("media", "inbound", "photo.png"),
+        );
+        expect((res.details as { rewrittenFrom?: string }).rewrittenFrom).toBe("attachment");
+      });
+    });
+  });
+
+  it("resolves queued image aliases against the current inbound media paths", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      await withTempWorkspaceInboundPng(async ({ workspaceDir, relativeImagePath }) => {
+        const fetch = stubMinimaxOkFetch();
+        const cfg = createMinimaxImageConfig();
+        const tool = requireImageTool(
+          createImageTool({
+            config: cfg,
+            agentDir,
+            workspaceDir,
+            inboundMediaPaths: [relativeImagePath],
+          }),
+        );
+
+        const res = await tool.execute("t-queued", {
+          prompt: "Describe the image.",
+          image: "queued/1",
+        });
+
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect((res.details as { image?: string; rewrittenFrom?: string }).image).toContain(
+          path.join("media", "inbound", "photo.png"),
+        );
+        expect((res.details as { rewrittenFrom?: string }).rewrittenFrom).toBe("queued/1");
+      });
+    });
+  });
+
   it("rejects unresolved external media keys with a clear error", async () => {
     const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-"));
     try {

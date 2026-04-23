@@ -58,6 +58,7 @@ export type RunEmbeddedPiAgentParams = {
   disableMessageTool?: boolean;
   sessionFile: string;
   workspaceDir: string;
+  inboundMediaPaths?: string[];
   agentDir?: string;
   config?: OpenClawConfig;
   skillsSnapshot?: SkillSnapshot;

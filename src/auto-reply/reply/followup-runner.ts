@@ -156,6 +156,7 @@ export function createFollowupRunner(params: {
               sessionFile: queued.run.sessionFile,
               agentDir: queued.run.agentDir,
               workspaceDir: queued.run.workspaceDir,
+              inboundMediaPaths: queued.run.inboundMediaPaths,
               config: queued.run.config,
               skillsSnapshot: queued.run.skillsSnapshot,
               prompt: queued.prompt,
