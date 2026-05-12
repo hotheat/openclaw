@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FeishuMessageEvent } from "./bot.js";
 
 const probeFeishuMock = vi.hoisted(() => vi.fn());
 
@@ -24,6 +25,80 @@ vi.mock("./client.js", () => ({
 }));
 
 import { monitorFeishuProvider, stopFeishuMonitor } from "./monitor.js";
+
+const mockHandleFeishuMessage = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockTryRecordMessagePersistent = vi.hoisted(() => vi.fn().mockResolvedValue(true));
+const mockHasControlCommand = vi.hoisted(() => vi.fn(() => false));
+
+vi.mock("./bot.js", async () => {
+  const actual = await vi.importActual<typeof import("./bot.js")>("./bot.js");
+  return {
+    ...actual,
+    handleFeishuMessage: mockHandleFeishuMessage,
+  };
+});
+
+vi.mock("./dedup.js", () => ({
+  tryRecordMessagePersistent: mockTryRecordMessagePersistent,
+}));
+
+vi.mock("./runtime.js", () => ({
+  getFeishuRuntime: vi.fn(() => ({
+    channel: {
+      debounce: {
+        createInboundDebouncer: (params: {
+          debounceMs: number;
+          buildKey: (item: unknown) => string | null | undefined;
+          shouldDebounce?: (item: unknown) => boolean;
+          onFlush: (items: unknown[]) => Promise<void>;
+        }) => {
+          const buffers = new Map<
+            string,
+            { items: unknown[]; timer?: ReturnType<typeof setTimeout> }
+          >();
+          const flush = async (key: string) => {
+            const buffer = buffers.get(key);
+            if (!buffer) {
+              return;
+            }
+            if (buffer.timer) {
+              clearTimeout(buffer.timer);
+            }
+            buffers.delete(key);
+            await params.onFlush(buffer.items);
+          };
+          return {
+            enqueue: async (item: unknown) => {
+              const key = params.buildKey(item);
+              const canDebounce =
+                params.debounceMs > 0 && key && (params.shouldDebounce?.(item) ?? true);
+              if (!canDebounce || !key) {
+                await params.onFlush([item]);
+                return;
+              }
+              const buffer = buffers.get(key) ?? { items: [] };
+              buffer.items.push(item);
+              if (buffer.timer) {
+                clearTimeout(buffer.timer);
+              }
+              buffer.timer = setTimeout(() => {
+                void flush(key);
+              }, params.debounceMs);
+              buffers.set(key, buffer);
+            },
+            flushKey: async (key: string) => {
+              await flush(key);
+            },
+          };
+        },
+        resolveInboundDebounceMs: vi.fn(() => 1500),
+      },
+      text: {
+        hasControlCommand: mockHasControlCommand,
+      },
+    },
+  })),
+}));
 
 async function getFreePort(): Promise<number> {
   const server = createServer();
@@ -114,6 +189,8 @@ async function withRunningWebhookMonitor(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.clearAllMocks();
   stopFeishuMonitor();
 });
 
@@ -178,6 +255,119 @@ describe("Feishu webhook security hardening", () => {
 
         expect(saw429).toBe(true);
       },
+    );
+  });
+});
+
+describe("Feishu inbound debounce", () => {
+  it("coalesces rapid group text messages from the same sender", async () => {
+    vi.useFakeTimers();
+    const { createFeishuInboundMessageHandler } = await import("./monitor.js");
+    const handler = createFeishuInboundMessageHandler({
+      cfg: {
+        messages: { inbound: { byChannel: { feishu: 1500 } } },
+      } as ClawdbotConfig,
+      accountId: "default",
+      botOpenId: "ou-bot",
+      runtime: { log: vi.fn(), error: vi.fn() } as any,
+      chatHistories: new Map(),
+    });
+
+    const baseEvent = {
+      sender: { sender_id: { open_id: "ou-user" } },
+      message: {
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        mentions: [{ key: "@_user_1", name: "Bot", id: { open_id: "ou-bot" } }],
+      },
+    };
+
+    await handler({
+      ...baseEvent,
+      message: {
+        ...baseEvent.message,
+        message_id: "msg-1",
+        content: JSON.stringify({ text: "@Bot first" }),
+      },
+    } as FeishuMessageEvent);
+    await handler({
+      ...baseEvent,
+      message: {
+        ...baseEvent.message,
+        message_id: "msg-2",
+        content: JSON.stringify({ text: "@Bot second" }),
+      },
+    } as FeishuMessageEvent);
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(mockTryRecordMessagePersistent).toHaveBeenCalledTimes(2);
+    expect(mockHandleFeishuMessage).toHaveBeenCalledTimes(1);
+    expect(mockHandleFeishuMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skipDedup: true,
+        event: expect.objectContaining({
+          message: expect.objectContaining({
+            content: JSON.stringify({ text: "first\nsecond" }),
+          }),
+        }),
+      }),
+    );
+    vi.useRealTimers();
+  });
+
+  it("does not debounce control commands or reply messages", async () => {
+    const { createFeishuInboundMessageHandler } = await import("./monitor.js");
+    const handler = createFeishuInboundMessageHandler({
+      cfg: {
+        messages: { inbound: { byChannel: { feishu: 1500 } } },
+      } as ClawdbotConfig,
+      accountId: "default",
+      botOpenId: "ou-bot",
+      runtime: { log: vi.fn(), error: vi.fn() } as any,
+      chatHistories: new Map(),
+    });
+    mockHasControlCommand.mockReturnValueOnce(true);
+
+    await handler({
+      sender: { sender_id: { open_id: "ou-user" } },
+      message: {
+        message_id: "msg-command",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "/status" }),
+      },
+    } as FeishuMessageEvent);
+    await handler({
+      sender: { sender_id: { open_id: "ou-user" } },
+      message: {
+        message_id: "msg-reply",
+        chat_id: "oc-group",
+        chat_type: "group",
+        message_type: "text",
+        parent_id: "parent-1",
+        content: JSON.stringify({ text: "reply" }),
+      },
+    } as FeishuMessageEvent);
+
+    expect(mockHandleFeishuMessage).toHaveBeenCalledTimes(2);
+    expect(mockHandleFeishuMessage).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        event: expect.objectContaining({
+          message: expect.objectContaining({ message_id: "msg-command" }),
+        }),
+      }),
+    );
+    expect(mockHandleFeishuMessage).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        event: expect.objectContaining({
+          message: expect.objectContaining({ message_id: "msg-reply" }),
+        }),
+      }),
     );
   });
 });

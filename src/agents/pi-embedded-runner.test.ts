@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { pollUntil } from "../../test/helpers/poll.js";
 import type { OpenClawConfig } from "../config/config.js";
 
 function createMockUsage(input: number, output: number) {
@@ -106,6 +108,9 @@ vi.mock("@mariozechner/pi-ai", async () => {
 });
 
 let runEmbeddedPiAgent: typeof import("./pi-embedded-runner/run.js").runEmbeddedPiAgent;
+let abortEmbeddedPiRun: typeof import("./pi-embedded-runner/runs.js").abortEmbeddedPiRun;
+let isEmbeddedPiRunActive: typeof import("./pi-embedded-runner/runs.js").isEmbeddedPiRunActive;
+let waitForEmbeddedPiRunEnd: typeof import("./pi-embedded-runner/runs.js").waitForEmbeddedPiRunEnd;
 let SessionManager: typeof import("@mariozechner/pi-coding-agent").SessionManager;
 let tempRoot: string | undefined;
 let agentDir: string;
@@ -116,6 +121,8 @@ let runCounter = 0;
 beforeAll(async () => {
   vi.useRealTimers();
   ({ runEmbeddedPiAgent } = await import("./pi-embedded-runner/run.js"));
+  ({ abortEmbeddedPiRun, isEmbeddedPiRunActive, waitForEmbeddedPiRunEnd } =
+    await import("./pi-embedded-runner/runs.js"));
   ({ SessionManager } = await import("@mariozechner/pi-coding-agent"));
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-embedded-agent-"));
   agentDir = path.join(tempRoot, "agent");
@@ -337,5 +344,151 @@ describe("runEmbeddedPiAgent", () => {
 
     expect(result.meta.error).toBeUndefined();
     expect(result.payloads?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it("marks pending runs as busy before session lane starts", async () => {
+    let releaseSessionGate: (() => void) | undefined;
+    const sessionGate = new Promise<void>((resolve) => {
+      releaseSessionGate = resolve;
+    });
+    let sessionCalls = 0;
+    const gatedEnqueue = async <T>(task: () => Promise<T>) => {
+      sessionCalls += 1;
+      if (sessionCalls === 1) {
+        await sessionGate;
+      }
+      return await task();
+    };
+
+    const sessionFile = nextSessionFile();
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    const sessionId = "session:pending-busy";
+    const sessionKey = nextSessionKey();
+
+    const execution = runEmbeddedPiAgent({
+      sessionId,
+      sessionKey,
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "hello",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      runId: nextRunId("pending-busy"),
+      enqueue: gatedEnqueue,
+    });
+
+    try {
+      const active = await pollUntil(
+        async () => (isEmbeddedPiRunActive(sessionId) ? true : undefined),
+        { timeoutMs: 1000, intervalMs: 10 },
+      );
+      expect(active).toBe(true);
+    } finally {
+      releaseSessionGate?.();
+    }
+
+    await execution;
+
+    expect(await waitForEmbeddedPiRunEnd(sessionId, 50)).toBe(true);
+    expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+  });
+
+  it("clears pending runs when enqueue rejects before attempt start", async () => {
+    const sessionFile = nextSessionFile();
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    const sessionId = "session:pending-reject";
+    const sessionKey = nextSessionKey();
+    const enqueueError = new Error("session lane rejected");
+    let firstCall = true;
+    const rejectingEnqueue = async <T>(task: () => Promise<T>) => {
+      if (firstCall) {
+        firstCall = false;
+        throw enqueueError;
+      }
+      return await task();
+    };
+
+    await expect(
+      runEmbeddedPiAgent({
+        sessionId,
+        sessionKey,
+        sessionFile,
+        workspaceDir,
+        config: cfg,
+        prompt: "hello",
+        provider: "openai",
+        model: "mock-1",
+        timeoutMs: 5_000,
+        agentDir,
+        runId: nextRunId("pending-reject"),
+        enqueue: rejectingEnqueue,
+      }),
+    ).rejects.toThrow("session lane rejected");
+
+    expect(await waitForEmbeddedPiRunEnd(sessionId, 50)).toBe(true);
+    expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+  });
+
+  it("aborts pending runs that are waiting on the global lane", async () => {
+    let releaseGlobalGate: (() => void) | undefined;
+    const globalGate = new Promise<void>((resolve) => {
+      releaseGlobalGate = resolve;
+    });
+    let enqueueCalls = 0;
+    const gatedEnqueue = async <T>(task: () => Promise<T>) => {
+      enqueueCalls += 1;
+      if (enqueueCalls === 2) {
+        await globalGate;
+      }
+      return await task();
+    };
+
+    const sessionFile = nextSessionFile();
+    const cfg = makeOpenAiConfig(["mock-1"]);
+    const sessionId = "session:pending-global-abort";
+    const sessionKey = nextSessionKey();
+
+    const execution = runEmbeddedPiAgent({
+      sessionId,
+      sessionKey,
+      sessionFile,
+      workspaceDir,
+      config: cfg,
+      prompt: "hello",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      runId: nextRunId("pending-global-abort"),
+      enqueue: gatedEnqueue,
+    });
+
+    try {
+      const queuedTwice = await pollUntil(
+        async () => (enqueueCalls >= 2 ? enqueueCalls : undefined),
+        { timeoutMs: 1000, intervalMs: 10 },
+      );
+      expect(queuedTwice).toBeGreaterThanOrEqual(2);
+      expect(isEmbeddedPiRunActive(sessionId)).toBe(true);
+      expect(abortEmbeddedPiRun(sessionId)).toBe(true);
+      expect(await waitForEmbeddedPiRunEnd(sessionId, 100)).toBe(true);
+
+      const outcome = await Promise.race([execution, delay(200).then(() => "timeout" as const)]);
+
+      expect(outcome).not.toBe("timeout");
+      if (outcome !== "timeout") {
+        expect(outcome.meta.aborted).toBe(true);
+        expect(outcome.payloads).toBeUndefined();
+      }
+
+      expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+      await delay(20);
+      await expect(fs.stat(sessionFile)).rejects.toBeTruthy();
+    } finally {
+      releaseGlobalGate?.();
+    }
   });
 });

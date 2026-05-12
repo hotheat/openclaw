@@ -511,8 +511,9 @@ export async function handleFeishuMessage(params: {
   runtime?: RuntimeEnv;
   chatHistories?: Map<string, HistoryEntry[]>;
   accountId?: string;
+  skipDedup?: boolean;
 }): Promise<void> {
-  const { cfg, event, botOpenId, runtime, chatHistories, accountId } = params;
+  const { cfg, event, botOpenId, runtime, chatHistories, accountId, skipDedup } = params;
 
   // Resolve account with merged config
   const account = resolveFeishuAccount({ cfg, accountId });
@@ -523,7 +524,7 @@ export async function handleFeishuMessage(params: {
 
   // Dedup check: skip if this message was already processed (memory + disk).
   const messageId = event.message.message_id;
-  if (!(await tryRecordMessagePersistent(messageId, account.accountId, log))) {
+  if (!skipDedup && !(await tryRecordMessagePersistent(messageId, account.accountId, log))) {
     log(`feishu: skipping duplicate message ${messageId}`);
     return;
   }

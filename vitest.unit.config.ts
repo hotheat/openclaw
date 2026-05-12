@@ -13,6 +13,19 @@ export default defineConfig({
   test: {
     ...baseTest,
     include,
-    exclude: [...exclude, "src/gateway/**", "extensions/**"],
+    exclude: [
+      ...exclude,
+      "src/gateway/**",
+      "extensions/**",
+      "src/browser/**",
+      "src/agents/pi-embedded-runner*.test.ts",
+      "src/agents/pi-embedded-runner/**/*.test.ts",
+      "src/auto-reply/reply.triggers*.test.ts",
+      "src/auto-reply/reply.triggers/**/*.test.ts",
+      "src/web/auto-reply*.test.ts",
+      "src/web/auto-reply/**/*.test.ts",
+      "src/telegram/bot.media*.test.ts",
+      "src/commands/doctor*.test.ts",
+    ],
   },
 });

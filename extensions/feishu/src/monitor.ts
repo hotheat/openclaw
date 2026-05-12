@@ -4,12 +4,20 @@ import {
   type ClawdbotConfig,
   type RuntimeEnv,
   type HistoryEntry,
+  type PluginRuntime,
   installRequestBodyLimitGuard,
 } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
-import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
+import {
+  handleFeishuMessage,
+  parseFeishuMessageEvent,
+  type FeishuMessageEvent,
+  type FeishuBotAddedEvent,
+} from "./bot.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
+import { tryRecordMessagePersistent } from "./dedup.js";
 import { probeFeishu } from "./probe.js";
+import { getFeishuRuntime } from "./runtime.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
 export type MonitorFeishuOpts = {
@@ -30,6 +38,11 @@ const FEISHU_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 120;
 const FEISHU_WEBHOOK_COUNTER_LOG_EVERY = 25;
 const feishuWebhookRateLimits = new Map<string, { count: number; windowStartMs: number }>();
 const feishuWebhookStatusCounters = new Map<string, number>();
+
+type FeishuInboundEntry = {
+  event: FeishuMessageEvent;
+  botOpenId?: string;
+};
 
 function isJsonContentType(value: string | string[] | undefined): boolean {
   const first = Array.isArray(value) ? value[0] : value;
@@ -81,6 +94,148 @@ async function fetchBotOpenId(account: ResolvedFeishuAccount): Promise<string | 
   }
 }
 
+function tryGetFeishuRuntime(): PluginRuntime | null {
+  try {
+    return getFeishuRuntime();
+  } catch {
+    return null;
+  }
+}
+
+function resolveFeishuInboundSenderId(event: FeishuMessageEvent): string | undefined {
+  const openId = event.sender.sender_id.open_id?.trim();
+  if (openId) {
+    return openId;
+  }
+  const userId = event.sender.sender_id.user_id?.trim();
+  if (userId) {
+    return userId;
+  }
+  return undefined;
+}
+
+function shouldDebounceFeishuEvent(params: {
+  cfg: ClawdbotConfig;
+  core: PluginRuntime;
+  entry: FeishuInboundEntry;
+}): boolean {
+  const { cfg, core, entry } = params;
+  const ctx = parseFeishuMessageEvent(entry.event, entry.botOpenId);
+  if (ctx.chatType !== "group") {
+    return false;
+  }
+  if (ctx.contentType !== "text") {
+    return false;
+  }
+  if (ctx.parentId) {
+    return false;
+  }
+  if (!ctx.content.trim()) {
+    return false;
+  }
+  const mentions = entry.event.message.mentions ?? [];
+  if (mentions.length > 0) {
+    if (!entry.botOpenId) {
+      return false;
+    }
+    const hasOnlyBotMention = mentions.every((mention) => mention.id.open_id === entry.botOpenId);
+    if (!hasOnlyBotMention) {
+      return false;
+    }
+  }
+  return !core.channel.text.hasControlCommand(ctx.content, cfg);
+}
+
+export function buildDebouncedFeishuMessageEvent(
+  entries: FeishuInboundEntry[],
+): FeishuMessageEvent {
+  const last = entries.at(-1);
+  if (!last) {
+    throw new Error("Missing Feishu debounce entry");
+  }
+  if (entries.length === 1) {
+    return last.event;
+  }
+  const combinedText = entries
+    .map((entry) => parseFeishuMessageEvent(entry.event, entry.botOpenId).content.trim())
+    .filter(Boolean)
+    .join("\n");
+  const mentionSource = entries.find((entry) => (entry.event.message.mentions?.length ?? 0) > 0);
+  return {
+    ...last.event,
+    message: {
+      ...last.event.message,
+      message_type: "text",
+      content: JSON.stringify({ text: combinedText }),
+      mentions: mentionSource?.event.message.mentions,
+    },
+  };
+}
+
+export function createFeishuInboundMessageHandler(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  botOpenId?: string;
+  runtime?: RuntimeEnv;
+  chatHistories: Map<string, HistoryEntry[]>;
+}) {
+  const { cfg, accountId, botOpenId, runtime, chatHistories } = params;
+  const log = runtime?.log ?? console.log;
+  const core = tryGetFeishuRuntime();
+  const debouncer = core?.channel.debounce.createInboundDebouncer<FeishuInboundEntry>({
+    debounceMs: core.channel.debounce.resolveInboundDebounceMs({ cfg, channel: "feishu" }),
+    buildKey: (entry) => {
+      const senderId = resolveFeishuInboundSenderId(entry.event);
+      const chatId = entry.event.message.chat_id?.trim();
+      if (!senderId || !chatId) {
+        return null;
+      }
+      const rootId = entry.event.message.root_id?.trim() || "main";
+      return `feishu:${accountId}:${chatId}:${senderId}:${rootId}`;
+    },
+    shouldDebounce: (entry) => shouldDebounceFeishuEvent({ cfg, core, entry }),
+    onFlush: async (entries) => {
+      const last = entries.at(-1);
+      if (!last) {
+        return;
+      }
+      await handleFeishuMessage({
+        cfg,
+        event: buildDebouncedFeishuMessageEvent(entries),
+        botOpenId: last.botOpenId,
+        runtime,
+        chatHistories,
+        accountId,
+        skipDedup: true,
+      });
+    },
+    onError: (err) => {
+      runtime?.error?.(`feishu[${accountId}]: debounce flush failed: ${String(err)}`);
+    },
+  });
+
+  return async (event: FeishuMessageEvent) => {
+    const messageId = event.message.message_id;
+    if (!(await tryRecordMessagePersistent(messageId, accountId, log))) {
+      log(`feishu: skipping duplicate message ${messageId}`);
+      return;
+    }
+    if (!debouncer) {
+      await handleFeishuMessage({
+        cfg,
+        event,
+        botOpenId,
+        runtime,
+        chatHistories,
+        accountId,
+        skipDedup: true,
+      });
+      return;
+    }
+    await debouncer.enqueue({ event, botOpenId });
+  };
+}
+
 /**
  * Register common event handlers on an EventDispatcher.
  * When fireAndForget is true (webhook mode), message handling is not awaited
@@ -99,19 +254,19 @@ function registerEventHandlers(
   const { cfg, accountId, runtime, chatHistories, fireAndForget } = context;
   const log = runtime?.log ?? console.log;
   const error = runtime?.error ?? console.error;
+  const handleInboundMessage = createFeishuInboundMessageHandler({
+    cfg,
+    accountId,
+    botOpenId: botOpenIds.get(accountId),
+    runtime,
+    chatHistories,
+  });
 
   eventDispatcher.register({
     "im.message.receive_v1": async (data) => {
       try {
         const event = data as unknown as FeishuMessageEvent;
-        const promise = handleFeishuMessage({
-          cfg,
-          event,
-          botOpenId: botOpenIds.get(accountId),
-          runtime,
-          chatHistories,
-          accountId,
-        });
+        const promise = handleInboundMessage(event);
         if (fireAndForget) {
           promise.catch((err) => {
             error(`feishu[${accountId}]: error handling message: ${String(err)}`);

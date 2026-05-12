@@ -27,12 +27,30 @@ describe("GitHub Actions workflow runners", () => {
     );
   });
 
-  it("keeps pull request CI on the fast test slice instead of the full parallel suite", async () => {
+  it("keeps pull request CI on the fast test slice and sidecar heavy slices instead of the full parallel suite", async () => {
     const ciWorkflowPath = path.resolve(process.cwd(), ".github", "workflows", "ci.yml");
     const content = await readFile(ciWorkflowPath, "utf8");
 
-    expect(content).toMatch(/- name: Run test suite\n\s+run: pnpm test:fast/);
-    expect(content).not.toMatch(/- name: Run test suite\n\s+run: pnpm test\s*$/m);
+    expect(content).toMatch(/name:\s+test \/ shard-\$\{\{\s*matrix\.shard\s*\}\}/);
+    expect(content).toMatch(
+      /strategy:\s*\n\s+fail-fast:\s*false\s*\n\s+matrix:\s*\n\s+shard:\s+\["1\/4", "2\/4", "3\/4", "4\/4"\]/,
+    );
+    expect(content).toMatch(
+      /- name: Run fast unit shard\n\s+run: node scripts\/run-test-fast-shard\.mjs \$\{\{\s*matrix\.shard\s*\}\}/,
+    );
+    expect(content).toMatch(/name:\s+test-browser/);
+    expect(content).toMatch(/run:\s+pnpm test:browser -- --silent=passed-only/);
+    expect(content).toMatch(/name:\s+test-embedded/);
+    expect(content).toMatch(/run:\s+pnpm test:embedded -- --silent=passed-only/);
+    expect(content).toMatch(/name:\s+test-triggers/);
+    expect(content).toMatch(/run:\s+pnpm test:triggers -- --silent=passed-only/);
+    expect(content).toMatch(/name:\s+test-web-auto-reply/);
+    expect(content).toMatch(/run:\s+pnpm test:web-auto-reply -- --silent=passed-only/);
+    expect(content).toMatch(/name:\s+test-doctor/);
+    expect(content).toMatch(/run:\s+pnpm test:doctor-only -- --silent=passed-only/);
+    expect(content).toMatch(/name:\s+test-telegram-media/);
+    expect(content).toMatch(/run:\s+pnpm test:telegram-media -- --silent=passed-only/);
+    expect(content).not.toMatch(/run:\s+pnpm test\s*$/m);
   });
 
   it("includes a Codex review workflow for pull requests", async () => {

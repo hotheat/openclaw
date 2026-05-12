@@ -52,14 +52,17 @@ jobs:
         run: pnpm ui:build
 
   test:
-    name: test
+    name: test / shard-${{ matrix.shard }}
     runs-on: ubuntu-latest
     needs:
       - check
       - build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/4", "2/4", "3/4", "4/4"]
     env:
-      OPENCLAW_TEST_WORKERS: 2
-      OPENCLAW_TEST_MAX_OLD_SPACE_SIZE_MB: 6144
+      NODE_OPTIONS: --max-old-space-size=6144
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -71,5 +74,137 @@ jobs:
         with:
           install-bun: "false"
 
-      - name: Run test suite
-        run: pnpm test:fast
+      - name: Run fast unit shard
+        run: node scripts/run-test-fast-shard.mjs ${{ matrix.shard }}
+
+  test-browser:
+    name: test-browser
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run browser slice
+        run: pnpm test:browser -- --silent=passed-only
+
+  test-embedded:
+    name: test-embedded
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run embedded slice
+        run: pnpm test:embedded -- --silent=passed-only
+
+  test-triggers:
+    name: test-triggers
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run triggers slice
+        run: pnpm test:triggers -- --silent=passed-only
+
+  test-web-auto-reply:
+    name: test-web-auto-reply
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run web auto reply slice
+        run: pnpm test:web-auto-reply -- --silent=passed-only
+
+  test-doctor:
+    name: test-doctor
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run doctor slice
+        run: pnpm test:doctor-only -- --silent=passed-only
+
+  test-telegram-media:
+    name: test-telegram-media
+    runs-on: ubuntu-latest
+    needs:
+      - check
+      - build
+    env:
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Node environment
+        uses: ./.github/actions/setup-node-env
+        with:
+          install-bun: "false"
+
+      - name: Run telegram media slice
+        run: pnpm test:telegram-media -- --silent=passed-only

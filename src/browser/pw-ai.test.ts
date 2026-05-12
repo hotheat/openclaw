@@ -6,6 +6,14 @@ vi.mock("playwright-core", () => ({
   },
 }));
 
+vi.mock("./chrome.js", async () => {
+  const actual = await vi.importActual<typeof import("./chrome.js")>("./chrome.js");
+  return {
+    ...actual,
+    getChromeWebSocketUrl: vi.fn().mockResolvedValue(null),
+  };
+});
+
 type FakeSession = {
   send: ReturnType<typeof vi.fn>;
   detach: ReturnType<typeof vi.fn>;
@@ -55,13 +63,16 @@ function createBrowser(pages: unknown[]) {
 }
 
 let chromiumMock: typeof import("playwright-core").chromium;
+let getChromeWebSocketUrlMock: ReturnType<typeof vi.fn>;
 let snapshotAiViaPlaywright: typeof import("./pw-tools-core.snapshot.js").snapshotAiViaPlaywright;
 let clickViaPlaywright: typeof import("./pw-tools-core.interactions.js").clickViaPlaywright;
 let closePlaywrightBrowserConnection: typeof import("./pw-session.js").closePlaywrightBrowserConnection;
 
 beforeAll(async () => {
   const pw = await import("playwright-core");
+  const chrome = await import("./chrome.js");
   chromiumMock = pw.chromium;
+  getChromeWebSocketUrlMock = vi.mocked(chrome.getChromeWebSocketUrl);
   ({ snapshotAiViaPlaywright } = await import("./pw-tools-core.snapshot.js"));
   ({ clickViaPlaywright } = await import("./pw-tools-core.interactions.js"));
   ({ closePlaywrightBrowserConnection } = await import("./pw-session.js"));
@@ -70,6 +81,7 @@ beforeAll(async () => {
 afterEach(async () => {
   await closePlaywrightBrowserConnection();
   vi.clearAllMocks();
+  getChromeWebSocketUrlMock.mockResolvedValue(null);
 });
 
 describe("pw-ai", () => {

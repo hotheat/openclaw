@@ -9,6 +9,7 @@ const {
   mockSendMessageFeishu,
   mockGetMessageFeishu,
   mockDownloadMessageResourceFeishu,
+  mockTryRecordMessagePersistent,
 } = vi.hoisted(() => ({
   mockCreateFeishuReplyDispatcher: vi.fn(() => ({
     dispatcher: vi.fn(),
@@ -22,6 +23,7 @@ const {
     contentType: "video/mp4",
     fileName: "clip.mp4",
   }),
+  mockTryRecordMessagePersistent: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("./reply-dispatcher.js", () => ({
@@ -35,6 +37,10 @@ vi.mock("./send.js", () => ({
 
 vi.mock("./media.js", () => ({
   downloadMessageResourceFeishu: mockDownloadMessageResourceFeishu,
+}));
+
+vi.mock("./dedup.js", () => ({
+  tryRecordMessagePersistent: mockTryRecordMessagePersistent,
 }));
 
 function createRuntimeEnv(): RuntimeEnv {
