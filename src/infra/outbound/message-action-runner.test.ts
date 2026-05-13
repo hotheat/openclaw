@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { slackPlugin } from "../../../extensions/slack/src/channel.js";
 import { telegramPlugin } from "../../../extensions/telegram/src/channel.js";
@@ -12,7 +13,7 @@ import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createIMessageTestPlugin } from "../../test-utils/imessage-test-plugin.js";
 import { loadWebMedia } from "../../web/media.js";
-import { runMessageAction } from "./message-action-runner.js";
+import { getToolResult, runMessageAction } from "./message-action-runner.js";
 
 vi.mock("../../web/media.js", async () => {
   const actual = await vi.importActual<typeof import("../../web/media.js")>("../../web/media.js");
@@ -433,6 +434,71 @@ describe("runMessageAction context isolation", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(run(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("getToolResult", () => {
+  it("returns a safe send tool result without local media paths in content", () => {
+    const rawToolResult: AgentToolResult<unknown> = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            channel: "feishu",
+            to: "ou_123",
+            via: "direct",
+            mediaUrl: "/tmp/outbox/file.pptx",
+          }),
+        },
+      ],
+      details: {
+        channel: "feishu",
+        to: "ou_123",
+        via: "direct",
+        mediaUrl: "/tmp/outbox/file.pptx",
+        mediaUrls: ["/tmp/outbox/file.pptx"],
+        mirroredFileNames: ["file.pptx"],
+        result: {
+          channel: "feishu",
+          messageId: "om_123",
+          chatId: "ou_123",
+        },
+      },
+    };
+
+    const toolResult = getToolResult({
+      kind: "send",
+      channel: "feishu",
+      action: "send",
+      to: "ou_123",
+      handledBy: "plugin",
+      payload: rawToolResult.details,
+      toolResult: rawToolResult,
+      dryRun: false,
+    });
+
+    expect(toolResult?.details).toBe(rawToolResult.details);
+    expect(JSON.stringify(toolResult?.content ?? [])).not.toContain("/tmp/outbox/file.pptx");
+    expect(toolResult?.content).toEqual([
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            channel: "feishu",
+            via: "direct",
+            to: "ou_123",
+            mirroredFileNames: ["file.pptx"],
+            attachmentCount: 1,
+            result: {
+              messageId: "om_123",
+              chatId: "ou_123",
+            },
+          },
+          null,
+          2,
+        ),
+      },
+    ]);
   });
 });
 

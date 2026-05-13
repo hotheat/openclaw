@@ -196,29 +196,42 @@ function shouldTrackAssistantToolCalls(
 }
 
 export function dropOrphanedToolResults(messages: AgentMessage[]): AgentMessage[] {
-  const validToolCallIds = new Set<string>();
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object" || msg.role !== "assistant") {
-      continue;
-    }
-    const assistant = msg;
-    if (!shouldTrackAssistantToolCalls(assistant)) {
-      continue;
-    }
-    for (const toolCall of extractToolCallsFromAssistant(assistant)) {
-      validToolCallIds.add(toolCall.id);
-    }
-  }
-
   let changed = false;
   const out: AgentMessage[] = [];
+  let activeToolCallIds: Set<string> | null = null;
+  let seenSpanToolResultIds: Set<string> | null = null;
   for (const msg of messages) {
-    if (!msg || typeof msg !== "object" || msg.role !== "toolResult") {
+    if (!msg || typeof msg !== "object") {
       out.push(msg);
       continue;
     }
+
+    if (msg.role === "assistant") {
+      out.push(msg);
+      if (!shouldTrackAssistantToolCalls(msg)) {
+        activeToolCallIds = null;
+        seenSpanToolResultIds = null;
+        continue;
+      }
+      const toolCalls = extractToolCallsFromAssistant(msg);
+      if (toolCalls.length === 0) {
+        activeToolCallIds = null;
+        seenSpanToolResultIds = null;
+        continue;
+      }
+      activeToolCallIds = new Set(toolCalls.map((toolCall) => toolCall.id));
+      seenSpanToolResultIds = new Set<string>();
+      continue;
+    }
+
+    if (msg.role !== "toolResult") {
+      out.push(msg);
+      continue;
+    }
+
     const id = extractToolResultId(msg);
-    if (id && validToolCallIds.has(id)) {
+    if (id && activeToolCallIds?.has(id) && !(seenSpanToolResultIds?.has(id) ?? false)) {
+      seenSpanToolResultIds?.add(id);
       out.push(msg);
       continue;
     }
@@ -230,6 +243,16 @@ export function dropOrphanedToolResults(messages: AgentMessage[]): AgentMessage[
 
 export function sanitizeToolUseResultPairing(messages: AgentMessage[]): AgentMessage[] {
   return repairToolUseResultPairing(messages).messages;
+}
+
+export function sanitizeToolResultsAfterHistoryLimit(params: {
+  messages: AgentMessage[];
+  repairToolUseResultPairing: boolean;
+}): AgentMessage[] {
+  const withoutOrphans = dropOrphanedToolResults(params.messages);
+  return params.repairToolUseResultPairing
+    ? sanitizeToolUseResultPairing(withoutOrphans)
+    : withoutOrphans;
 }
 
 export type ToolUseRepairReport = {

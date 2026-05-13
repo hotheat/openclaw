@@ -21,6 +21,7 @@ import { DirectoryCache } from "./directory-cache.js";
 import { buildOutboundResultEnvelope } from "./envelope.js";
 import type { OutboundDeliveryJson } from "./format.js";
 import {
+  buildSafeMessageSendToolPayload,
   buildOutboundDeliveryJson,
   formatGatewaySummary,
   formatOutboundDeliverySummary,
@@ -633,6 +634,36 @@ describe("buildOutboundDeliveryJson", () => {
     for (const testCase of cases) {
       expect(buildOutboundDeliveryJson(testCase.input), testCase.name).toEqual(testCase.expected);
     }
+  });
+});
+
+describe("buildSafeMessageSendToolPayload", () => {
+  it("omits local outbox paths but keeps safe delivery metadata", () => {
+    expect(
+      buildSafeMessageSendToolPayload({
+        channel: "feishu",
+        to: "ou_123",
+        via: "direct",
+        mediaUrl: "/home/xiaolu/.openclaw/workspace/ou_123.outbox/file.pptx",
+        mediaUrls: ["/home/xiaolu/.openclaw/workspace/ou_123.outbox/file.pptx"],
+        mirroredFileNames: ["file.pptx"],
+        result: {
+          channel: "feishu",
+          messageId: "om_1",
+          chatId: "ou_123",
+        },
+      }),
+    ).toEqual({
+      channel: "feishu",
+      to: "ou_123",
+      via: "direct",
+      attachmentCount: 1,
+      mirroredFileNames: ["file.pptx"],
+      result: {
+        messageId: "om_1",
+        chatId: "ou_123",
+      },
+    });
   });
 });
 

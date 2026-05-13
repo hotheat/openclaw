@@ -18,6 +18,15 @@ export type OutboundDeliveryJson = {
   meta?: Record<string, unknown>;
 };
 
+export type SafeMessageSendToolPayload = {
+  channel?: string;
+  via?: string;
+  to?: string;
+  attachmentCount?: number;
+  mirroredFileNames?: string[];
+  result?: OutboundDeliveryMeta;
+};
+
 type OutboundDeliveryMeta = {
   messageId?: string;
   chatId?: string;
@@ -107,6 +116,87 @@ export function buildOutboundDeliveryJson(params: {
   }
 
   return payload;
+}
+
+export function buildSafeMessageSendToolPayload(payload: unknown): SafeMessageSendToolPayload {
+  if (!payload || typeof payload !== "object") {
+    return {};
+  }
+
+  const record = payload as Record<string, unknown>;
+  const safe: SafeMessageSendToolPayload = {};
+
+  if (typeof record.channel === "string" && record.channel.trim()) {
+    safe.channel = record.channel;
+  }
+  if (typeof record.via === "string" && record.via.trim()) {
+    safe.via = record.via;
+  }
+  if (typeof record.to === "string" && record.to.trim()) {
+    safe.to = record.to;
+  }
+
+  const mirroredFileNames = Array.isArray(record.mirroredFileNames)
+    ? record.mirroredFileNames.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+  if (mirroredFileNames.length > 0) {
+    safe.mirroredFileNames = mirroredFileNames;
+  }
+
+  const mediaUrls = Array.isArray(record.mediaUrls)
+    ? record.mediaUrls.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+  const mediaUrlCount =
+    mediaUrls.length > 0
+      ? mediaUrls.length
+      : typeof record.mediaUrl === "string" && record.mediaUrl.trim()
+        ? 1
+        : 0;
+  const attachmentCount = Math.max(mediaUrlCount, mirroredFileNames.length);
+  if (attachmentCount > 0) {
+    safe.attachmentCount = attachmentCount;
+  }
+
+  const result =
+    record.result && typeof record.result === "object" && !Array.isArray(record.result)
+      ? (record.result as Record<string, unknown>)
+      : undefined;
+  if (result) {
+    const safeResult: OutboundDeliveryMeta = {};
+    if (typeof result.messageId === "string" && result.messageId.trim()) {
+      safeResult.messageId = result.messageId;
+    }
+    if (typeof result.chatId === "string" && result.chatId.trim()) {
+      safeResult.chatId = result.chatId;
+    }
+    if (typeof result.channelId === "string" && result.channelId.trim()) {
+      safeResult.channelId = result.channelId;
+    }
+    if (typeof result.roomId === "string" && result.roomId.trim()) {
+      safeResult.roomId = result.roomId;
+    }
+    if (typeof result.conversationId === "string" && result.conversationId.trim()) {
+      safeResult.conversationId = result.conversationId;
+    }
+    if (typeof result.toJid === "string" && result.toJid.trim()) {
+      safeResult.toJid = result.toJid;
+    }
+    if (typeof result.timestamp === "number" && Number.isFinite(result.timestamp)) {
+      safeResult.timestamp = result.timestamp;
+    }
+    if (result.meta && typeof result.meta === "object" && !Array.isArray(result.meta)) {
+      safeResult.meta = result.meta as Record<string, unknown>;
+    }
+    if (Object.keys(safeResult).length > 0) {
+      safe.result = safeResult;
+    }
+  }
+
+  return safe;
 }
 
 export function formatGatewaySummary(params: {

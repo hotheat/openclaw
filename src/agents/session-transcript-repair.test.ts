@@ -1,10 +1,12 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
+import { limitHistoryTurns } from "./pi-embedded-runner.js";
 import {
   dropOrphanedToolResults,
-  sanitizeToolCallInputs,
-  sanitizeToolUseResultPairing,
   repairToolUseResultPairing,
+  sanitizeToolCallInputs,
+  sanitizeToolResultsAfterHistoryLimit,
+  sanitizeToolUseResultPairing,
 } from "./session-transcript-repair.js";
 
 const TOOL_CALL_BLOCK_TYPES = new Set(["toolCall", "toolUse", "functionCall"]);
@@ -362,5 +364,82 @@ describe("dropOrphanedToolResults", () => {
     const out = dropOrphanedToolResults(input);
 
     expect(out.map((msg) => msg.role)).toEqual(["assistant", "toolResult", "user"]);
+  });
+
+  it("keeps delayed tool results within the same assistant span", () => {
+    const input = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_read", name: "read", arguments: {} }],
+      },
+      { role: "user", content: "waiting" },
+      {
+        role: "toolResult",
+        toolCallId: "call_read",
+        toolName: "read",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ] as unknown as AgentMessage[];
+
+    const out = dropOrphanedToolResults(input);
+
+    expect(out.map((msg) => msg.role)).toEqual(["assistant", "user", "toolResult", "assistant"]);
+  });
+
+  it("drops tool results that only match a later reused tool-call id", () => {
+    const input = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "dup", name: "read", arguments: {} }],
+        stopReason: "error",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "dup",
+        toolName: "read",
+        content: [{ type: "text", text: "stale" }],
+        isError: false,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "dup", name: "read", arguments: {} }],
+      },
+    ] as unknown as AgentMessage[];
+
+    const out = dropOrphanedToolResults(input);
+
+    expect(out.map((msg) => msg.role)).toEqual(["assistant", "assistant"]);
+  });
+});
+
+describe("sanitizeToolResultsAfterHistoryLimit", () => {
+  it("drops orphaned tool results created by history truncation even when repair is disabled", () => {
+    const input = [
+      { role: "user", content: "first" },
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
+      },
+      { role: "user", content: "second" },
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "read",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+      },
+      { role: "assistant", content: [{ type: "text", text: "final" }] },
+    ] as unknown as AgentMessage[];
+
+    const truncated = limitHistoryTurns(input, 1);
+    const out = sanitizeToolResultsAfterHistoryLimit({
+      messages: truncated,
+      repairToolUseResultPairing: false,
+    });
+
+    expect(truncated.map((msg) => msg.role)).toEqual(["user", "toolResult", "assistant"]);
+    expect(out.map((msg) => msg.role)).toEqual(["user", "assistant"]);
   });
 });

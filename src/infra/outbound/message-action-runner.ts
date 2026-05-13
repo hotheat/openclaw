@@ -26,6 +26,7 @@ import {
 } from "./channel-selection.js";
 import { applyTargetToParams } from "./channel-target.js";
 import type { OutboundSendDeps } from "./deliver.js";
+import { buildSafeMessageSendToolPayload } from "./format.js";
 import {
   hydrateSendAttachmentParams,
   hydrateSetGroupIconParams,
@@ -156,6 +157,23 @@ export type MessageActionRunResult =
 export function getToolResult(
   result: MessageActionRunResult,
 ): AgentToolResult<unknown> | undefined {
+  if (result.kind === "send") {
+    const details =
+      result.toolResult && result.toolResult.details !== undefined
+        ? result.toolResult.details
+        : result.payload;
+    const contentPayload = buildSafeMessageSendToolPayload(details);
+    return {
+      ...result.toolResult,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(contentPayload, null, 2),
+        },
+      ],
+      details,
+    };
+  }
   return "toolResult" in result ? result.toolResult : undefined;
 }
 
