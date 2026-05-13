@@ -108,6 +108,72 @@ describe("memory search config", () => {
     expect(resolved?.store.vector.extensionPath).toBe("/opt/sqlite-vec.dylib");
   });
 
+  it("resolves postgres store config with agent overrides", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+            store: {
+              driver: "postgres",
+              postgres: {
+                host: "${POSTGRES__HOST}",
+                port: 5432,
+                database: "${POSTGRES__DATABASE}",
+                user: "${POSTGRES__USERNAME}",
+                password: "${POSTGRES__PASSWORD}",
+                schema: "openclaw_memory",
+                ssl: false,
+                poolMax: 10,
+                echo: false,
+              },
+              vector: {
+                enabled: true,
+              },
+              cache: {
+                enabled: true,
+                maxEntries: 50000,
+              },
+            },
+          },
+        },
+        list: [
+          {
+            id: "main",
+            default: true,
+            memorySearch: {
+              store: {
+                postgres: {
+                  schema: "agent_memory",
+                  ssl: true,
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.store.driver).toBe("postgres");
+    expect(resolved?.store.postgres).toEqual({
+      host: "${POSTGRES__HOST}",
+      port: 5432,
+      database: "${POSTGRES__DATABASE}",
+      user: "${POSTGRES__USERNAME}",
+      password: "${POSTGRES__PASSWORD}",
+      schema: "agent_memory",
+      ssl: true,
+      poolMax: 10,
+      echo: false,
+    });
+    expect(resolved?.store.vector.enabled).toBe(true);
+    expect(resolved?.cache).toEqual({
+      enabled: true,
+      maxEntries: 50000,
+    });
+  });
+
   it("merges extra memory paths from defaults and overrides", () => {
     const cfg = asConfig({
       agents: {
@@ -129,6 +195,33 @@ describe("memory search config", () => {
     });
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.extraPaths).toEqual(["/shared/notes", "docs", "../team-notes"]);
+  });
+
+  it("merges exclude globs from defaults and overrides", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            excludeGlobs: ["memory/private/**", " **/*-security-policy.md "],
+          },
+        },
+        list: [
+          {
+            id: "main",
+            default: true,
+            memorySearch: {
+              excludeGlobs: ["memory/private/**", "memory/tmp/*.md"],
+            },
+          },
+        ],
+      },
+    });
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.excludeGlobs).toEqual([
+      "memory/private/**",
+      "**/*-security-policy.md",
+      "memory/tmp/*.md",
+    ]);
   });
 
   it("includes batch defaults for openai without remote overrides", () => {

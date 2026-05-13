@@ -666,6 +666,8 @@ export const FIELD_HELP: Record<string, string> = {
     'Chooses which sources are indexed: "memory" reads MEMORY.md + memory files, and "sessions" includes transcript history. Keep ["memory"] unless you need recall from prior chat transcripts.',
   "agents.defaults.memorySearch.extraPaths":
     "Adds extra directories or .md files to the memory index beyond default memory files. Use this when key reference docs live elsewhere in your repo; keep paths small and intentional to avoid noisy recall.",
+  "agents.defaults.memorySearch.excludeGlobs":
+    "Skips builtin memory files whose relative paths match these glob patterns, such as `memory/private/**` or `**/*-security-policy.md`. Use this to keep sensitive or noisy markdown out of semantic recall without moving the files.",
   "agents.defaults.memorySearch.experimental.sessionMemory":
     "Indexes session transcripts into memory search so responses can reference prior chat turns. Keep this off unless transcript recall is needed, because indexing cost and storage usage both increase.",
   "agents.defaults.memorySearch.provider":
@@ -692,12 +694,36 @@ export const FIELD_HELP: Record<string, string> = {
     "Specifies the local embedding model source for local memory search, such as a GGUF file path or `hf:` URI. Use this only when provider is `local`, and verify model compatibility before large index rebuilds.",
   "agents.defaults.memorySearch.fallback":
     'Backup provider used when primary embeddings fail: "openai", "gemini", "voyage", "mistral", "local", or "none". Set a real fallback for production reliability; use "none" only if you prefer explicit failures.',
+  "agents.defaults.memorySearch.store.driver":
+    'Chooses the builtin memory store implementation: "sqlite" for local per-agent index files, or "postgres" for a shared PostgreSQL-backed store. Keep "sqlite" for simple single-host setups and use "postgres" when you need centralized memory indexing.',
   "agents.defaults.memorySearch.store.path":
     "Sets where the SQLite memory index is stored on disk for each agent. Keep the default `~/.openclaw/memory/{agentId}.sqlite` unless you need custom storage placement or backup policy alignment.",
+  "agents.defaults.memorySearch.store.postgres.host":
+    "PostgreSQL host name used by the builtin memory store when store.driver=postgres. Prefer env substitution so the same config can move across hosts without editing secrets or network addresses inline.",
+  "agents.defaults.memorySearch.store.postgres.port":
+    "PostgreSQL port used by the builtin memory store when store.driver=postgres. Keep the default database port unless your deployment or proxy terminates PostgreSQL on a custom listener.",
+  "agents.defaults.memorySearch.store.postgres.database":
+    "Database name for the builtin PostgreSQL memory store. Reuse an existing operational database when desired, but isolate memory tables into a dedicated schema.",
+  "agents.defaults.memorySearch.store.postgres.user":
+    "Database user name for PostgreSQL-backed builtin memory search. Use a dedicated least-privilege account where possible instead of broad admin credentials.",
+  "agents.defaults.memorySearch.store.postgres.password":
+    "Database password for PostgreSQL-backed builtin memory search. Use secret/env substitution and avoid storing real credentials directly in committed config files.",
+  "agents.defaults.memorySearch.store.postgres.schema":
+    "Schema name used to isolate PostgreSQL memory tables from the rest of the database. Keep a dedicated schema such as `openclaw_memory` to simplify permissions and operational cleanup.",
+  "agents.defaults.memorySearch.store.postgres.ssl":
+    "Enables or disables PostgreSQL TLS for the builtin memory store. Turn this on for managed or remote databases unless you have a trusted local-only deployment.",
+  "agents.defaults.memorySearch.store.postgres.poolMax":
+    "Maximum PostgreSQL client pool size used by the builtin memory store. Increase only when multiple agents or concurrent indexing operations need more database throughput.",
+  "agents.defaults.memorySearch.store.postgres.echo":
+    "Enables verbose SQL logging for the PostgreSQL memory store. Keep disabled in normal operation and enable temporarily only when debugging schema or query behavior.",
   "agents.defaults.memorySearch.store.vector.enabled":
     "Enables the sqlite-vec extension used for vector similarity queries in memory search (default: true). Keep this enabled for normal semantic recall; disable only for debugging or fallback-only operation.",
   "agents.defaults.memorySearch.store.vector.extensionPath":
     "Overrides the auto-discovered sqlite-vec extension library path (`.dylib`, `.so`, or `.dll`). Use this when your runtime cannot find sqlite-vec automatically or you pin a known-good build.",
+  "agents.defaults.memorySearch.store.cache.enabled":
+    "Enables embedding cache settings scoped under store for compatibility with memory store configuration blocks. This is merged into the builtin memory cache behavior used during indexing and query embedding.",
+  "agents.defaults.memorySearch.store.cache.maxEntries":
+    "Sets a best-effort upper bound on cached embeddings when cache configuration is nested under store. Prefer the top-level memorySearch.cache block for new configs, but this field remains supported for compatibility.",
   "agents.defaults.memorySearch.chunking.tokens":
     "Chunk size in tokens used when splitting memory sources before embedding/indexing. Increase for broader context per chunk, or lower to improve precision on pinpoint lookups.",
   "agents.defaults.memorySearch.chunking.overlap":

@@ -28,6 +28,7 @@ import {
   buildFileEntry,
   ensureDir,
   listMemoryFiles,
+  matchesMemoryExcludeGlob,
   normalizeExtraMemoryPaths,
   runWithConcurrency,
 } from "./internal.js";
@@ -83,6 +84,23 @@ function shouldIgnoreMemoryWatchPath(watchPath: string): boolean {
   const normalized = path.normalize(watchPath);
   const parts = normalized.split(path.sep).map((segment) => segment.trim().toLowerCase());
   return parts.some((segment) => IGNORED_MEMORY_WATCH_DIR_NAMES.has(segment));
+}
+
+function shouldIgnoreMemoryWatchPathWithConfig(
+  workspaceDir: string,
+  watchPath: string,
+  excludeGlobs?: string[],
+): boolean {
+  if (shouldIgnoreMemoryWatchPath(watchPath)) {
+    return true;
+  }
+  if (!excludeGlobs?.length) {
+    return false;
+  }
+  const absPath = path.resolve(watchPath);
+  const relPath = path.relative(workspaceDir, absPath).replaceAll(path.sep, "/");
+  const inWorkspace = relPath.length > 0 && !relPath.startsWith("..") && !path.isAbsolute(relPath);
+  return inWorkspace && matchesMemoryExcludeGlob(relPath, excludeGlobs);
 }
 
 export abstract class MemoryManagerSyncOps {
@@ -382,7 +400,12 @@ export abstract class MemoryManagerSyncOps {
     }
     this.watcher = chokidar.watch(Array.from(watchPaths), {
       ignoreInitial: true,
-      ignored: (watchPath) => shouldIgnoreMemoryWatchPath(String(watchPath)),
+      ignored: (watchPath) =>
+        shouldIgnoreMemoryWatchPathWithConfig(
+          this.workspaceDir,
+          String(watchPath),
+          this.settings.excludeGlobs,
+        ),
       awaitWriteFinish: {
         stabilityThreshold: this.settings.sync.watchDebounceMs,
         pollInterval: 100,
@@ -637,7 +660,11 @@ export abstract class MemoryManagerSyncOps {
       return;
     }
 
-    const files = await listMemoryFiles(this.workspaceDir, this.settings.extraPaths);
+    const files = await listMemoryFiles(
+      this.workspaceDir,
+      this.settings.extraPaths,
+      this.settings.excludeGlobs,
+    );
     const fileEntries = (
       await Promise.all(files.map(async (file) => buildFileEntry(file, this.workspaceDir)))
     ).filter((entry): entry is MemoryFileEntry => entry !== null);

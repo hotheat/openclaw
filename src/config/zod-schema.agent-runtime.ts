@@ -501,6 +501,7 @@ export const MemorySearchSchema = z
     enabled: z.boolean().optional(),
     sources: z.array(z.union([z.literal("memory"), z.literal("sessions")])).optional(),
     extraPaths: z.array(z.string()).optional(),
+    excludeGlobs: z.array(z.string()).optional(),
     experimental: z
       .object({
         sessionMemory: z.boolean().optional(),
@@ -554,12 +555,33 @@ export const MemorySearchSchema = z
       .optional(),
     store: z
       .object({
-        driver: z.literal("sqlite").optional(),
+        driver: z.union([z.literal("sqlite"), z.literal("postgres")]).optional(),
         path: z.string().optional(),
+        postgres: z
+          .object({
+            host: z.string().optional(),
+            port: z.union([z.number().int().positive(), z.string()]).optional(),
+            database: z.string().optional(),
+            user: z.string().optional(),
+            password: z.string().optional().register(sensitive),
+            schema: z.string().optional(),
+            ssl: z.union([z.boolean(), z.string()]).optional(),
+            poolMax: z.union([z.number().int().positive(), z.string()]).optional(),
+            echo: z.union([z.boolean(), z.string()]).optional(),
+          })
+          .strict()
+          .optional(),
         vector: z
           .object({
             enabled: z.boolean().optional(),
             extensionPath: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        cache: z
+          .object({
+            enabled: z.boolean().optional(),
+            maxEntries: z.number().int().positive().optional(),
           })
           .strict()
           .optional(),

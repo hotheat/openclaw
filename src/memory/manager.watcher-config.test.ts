@@ -69,6 +69,7 @@ describe("memory watcher config", () => {
             sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
             query: { minScore: 0, hybrid: { enabled: false } },
             extraPaths: [extraDir],
+            excludeGlobs: ["memory/private/**", "**/*-security-policy.md"],
           },
         },
         list: [{ id: "main", default: true }],
@@ -104,6 +105,77 @@ describe("memory watcher config", () => {
       true,
     );
     expect(ignored?.(path.join(workspaceDir, "memory", ".venv", "lib", "python.md"))).toBe(true);
+    expect(ignored?.(path.join(workspaceDir, "memory", "private", "secret.md"))).toBe(true);
+    expect(ignored?.(path.join(workspaceDir, "memory", "agent-security-policy.md"))).toBe(true);
     expect(ignored?.(path.join(workspaceDir, "memory", "project", "notes.md"))).toBe(false);
+  });
+
+  it("does not start file watchers in status-only mode", async () => {
+    workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-status-watch-"));
+    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+
+    const cfg = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          memorySearch: {
+            provider: "openai",
+            model: "mock-embed",
+            store: { path: path.join(workspaceDir, "index.sqlite"), vector: { enabled: false } },
+            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
+            query: { minScore: 0, hybrid: { enabled: false } },
+          },
+        },
+        list: [{ id: "main", default: true }],
+      },
+    } as OpenClawConfig;
+
+    const result = await getMemorySearchManager({ cfg, agentId: "main", purpose: "status" });
+    expect(result.manager).not.toBeNull();
+    if (!result.manager) {
+      throw new Error("manager missing");
+    }
+    manager = result.manager as unknown as MemoryIndexManager;
+
+    expect(watchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse a status-only manager for later default calls", async () => {
+    workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-status-cache-"));
+    await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+
+    const cfg = {
+      agents: {
+        defaults: {
+          workspace: workspaceDir,
+          memorySearch: {
+            provider: "openai",
+            model: "mock-embed",
+            store: { path: path.join(workspaceDir, "index.sqlite"), vector: { enabled: false } },
+            sync: { watch: true, watchDebounceMs: 25, onSessionStart: false, onSearch: false },
+            query: { minScore: 0, hybrid: { enabled: false } },
+          },
+        },
+        list: [{ id: "main", default: true }],
+      },
+    } as OpenClawConfig;
+
+    const statusOnly = await getMemorySearchManager({ cfg, agentId: "main", purpose: "status" });
+    expect(statusOnly.manager).not.toBeNull();
+    if (!statusOnly.manager) {
+      throw new Error("status manager missing");
+    }
+
+    const full = await getMemorySearchManager({ cfg, agentId: "main" });
+    expect(full.manager).not.toBeNull();
+    if (!full.manager) {
+      throw new Error("default manager missing");
+    }
+    manager = full.manager as unknown as MemoryIndexManager;
+
+    expect(full.manager).not.toBe(statusOnly.manager);
+    expect(watchMock).toHaveBeenCalledTimes(1);
+
+    await statusOnly.manager.close?.();
   });
 });

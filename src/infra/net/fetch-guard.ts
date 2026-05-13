@@ -39,6 +39,18 @@ const CROSS_ORIGIN_REDIRECT_SENSITIVE_HEADERS = [
   "cookie2",
 ];
 
+function hasEnvHttpProxy(env: NodeJS.ProcessEnv = process.env): boolean {
+  const candidates = [
+    env.HTTPS_PROXY,
+    env.https_proxy,
+    env.HTTP_PROXY,
+    env.http_proxy,
+    env.ALL_PROXY,
+    env.all_proxy,
+  ];
+  return candidates.some((value) => typeof value === "string" && value.trim().length > 0);
+}
+
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
@@ -138,7 +150,7 @@ export async function fetchWithSsrFGuard(params: GuardedFetchOptions): Promise<G
         lookupFn: params.lookupFn,
         policy: params.policy,
       });
-      if (params.pinDns !== false) {
+      if (params.pinDns !== false && !hasEnvHttpProxy()) {
         dispatcher = createPinnedDispatcher(pinned);
       }
 

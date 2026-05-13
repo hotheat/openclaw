@@ -55,6 +55,8 @@ const fallbackManager = {
 };
 
 const mockMemoryIndexGet = vi.fn(async () => fallbackManager);
+const mockPostgresManagerGet = vi.fn(async () => fallbackManager);
+const resolveMemorySearchConfigMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./qmd-manager.js", () => ({
   QmdMemoryManager: {
@@ -67,6 +69,22 @@ vi.mock("./manager.js", () => ({
     get: mockMemoryIndexGet,
   },
 }));
+
+vi.mock("./postgres-manager.js", () => ({
+  PostgresMemoryManager: {
+    get: mockPostgresManagerGet,
+  },
+}));
+
+vi.mock("../agents/memory-search.js", async () => {
+  const actual = await vi.importActual<typeof import("../agents/memory-search.js")>(
+    "../agents/memory-search.js",
+  );
+  return {
+    ...actual,
+    resolveMemorySearchConfig: resolveMemorySearchConfigMock,
+  };
+});
 
 import { QmdMemoryManager } from "./qmd-manager.js";
 import { getMemorySearchManager } from "./search-manager.js";
@@ -115,10 +133,32 @@ beforeEach(() => {
   fallbackManager.close.mockClear();
   mockMemoryIndexGet.mockClear();
   mockMemoryIndexGet.mockResolvedValue(fallbackManager);
+  mockPostgresManagerGet.mockClear();
+  mockPostgresManagerGet.mockResolvedValue(fallbackManager);
+  resolveMemorySearchConfigMock.mockReset();
+  resolveMemorySearchConfigMock.mockReturnValue({
+    store: { driver: "sqlite" },
+  });
   createQmdManagerMock.mockClear();
 });
 
 describe("getMemorySearchManager caching", () => {
+  it("selects the postgres builtin manager when store driver is postgres", async () => {
+    const cfg: OpenClawConfig = {
+      memory: { backend: "builtin" },
+      agents: { list: [{ id: "main", default: true, workspace: "/tmp/workspace" }] },
+    };
+    resolveMemorySearchConfigMock.mockReturnValue({
+      store: { driver: "postgres" },
+    });
+
+    const result = await getMemorySearchManager({ cfg, agentId: "main" });
+
+    expect(result.manager).toBe(fallbackManager);
+    expect(mockPostgresManagerGet).toHaveBeenCalledWith({ cfg, agentId: "main" });
+    expect(mockMemoryIndexGet).not.toHaveBeenCalled();
+  });
+
   it("reuses the same QMD manager instance for repeated calls", async () => {
     const cfg = createQmdCfg("main");
 

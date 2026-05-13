@@ -148,4 +148,40 @@ describe("fetchWithSsrFGuard hardening", () => {
     expect(headers.get("authorization")).toBe("Bearer secret");
     await result.release();
   });
+
+  it("does not inject a pinned dispatcher when env proxy is configured", async () => {
+    const lookupFn = vi.fn(async () => [
+      { address: "93.184.216.34", family: 4 },
+    ]) as unknown as LookupFn;
+    const fetchImpl = vi.fn(async () => okResponse());
+    const previousHttpsProxy = process.env.HTTPS_PROXY;
+    const previousHttpProxy = process.env.HTTP_PROXY;
+    try {
+      process.env.HTTPS_PROXY = "http://proxy.test:7895";
+      process.env.HTTP_PROXY = "http://proxy.test:7895";
+      const result = await fetchWithSsrFGuard({
+        url: "https://api.jina.ai/v1/embeddings",
+        fetchImpl,
+        lookupFn,
+      });
+
+      const [, init] = fetchImpl.mock.calls[0] as unknown as [
+        string,
+        RequestInit & { dispatcher?: unknown },
+      ];
+      expect(init.dispatcher).toBeUndefined();
+      await result.release();
+    } finally {
+      if (previousHttpsProxy === undefined) {
+        delete process.env.HTTPS_PROXY;
+      } else {
+        process.env.HTTPS_PROXY = previousHttpsProxy;
+      }
+      if (previousHttpProxy === undefined) {
+        delete process.env.HTTP_PROXY;
+      } else {
+        process.env.HTTP_PROXY = previousHttpProxy;
+      }
+    }
+  });
 });

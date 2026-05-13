@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Command } from "commander";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
+import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import { loadConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
@@ -124,6 +125,41 @@ async function checkReadableFile(pathname: string): Promise<{ exists: boolean; i
   }
 }
 
+async function runInitStoreForManager(params: {
+  manager: MemoryManager;
+  agentId: string;
+}): Promise<boolean> {
+  const initStoreFn = params.manager.initStore
+    ? params.manager.initStore.bind(params.manager)
+    : null;
+  if (!initStoreFn) {
+    defaultRuntime.log("Memory backend does not support store initialization.");
+    return false;
+  }
+  await withProgressTotals(
+    {
+      label: "Initializing memory store…",
+      total: 0,
+    },
+    async (update, progress) => {
+      await initStoreFn({
+        progress: (syncUpdate) => {
+          update({
+            completed: syncUpdate.completed,
+            total: syncUpdate.total,
+            label: syncUpdate.label,
+          });
+          if (syncUpdate.label) {
+            progress.setLabel(syncUpdate.label);
+          }
+        },
+      });
+    },
+  );
+  defaultRuntime.log(`Memory store initialized (${params.agentId}).`);
+  return true;
+}
+
 async function scanSessionFiles(agentId: string): Promise<SourceScan> {
   const issues: string[] = [];
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
@@ -149,6 +185,7 @@ async function scanSessionFiles(agentId: string): Promise<SourceScan> {
 async function scanMemoryFiles(
   workspaceDir: string,
   extraPaths: string[] = [],
+  excludeGlobs: string[] = [],
 ): Promise<SourceScan> {
   const issues: string[] = [];
   const memoryFile = path.join(workspaceDir, "MEMORY.md");
@@ -207,7 +244,7 @@ async function scanMemoryFiles(
   let listed: string[] = [];
   let listedOk = false;
   try {
-    listed = await listMemoryFiles(workspaceDir, resolvedExtraPaths);
+    listed = await listMemoryFiles(workspaceDir, resolvedExtraPaths, excludeGlobs);
     listedOk = true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -275,12 +312,14 @@ async function scanMemorySources(params: {
   agentId: string;
   sources: MemorySourceName[];
   extraPaths?: string[];
+  excludeGlobs?: string[];
 }): Promise<MemorySourceScan> {
   const scans: SourceScan[] = [];
   const extraPaths = params.extraPaths ?? [];
+  const excludeGlobs = params.excludeGlobs ?? [];
   for (const source of params.sources) {
     if (source === "memory") {
-      scans.push(await scanMemoryFiles(params.workspaceDir, extraPaths));
+      scans.push(await scanMemoryFiles(params.workspaceDir, extraPaths, excludeGlobs));
     }
     if (source === "sessions") {
       scans.push(await scanSessionFiles(params.agentId));
@@ -366,6 +405,7 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
           await manager.probeVectorAvailability();
         }
         const status = manager.status();
+        const settings = resolveMemorySearchConfig(cfg, agentId);
         const sources = (
           status.sources?.length ? status.sources : ["memory"]
         ) as MemorySourceName[];
@@ -376,6 +416,7 @@ export async function runMemoryStatus(opts: MemoryCommandOptions) {
               agentId,
               sources,
               extraPaths: status.extraPaths,
+              excludeGlobs: settings?.excludeGlobs,
             })
           : undefined;
         allResults.push({ agentId, status, embeddingProbe, indexError, scan });
@@ -549,6 +590,88 @@ export function registerMemoryCli(program: Command) {
           ["openclaw memory status --json", "Output machine-readable JSON."],
         ])}\n\n${theme.muted("Docs:")} ${formatDocsLink("/cli/memory", "docs.openclaw.ai/cli/memory")}\n`,
     );
+
+  memory
+    .command("init-store")
+    .description("Initialize the configured memory store")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentIds = resolveAgentIds(cfg, opts.agent);
+      for (const agentId of agentIds) {
+        await withMemoryManagerForAgent({
+          cfg,
+          agentId,
+          run: async (manager) => {
+            try {
+              await runInitStoreForManager({ manager, agentId });
+            } catch (err) {
+              const message = formatErrorMessage(err);
+              defaultRuntime.error(`Memory store initialization failed (${agentId}): ${message}`);
+              process.exitCode = 1;
+            }
+          },
+        });
+      }
+    });
+
+  memory
+    .command("bootstrap-store")
+    .description("Initialize the configured memory store and run a full index")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--force", "Force full reindex", false)
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentIds = resolveAgentIds(cfg, opts.agent);
+      for (const agentId of agentIds) {
+        await withMemoryManagerForAgent({
+          cfg,
+          agentId,
+          run: async (manager) => {
+            try {
+              await runInitStoreForManager({ manager, agentId });
+              const syncFn = manager.sync ? manager.sync.bind(manager) : undefined;
+              if (!syncFn) {
+                defaultRuntime.log("Memory backend does not support manual reindex.");
+                return;
+              }
+              await withProgressTotals(
+                {
+                  label: "Indexing memory…",
+                  total: 0,
+                  fallback: opts.verbose ? "line" : undefined,
+                },
+                async (update, progress) => {
+                  await syncFn({
+                    reason: "cli",
+                    force: Boolean(opts.force),
+                    progress: (syncUpdate) => {
+                      update({
+                        completed: syncUpdate.completed,
+                        total: syncUpdate.total,
+                        label: syncUpdate.label,
+                      });
+                      if (syncUpdate.label) {
+                        progress.setLabel(syncUpdate.label);
+                      }
+                    },
+                  });
+                },
+              );
+              defaultRuntime.log(`Memory index updated (${agentId}).`);
+            } catch (err) {
+              const message = formatErrorMessage(err);
+              defaultRuntime.error(`Memory store bootstrap failed (${agentId}): ${message}`);
+              process.exitCode = 1;
+            }
+          },
+        });
+      }
+    });
 
   memory
     .command("status")

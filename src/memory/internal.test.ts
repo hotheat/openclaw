@@ -6,6 +6,7 @@ import {
   buildFileEntry,
   chunkMarkdown,
   listMemoryFiles,
+  matchesMemoryExcludeGlob,
   normalizeExtraMemoryPaths,
   remapChunkLines,
 } from "./internal.js";
@@ -130,6 +131,37 @@ describe("listMemoryFiles", () => {
     const files = await listMemoryFiles(tmpDir, [tmpDir, ".", path.join(tmpDir, "MEMORY.md")]);
     const memoryMatches = files.filter((file) => file.endsWith("MEMORY.md"));
     expect(memoryMatches).toHaveLength(1);
+  });
+
+  it("skips files matching exclude globs", async () => {
+    const tmpDir = getTmpDir();
+    await fs.mkdir(path.join(tmpDir, "memory", "private"), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, "memory", "keep.md"), "# Keep");
+    await fs.writeFile(
+      path.join(tmpDir, "memory", "agent-security-policy.md"),
+      "# Security policy",
+    );
+    await fs.writeFile(path.join(tmpDir, "memory", "private", "secret.md"), "# Secret");
+
+    const files = await listMemoryFiles(
+      tmpDir,
+      [],
+      ["**/*-security-policy.md", "memory/private/**"],
+    );
+
+    expect(
+      files.map((file) => path.relative(tmpDir, file).replaceAll(path.sep, "/")).toSorted(),
+    ).toEqual(["memory/keep.md"]);
+  });
+});
+
+describe("matchesMemoryExcludeGlob", () => {
+  it("matches normalized relative paths against glob patterns", () => {
+    expect(matchesMemoryExcludeGlob("memory/private/secret.md", ["memory/private/**"])).toBe(true);
+    expect(
+      matchesMemoryExcludeGlob("memory/agent-security-policy.md", ["**/*-security-policy.md"]),
+    ).toBe(true);
+    expect(matchesMemoryExcludeGlob("memory/keep.md", ["**/*-security-policy.md"])).toBe(false);
   });
 });
 

@@ -1,3 +1,4 @@
+import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { ResolvedQmdConfig } from "./backend-config.js";
@@ -63,6 +64,12 @@ export async function getMemorySearchManager(params: {
   }
 
   try {
+    const resolvedSearch = resolveMemorySearchConfig(params.cfg, params.agentId);
+    if (resolvedSearch?.store.driver === "postgres") {
+      const { PostgresMemoryManager } = await import("./postgres-manager.js");
+      const manager = await PostgresMemoryManager.get(params);
+      return { manager };
+    }
     const { MemoryIndexManager } = await import("./manager.js");
     const manager = await MemoryIndexManager.get(params);
     return { manager };

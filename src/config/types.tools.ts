@@ -308,6 +308,8 @@ export type MemorySearchConfig = {
   sources?: Array<"memory" | "sessions">;
   /** Extra paths to include in memory search (directories or .md files). */
   extraPaths?: string[];
+  /** Glob patterns to exclude from builtin memory indexing. */
+  excludeGlobs?: string[];
   /** Experimental memory search settings. */
   experimental?: {
     /** Enable session transcript indexing (experimental, default: false). */
@@ -345,8 +347,19 @@ export type MemorySearchConfig = {
   };
   /** Index storage configuration. */
   store?: {
-    driver?: "sqlite";
+    driver?: "sqlite" | "postgres";
     path?: string;
+    postgres?: {
+      host?: string;
+      port?: number | string;
+      database?: string;
+      user?: string;
+      password?: string;
+      schema?: string;
+      ssl?: boolean | string;
+      poolMax?: number | string;
+      echo?: boolean | string;
+    };
     vector?: {
       /** Enable sqlite-vec extension for vector search (default: true). */
       enabled?: boolean;

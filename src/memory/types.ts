@@ -74,6 +74,7 @@ export interface MemorySearchManager {
     force?: boolean;
     progress?: (update: MemorySyncProgressUpdate) => void;
   }): Promise<void>;
+  initStore?(params?: { progress?: (update: MemorySyncProgressUpdate) => void }): Promise<void>;
   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
   probeVectorAvailability(): Promise<boolean>;
   close?(): Promise<void>;

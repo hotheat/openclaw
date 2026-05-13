@@ -45,6 +45,20 @@ export function normalizeExtraMemoryPaths(workspaceDir: string, extraPaths?: str
   return Array.from(new Set(resolved));
 }
 
+export function matchesMemoryExcludeGlob(relPath: string, excludeGlobs?: string[]): boolean {
+  if (!excludeGlobs?.length) {
+    return false;
+  }
+  const normalized = normalizeRelPath(relPath);
+  if (!normalized) {
+    return false;
+  }
+  return excludeGlobs.some((pattern) => {
+    const trimmed = pattern.trim();
+    return trimmed ? path.posix.matchesGlob(normalized, trimmed) : false;
+  });
+}
+
 export function isMemoryPath(relPath: string): boolean {
   const normalized = normalizeRelPath(relPath);
   if (!normalized) {
@@ -80,6 +94,7 @@ async function walkDir(dir: string, files: string[]) {
 export async function listMemoryFiles(
   workspaceDir: string,
   extraPaths?: string[],
+  excludeGlobs?: string[],
 ): Promise<string[]> {
   const result: string[] = [];
   const memoryFile = path.join(workspaceDir, "MEMORY.md");
@@ -127,7 +142,10 @@ export async function listMemoryFiles(
     }
   }
   if (result.length <= 1) {
-    return result;
+    return result.filter((entry) => {
+      const relPath = path.relative(workspaceDir, entry).replaceAll(path.sep, "/");
+      return !matchesMemoryExcludeGlob(relPath, excludeGlobs);
+    });
   }
   const seen = new Set<string>();
   const deduped: string[] = [];
@@ -140,6 +158,10 @@ export async function listMemoryFiles(
       continue;
     }
     seen.add(key);
+    const relPath = path.relative(workspaceDir, entry).replaceAll(path.sep, "/");
+    if (matchesMemoryExcludeGlob(relPath, excludeGlobs)) {
+      continue;
+    }
     deduped.push(entry);
   }
   return deduped;

@@ -42,6 +42,7 @@ const INDEX_CACHE = new Map<string, MemoryIndexManager>();
 
 export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements MemorySearchManager {
   private readonly cacheKey: string;
+  private readonly cacheable: boolean;
   protected readonly cfg: OpenClawConfig;
   protected readonly agentId: string;
   protected readonly workspaceDir: string;
@@ -112,9 +113,12 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     }
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
     const key = `${agentId}:${workspaceDir}:${JSON.stringify(settings)}`;
-    const existing = INDEX_CACHE.get(key);
-    if (existing) {
-      return existing;
+    const cacheable = params.purpose !== "status";
+    if (cacheable) {
+      const existing = INDEX_CACHE.get(key);
+      if (existing) {
+        return existing;
+      }
     }
     const providerResult = await createEmbeddingProvider({
       config: cfg,
@@ -132,9 +136,12 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       workspaceDir,
       settings,
       providerResult,
+      cacheable,
       purpose: params.purpose,
     });
-    INDEX_CACHE.set(key, manager);
+    if (cacheable) {
+      INDEX_CACHE.set(key, manager);
+    }
     return manager;
   }
 
@@ -145,10 +152,12 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     workspaceDir: string;
     settings: ResolvedMemorySearchConfig;
     providerResult: EmbeddingProviderResult;
+    cacheable: boolean;
     purpose?: "default" | "status";
   }) {
     super();
     this.cacheKey = params.cacheKey;
+    this.cacheable = params.cacheable;
     this.cfg = params.cfg;
     this.agentId = params.agentId;
     this.workspaceDir = params.workspaceDir;
@@ -180,10 +189,12 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
     if (meta?.vectorDims) {
       this.vector.dims = meta.vectorDims;
     }
-    this.ensureWatcher();
-    this.ensureSessionListener();
-    this.ensureIntervalSync();
     const statusOnly = params.purpose === "status";
+    if (!statusOnly) {
+      this.ensureWatcher();
+      this.ensureSessionListener();
+      this.ensureIntervalSync();
+    }
     this.dirty = this.sources.has("memory") && (statusOnly ? !meta : true);
     this.batch = this.resolveBatchConfig();
   }
@@ -635,6 +646,8 @@ export class MemoryIndexManager extends MemoryManagerEmbeddingOps implements Mem
       } catch {}
     }
     this.db.close();
-    INDEX_CACHE.delete(this.cacheKey);
+    if (this.cacheable && INDEX_CACHE.get(this.cacheKey) === this) {
+      INDEX_CACHE.delete(this.cacheKey);
+    }
   }
 }

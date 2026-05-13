@@ -7,6 +7,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const getMemorySearchManager = vi.fn();
 const loadConfig = vi.fn(() => ({}));
 const resolveDefaultAgentId = vi.fn(() => "main");
+const resolveAgentConfig = vi.fn((cfg: Record<string, unknown>, agentId: string) => {
+  const agents = (cfg.agents as { list?: Array<{ id: string }> } | undefined)?.list ?? [];
+  return agents.find((entry) => entry.id === agentId);
+});
 
 vi.mock("../memory/index.js", () => ({
   getMemorySearchManager,
@@ -18,6 +22,7 @@ vi.mock("../config/config.js", () => ({
 
 vi.mock("../agents/agent-scope.js", () => ({
   resolveDefaultAgentId,
+  resolveAgentConfig,
 }));
 
 let registerMemoryCli: typeof import("./memory-cli.js").registerMemoryCli;
@@ -33,7 +38,16 @@ beforeAll(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  getMemorySearchManager.mockClear();
+  getMemorySearchManager.mockReset();
+  loadConfig.mockReset();
+  loadConfig.mockImplementation(() => ({}));
+  resolveDefaultAgentId.mockReset();
+  resolveDefaultAgentId.mockImplementation(() => "main");
+  resolveAgentConfig.mockReset();
+  resolveAgentConfig.mockImplementation((cfg: Record<string, unknown>, agentId: string) => {
+    const agents = (cfg.agents as { list?: Array<{ id: string }> } | undefined)?.list ?? [];
+    return agents.find((entry) => entry.id === agentId);
+  });
   process.exitCode = undefined;
   setVerbose(false);
 });
@@ -54,6 +68,12 @@ describe("memory cli", () => {
   function expectCliSync(sync: ReturnType<typeof vi.fn>) {
     expect(sync).toHaveBeenCalledWith(
       expect.objectContaining({ reason: "cli", force: false, progress: expect.any(Function) }),
+    );
+  }
+
+  function expectCliInitStore(initStore: ReturnType<typeof vi.fn>) {
+    expect(initStore).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.any(Function) }),
     );
   }
 
@@ -81,6 +101,34 @@ describe("memory cli", () => {
     program.name("test");
     registerMemoryCli(program);
     await program.parseAsync(["memory", ...args], { from: "user" });
+  }
+
+  async function withTempOpenClawHome<T>(
+    run: (params: { home: string; stateDir: string; workspaceDir: string }) => Promise<T>,
+  ) {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "memory-cli-home-"));
+    const stateDir = path.join(home, ".openclaw");
+    const workspaceDir = path.join(stateDir, "workspace");
+    const previousHome = process.env.HOME;
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    try {
+      process.env.HOME = home;
+      process.env.OPENCLAW_STATE_DIR = stateDir;
+      await fs.mkdir(workspaceDir, { recursive: true });
+      return await run({ home, stateDir, workspaceDir });
+    } finally {
+      if (previousHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = previousHome;
+      }
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      await fs.rm(home, { recursive: true, force: true });
+    }
   }
 
   async function withQmdIndexDb(content: string, run: (dbPath: string) => Promise<void>) {
@@ -246,6 +294,36 @@ describe("memory cli", () => {
     expect(log).toHaveBeenCalledWith("Memory index updated (main).");
   });
 
+  it("initializes memory store", async () => {
+    const close = vi.fn(async () => {});
+    const initStore = vi.fn(async () => {});
+    mockManager({ initStore, close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["init-store"]);
+
+    expectCliInitStore(initStore);
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory store initialized (main).");
+  });
+
+  it("bootstraps memory store by initializing then indexing", async () => {
+    const close = vi.fn(async () => {});
+    const initStore = vi.fn(async () => {});
+    const sync = vi.fn(async () => {});
+    mockManager({ initStore, sync, close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["bootstrap-store"]);
+
+    expectCliInitStore(initStore);
+    expectCliSync(sync);
+    expect(initStore.mock.invocationCallOrder[0]).toBeLessThan(sync.mock.invocationCallOrder[0]);
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory store initialized (main).");
+    expect(log).toHaveBeenCalledWith("Memory index updated (main).");
+  });
+
   it("logs qmd index file path and size after index", async () => {
     const close = vi.fn(async () => {});
     const sync = vi.fn(async () => {});
@@ -341,6 +419,72 @@ describe("memory cli", () => {
     expect(Array.isArray(payload)).toBe(true);
     expect((payload[0] as Record<string, unknown>)?.agentId).toBe("main");
     expect(close).toHaveBeenCalled();
+  });
+
+  it("scans workspace memory files in status json output", async () => {
+    await withTempOpenClawHome(async ({ workspaceDir }) => {
+      await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "# Root memory\n", "utf-8");
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(path.join(workspaceDir, "memory", "facts.md"), "# Facts\n", "utf-8");
+
+      const close = vi.fn(async () => {});
+      mockManager({
+        probeVectorAvailability: vi.fn(async () => true),
+        status: () => makeMemoryStatus({ workspaceDir, files: 2, chunks: 2 }),
+        close,
+      });
+
+      const log = spyRuntimeLogs();
+      await runMemoryCli(["status", "--json"]);
+
+      const payload = firstLoggedJson(log) as unknown as Array<Record<string, unknown>>;
+      const first = payload[0] ?? {};
+      const scan = first.scan as Record<string, unknown> | undefined;
+      expect(scan?.totalFiles).toBe(2);
+      expect(scan?.issues).toEqual([]);
+      expect(close).toHaveBeenCalled();
+    });
+  });
+
+  it("applies exclude globs when scanning workspace memory files in status json output", async () => {
+    await withTempOpenClawHome(async ({ workspaceDir }) => {
+      await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "# Root memory\n", "utf-8");
+      await fs.mkdir(path.join(workspaceDir, "memory"), { recursive: true });
+      await fs.writeFile(path.join(workspaceDir, "memory", "facts.md"), "# Facts\n", "utf-8");
+      await fs.writeFile(
+        path.join(workspaceDir, "memory", "agent-security-policy.md"),
+        "# Security\n",
+        "utf-8",
+      );
+
+      loadConfig.mockImplementation(() => ({
+        agents: {
+          defaults: {
+            workspace: workspaceDir,
+            memorySearch: {
+              excludeGlobs: ["**/*-security-policy.md"],
+            },
+          },
+        },
+      }));
+
+      const close = vi.fn(async () => {});
+      mockManager({
+        probeVectorAvailability: vi.fn(async () => true),
+        status: () => makeMemoryStatus({ workspaceDir, files: 2, chunks: 2 }),
+        close,
+      });
+
+      const log = spyRuntimeLogs();
+      await runMemoryCli(["status", "--json"]);
+
+      const payload = firstLoggedJson(log) as unknown as Array<Record<string, unknown>>;
+      const first = payload[0] ?? {};
+      const scan = first.scan as Record<string, unknown> | undefined;
+      expect(scan?.totalFiles).toBe(2);
+      expect(scan?.issues).toEqual([]);
+      expect(close).toHaveBeenCalled();
+    });
   });
 
   it("logs default message when memory manager is missing", async () => {

@@ -51,6 +51,47 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it('accepts memorySearch store driver "postgres" with postgres config', () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          memorySearch: {
+            store: {
+              driver: "postgres",
+              postgres: {
+                host: "${POSTGRES__HOST}",
+                port: 5432,
+                database: "${POSTGRES__DATABASE}",
+                user: "${POSTGRES__USERNAME}",
+                password: "${POSTGRES__PASSWORD}",
+                schema: "openclaw_memory",
+                ssl: false,
+                poolMax: 10,
+                echo: false,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it("accepts memorySearch excludeGlobs", () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          memorySearch: {
+            excludeGlobs: ["memory/private/**", "**/*-security-policy.md"],
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("accepts safe iMessage remoteHost", () => {
     const res = validateConfigObject({
       channels: {

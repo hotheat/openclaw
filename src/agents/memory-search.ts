@@ -9,6 +9,7 @@ export type ResolvedMemorySearchConfig = {
   enabled: boolean;
   sources: Array<"memory" | "sessions">;
   extraPaths: string[];
+  excludeGlobs: string[];
   provider: "openai" | "local" | "gemini" | "voyage" | "mistral" | "auto";
   remote?: {
     baseUrl?: string;
@@ -32,8 +33,19 @@ export type ResolvedMemorySearchConfig = {
     modelCacheDir?: string;
   };
   store: {
-    driver: "sqlite";
+    driver: "sqlite" | "postgres";
     path: string;
+    postgres?: {
+      host: string;
+      port: number;
+      database: string;
+      user: string;
+      password: string;
+      schema: string;
+      ssl: boolean;
+      poolMax: number;
+      echo: boolean;
+    };
     vector: {
       enabled: boolean;
       extensionPath?: string;
@@ -99,6 +111,47 @@ const DEFAULT_TEMPORAL_DECAY_ENABLED = false;
 const DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS = 30;
 const DEFAULT_CACHE_ENABLED = true;
 const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
+const DEFAULT_POSTGRES_PORT = 5432;
+const DEFAULT_POSTGRES_SCHEMA = "openclaw_memory";
+const DEFAULT_POSTGRES_POOL_MAX = 10;
+
+function parseConfigNumber(
+  value: number | string | undefined,
+  fallback: number,
+  opts?: { min?: number },
+): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const floored = Math.floor(value);
+    return typeof opts?.min === "number" ? Math.max(opts.min, floored) : floored;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) {
+      const parsed = Number(trimmed);
+      if (Number.isFinite(parsed)) {
+        const floored = Math.floor(parsed);
+        return typeof opts?.min === "number" ? Math.max(opts.min, floored) : floored;
+      }
+    }
+  }
+  return fallback;
+}
+
+function parseConfigBoolean(value: boolean | string | undefined, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim().toLowerCase();
+    if (trimmed === "true" || trimmed === "1" || trimmed === "yes" || trimmed === "on") {
+      return true;
+    }
+    if (trimmed === "false" || trimmed === "0" || trimmed === "no" || trimmed === "off") {
+      return false;
+    }
+  }
+  return fallback;
+}
 
 function normalizeSources(
   sources: Array<"memory" | "sessions"> | undefined,
@@ -197,14 +250,65 @@ function mergeConfig(
     .map((value) => value.trim())
     .filter(Boolean);
   const extraPaths = Array.from(new Set(rawPaths));
+  const rawExcludeGlobs = [...(defaults?.excludeGlobs ?? []), ...(overrides?.excludeGlobs ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const excludeGlobs = Array.from(new Set(rawExcludeGlobs));
   const vector = {
     enabled: overrides?.store?.vector?.enabled ?? defaults?.store?.vector?.enabled ?? true,
     extensionPath:
       overrides?.store?.vector?.extensionPath ?? defaults?.store?.vector?.extensionPath,
   };
+  const postgresDefaults = defaults?.store?.postgres;
+  const postgresOverrides = overrides?.store?.postgres;
+  const postgresEnabled =
+    (overrides?.store?.driver ?? defaults?.store?.driver ?? "sqlite") === "postgres";
+  const postgres =
+    postgresEnabled &&
+    (postgresOverrides ||
+      postgresDefaults ||
+      overrides?.store?.driver === "postgres" ||
+      defaults?.store?.driver === "postgres")
+      ? {
+          host: postgresOverrides?.host ?? postgresDefaults?.host ?? "",
+          port: parseConfigNumber(
+            postgresOverrides?.port ?? postgresDefaults?.port,
+            DEFAULT_POSTGRES_PORT,
+            { min: 1 },
+          ),
+          database: postgresOverrides?.database ?? postgresDefaults?.database ?? "",
+          user: postgresOverrides?.user ?? postgresDefaults?.user ?? "",
+          password: postgresOverrides?.password ?? postgresDefaults?.password ?? "",
+          schema:
+            postgresOverrides?.schema?.trim() ||
+            postgresDefaults?.schema?.trim() ||
+            DEFAULT_POSTGRES_SCHEMA,
+          ssl: parseConfigBoolean(postgresOverrides?.ssl ?? postgresDefaults?.ssl, false),
+          poolMax: parseConfigNumber(
+            postgresOverrides?.poolMax ?? postgresDefaults?.poolMax,
+            DEFAULT_POSTGRES_POOL_MAX,
+            { min: 1 },
+          ),
+          echo: parseConfigBoolean(postgresOverrides?.echo ?? postgresDefaults?.echo, false),
+        }
+      : undefined;
+  const nestedCache = {
+    enabled:
+      overrides?.store?.cache?.enabled ??
+      defaults?.store?.cache?.enabled ??
+      overrides?.cache?.enabled ??
+      defaults?.cache?.enabled ??
+      DEFAULT_CACHE_ENABLED,
+    maxEntries:
+      overrides?.store?.cache?.maxEntries ??
+      defaults?.store?.cache?.maxEntries ??
+      overrides?.cache?.maxEntries ??
+      defaults?.cache?.maxEntries,
+  };
   const store = {
     driver: overrides?.store?.driver ?? defaults?.store?.driver ?? "sqlite",
     path: resolveStorePath(agentId, overrides?.store?.path ?? defaults?.store?.path),
+    postgres,
     vector,
   };
   const chunking = {
@@ -274,8 +378,8 @@ function mergeConfig(
     },
   };
   const cache = {
-    enabled: overrides?.cache?.enabled ?? defaults?.cache?.enabled ?? DEFAULT_CACHE_ENABLED,
-    maxEntries: overrides?.cache?.maxEntries ?? defaults?.cache?.maxEntries,
+    enabled: nestedCache.enabled,
+    maxEntries: nestedCache.maxEntries,
   };
 
   const overlap = clampNumber(chunking.overlap, 0, Math.max(0, chunking.tokens - 1));
@@ -300,6 +404,7 @@ function mergeConfig(
     enabled,
     sources,
     extraPaths,
+    excludeGlobs,
     provider,
     remote,
     experimental: {
