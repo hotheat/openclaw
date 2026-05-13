@@ -1098,6 +1098,42 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("tool output only");
   });
 
+  it("does not fall back to tool output for completion-mode when the run failed", async () => {
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+        },
+        {
+          role: "toolResult",
+          content: [{ type: "text", text: "tool output only" }],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-tool-output-error",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+      outcome: { status: "error", error: "terminated" },
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const msg = call?.params?.message as string;
+    expect(msg).toContain("failed");
+    expect(msg).toContain("terminated");
+    expect(msg).not.toContain("tool output only");
+    expect(msg).toContain("failed before producing a final summary");
+  });
+
   it("ignores user text when deriving fallback completion output", async () => {
     chatHistoryMock.mockResolvedValueOnce({
       messages: [
@@ -1125,6 +1161,31 @@ describe("subagent announce formatting", () => {
     const msg = call?.params?.message as string;
     expect(msg).toContain("✅ Subagent main finished");
     expect(msg).not.toContain("user prompt should not be announced");
+  });
+
+  it("does not crash when completion-mode has no outcome and no fallback reply", async () => {
+    chatHistoryMock.mockResolvedValue({ messages: [] });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-no-outcome-no-reply",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      expectsCompletionMessage: true,
+      task: "do thing",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      outcome: undefined,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    const msg = call?.params?.message as string;
+    expect(msg).toContain("✅ Subagent main finished");
   });
 
   it("queues announce delivery back into requester subagent session", async () => {

@@ -248,6 +248,39 @@ async function readLatestSubagentOutput(sessionKey: string): Promise<string | un
   return undefined;
 }
 
+async function readLatestSubagentAssistantOutput(sessionKey: string): Promise<string | undefined> {
+  try {
+    const latestAssistant = await readLatestAssistantReply({
+      sessionKey,
+      limit: 50,
+    });
+    if (latestAssistant?.trim()) {
+      return latestAssistant;
+    }
+  } catch {
+    // Best-effort only; fall through to transcript scan below.
+  }
+  const history = await callGateway<{ messages?: Array<unknown> }>({
+    method: "chat.history",
+    params: { sessionKey, limit: 50 },
+  });
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (!msg || typeof msg !== "object") {
+      continue;
+    }
+    if ((msg as { role?: unknown }).role !== "assistant") {
+      continue;
+    }
+    const text = extractSubagentOutputText(msg);
+    if (text) {
+      return text;
+    }
+  }
+  return undefined;
+}
+
 async function readLatestSubagentOutputWithRetry(params: {
   sessionKey: string;
   maxWaitMs: number;
@@ -257,6 +290,23 @@ async function readLatestSubagentOutputWithRetry(params: {
   let result: string | undefined;
   while (Date.now() < deadline) {
     result = await readLatestSubagentOutput(params.sessionKey);
+    if (result?.trim()) {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, RETRY_INTERVAL_MS));
+  }
+  return result;
+}
+
+async function readLatestSubagentAssistantOutputWithRetry(params: {
+  sessionKey: string;
+  maxWaitMs: number;
+}): Promise<string | undefined> {
+  const RETRY_INTERVAL_MS = FAST_TEST_MODE ? FAST_TEST_RETRY_INTERVAL_MS : 100;
+  const deadline = Date.now() + Math.max(0, Math.min(params.maxWaitMs, 15_000));
+  let result: string | undefined;
+  while (Date.now() < deadline) {
+    result = await readLatestSubagentAssistantOutput(params.sessionKey);
     if (result?.trim()) {
       return result;
     }
@@ -1078,18 +1128,40 @@ export async function runSubagentAnnounceFlow(params: {
           outcome = { status: "timeout" };
         }
       }
-      reply = await readLatestSubagentOutput(params.childSessionKey);
+      const allowToolResultFallback = outcome?.status !== "error" && outcome?.status !== "timeout";
+      reply = allowToolResultFallback
+        ? await readLatestSubagentOutput(params.childSessionKey)
+        : await readLatestSubagentAssistantOutput(params.childSessionKey);
     }
 
+    const allowToolResultFallback = outcome?.status !== "error" && outcome?.status !== "timeout";
+
     if (!reply) {
-      reply = await readLatestSubagentOutput(params.childSessionKey);
+      reply = allowToolResultFallback
+        ? await readLatestSubagentOutput(params.childSessionKey)
+        : await readLatestSubagentAssistantOutput(params.childSessionKey);
     }
 
     if (!reply?.trim()) {
-      reply = await readLatestSubagentOutputWithRetry({
-        sessionKey: params.childSessionKey,
-        maxWaitMs: params.timeoutMs,
-      });
+      reply = allowToolResultFallback
+        ? await readLatestSubagentOutputWithRetry({
+            sessionKey: params.childSessionKey,
+            maxWaitMs: params.timeoutMs,
+          })
+        : await readLatestSubagentAssistantOutputWithRetry({
+            sessionKey: params.childSessionKey,
+            maxWaitMs: params.timeoutMs,
+          });
+    }
+
+    const terminalOutcome =
+      outcome?.status === "error" || outcome?.status === "timeout" ? outcome : undefined;
+
+    if (!reply?.trim() && terminalOutcome) {
+      reply =
+        terminalOutcome.status === "error"
+          ? `Subagent failed before producing a final summary.${terminalOutcome.error ? ` Last error: ${terminalOutcome.error}` : ""}`
+          : "Subagent timed out before producing a final summary.";
     }
 
     if (

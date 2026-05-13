@@ -38,7 +38,7 @@ function mockLongRunningSpawnFlow(params: {
       };
     }
     if (request.method === "agent.wait") {
-      return { status: "timeout" };
+      return new Promise<never>(() => undefined);
     }
     if (request.method === "sessions.delete") {
       return { ok: true };

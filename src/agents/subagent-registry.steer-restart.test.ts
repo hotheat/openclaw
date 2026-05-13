@@ -1,6 +1,14 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const noop = () => {};
+const defaultCallGatewayImplementation = async (opts: unknown) => {
+  const request = opts as { method?: string };
+  if (request.method === "agent.wait") {
+    return new Promise<never>(() => undefined);
+  }
+  return {};
+};
+const callGatewayMock = vi.fn(defaultCallGatewayImplementation);
 let lifecycleHandler:
   | ((evt: {
       stream?: string;
@@ -16,13 +24,7 @@ let lifecycleHandler:
   | undefined;
 
 vi.mock("../gateway/call.js", () => ({
-  callGateway: vi.fn(async (opts: unknown) => {
-    const request = opts as { method?: string };
-    if (request.method === "agent.wait") {
-      return { status: "timeout" };
-    }
-    return {};
-  }),
+  callGateway: callGatewayMock,
 }));
 
 vi.mock("../infra/agent-events.js", () => ({
@@ -32,11 +34,15 @@ vi.mock("../infra/agent-events.js", () => ({
   }),
 }));
 
-vi.mock("../config/config.js", () => ({
-  loadConfig: vi.fn(() => ({
-    agents: { defaults: { subagents: { archiveAfterMinutes: 0 } } },
-  })),
-}));
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
+  return {
+    ...actual,
+    loadConfig: vi.fn(() => ({
+      agents: { defaults: { subagents: { archiveAfterMinutes: 0 } } },
+    })),
+  };
+});
 
 const announceSpy = vi.fn(async (_params: unknown) => true);
 const runSubagentEndedHookMock = vi.fn(async (_event?: unknown, _ctx?: unknown) => {});
@@ -93,6 +99,8 @@ describe("subagent registry steer restarts", () => {
   afterEach(async () => {
     announceSpy.mockClear();
     announceSpy.mockResolvedValue(true);
+    callGatewayMock.mockReset();
+    callGatewayMock.mockImplementation(defaultCallGatewayImplementation);
     runSubagentEndedHookMock.mockClear();
     lifecycleHandler = undefined;
     mod.resetSubagentRegistryForTests({ persist: false });

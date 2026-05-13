@@ -19,6 +19,7 @@ vi.mock("./pi-embedded.js", () => ({
 
 const callGatewayMock = getCallGatewayMock();
 const RUN_TIMEOUT_SECONDS = 1;
+const FAST_TEST_WAIT_POLL_INTERVAL_MS = 25;
 
 function buildDiscordCleanupHooks(onDelete: (key: string | undefined) => void) {
   return {
@@ -173,7 +174,7 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     await waitFor(() => ctx.calls.filter((c) => c.method === "agent").length >= 2);
 
     const childWait = ctx.waitCalls.find((call) => call.runId === child.runId);
-    expect(childWait?.timeoutMs).toBe(1000);
+    expect(childWait?.timeoutMs).toBe(FAST_TEST_WAIT_POLL_INTERVAL_MS);
     // Cleanup should patch the label
     const labelPatch = patchCalls.find((call) => call.label === "my-task");
     expect(labelPatch?.key).toBe(child.sessionKey);
@@ -227,7 +228,7 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     await waitFor(() => Boolean(deletedKey));
 
     const childWait = ctx.waitCalls.find((call) => call.runId === child.runId);
-    expect(childWait?.timeoutMs).toBe(1000);
+    expect(childWait?.timeoutMs).toBe(FAST_TEST_WAIT_POLL_INTERVAL_MS);
 
     const agentCalls = ctx.calls.filter((call) => call.method === "agent");
     expect(agentCalls).toHaveLength(2);
@@ -291,7 +292,7 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     await waitFor(() => Boolean(deletedKey));
 
     const childWait = ctx.waitCalls.find((call) => call.runId === child.runId);
-    expect(childWait?.timeoutMs).toBe(1000);
+    expect(childWait?.timeoutMs).toBe(FAST_TEST_WAIT_POLL_INTERVAL_MS);
     expect(child.sessionKey?.startsWith("agent:main:subagent:")).toBe(true);
 
     // Two agent calls: subagent spawn + main agent trigger

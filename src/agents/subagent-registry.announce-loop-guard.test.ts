@@ -8,12 +8,16 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
  * forever via the max-retry and expiration guards.
  */
 
-vi.mock("../config/config.js", () => ({
-  loadConfig: () => ({
-    session: { store: "/tmp/test-store", mainKey: "main" },
-    agents: {},
-  }),
-}));
+vi.mock("../config/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../config/config.js")>();
+  return {
+    ...actual,
+    loadConfig: () => ({
+      session: { store: "/tmp/test-store", mainKey: "main" },
+      agents: {},
+    }),
+  };
+});
 
 vi.mock("../config/sessions.js", () => ({
   loadSessionStore: () => ({}),

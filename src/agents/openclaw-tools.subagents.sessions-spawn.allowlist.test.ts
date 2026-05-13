@@ -40,7 +40,7 @@ describe("openclaw-tools: subagents (sessions_spawn allowlist)", () => {
         return { runId: "run-1", status: "accepted", acceptedAt };
       }
       if (request.method === "agent.wait") {
-        return { status: "timeout" };
+        return new Promise<never>(() => undefined);
       }
       return {};
     });

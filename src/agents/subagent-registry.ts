@@ -36,9 +36,11 @@ import {
 } from "./subagent-registry-state.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { resolveAgentTimeoutMs } from "./timeout.js";
+import { extractAssistantText } from "./tools/sessions-helpers.js";
 
 export type { SubagentRunRecord } from "./subagent-registry.types.js";
 
+const FAST_TEST_MODE = process.env.OPENCLAW_TEST_FAST === "1";
 const subagentRuns = new Map<string, SubagentRunRecord>();
 let sweeper: NodeJS.Timeout | null = null;
 let listenerStarted = false;
@@ -50,6 +52,8 @@ const MIN_ANNOUNCE_RETRY_DELAY_MS = 1_000;
 const MAX_ANNOUNCE_RETRY_DELAY_MS = 8_000;
 const SUBAGENT_COMPLETION_END_STABILIZE_MS = 2_000;
 const SUBAGENT_COMPLETION_ERROR_STABILIZE_MS = 15_000;
+const SUBAGENT_WAIT_POLL_INTERVAL_MS = FAST_TEST_MODE ? 25 : 15_000;
+const SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS = FAST_TEST_MODE ? 25 : 20_000;
 /**
  * Maximum number of announce delivery attempts before giving up.
  * Prevents infinite retry loops when `runSubagentAnnounceFlow` repeatedly
@@ -374,6 +378,96 @@ function resolveSubagentWaitTimeoutMs(
   runTimeoutSeconds?: number,
 ) {
   return resolveAgentTimeoutMs({ cfg, overrideSeconds: runTimeoutSeconds ?? 0 });
+}
+
+function parseTranscriptTimestampMs(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+async function detectTerminalOutcomeFromTranscript(params: {
+  childSessionKey: string;
+  nowMs?: number;
+}): Promise<{ outcome: SubagentRunOutcome; endedAt?: number } | undefined> {
+  const history = await callGateway<{ messages?: Array<unknown> }>({
+    method: "chat.history",
+    params: {
+      sessionKey: params.childSessionKey,
+      limit: 50,
+    },
+    timeoutMs: 10_000,
+  }).catch(() => undefined);
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  if (messages.length === 0) {
+    return undefined;
+  }
+
+  const nowMs = typeof params.nowMs === "number" ? params.nowMs : Date.now();
+  const latestMessageTimestampMs = (() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const timestampMs = parseTranscriptTimestampMs(
+        (messages[i] as { timestamp?: unknown } | undefined)?.timestamp,
+      );
+      if (typeof timestampMs === "number") {
+        return timestampMs;
+      }
+    }
+    return undefined;
+  })();
+
+  if (
+    typeof latestMessageTimestampMs === "number" &&
+    nowMs - latestMessageTimestampMs < SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS
+  ) {
+    return undefined;
+  }
+
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message || typeof message !== "object") {
+      continue;
+    }
+    if ((message as { role?: unknown }).role !== "assistant") {
+      continue;
+    }
+
+    const stopReason = (message as { stopReason?: unknown }).stopReason;
+    const rawError = (message as { errorMessage?: unknown }).errorMessage;
+    const error =
+      typeof rawError === "string" && rawError.trim() ? rawError.trim() : "unknown error";
+    const hasTerminalErrorMetadata =
+      stopReason === "error" || (typeof rawError === "string" && rawError.trim().length > 0);
+    if (!hasTerminalErrorMetadata) {
+      const assistantText = extractAssistantText(message)?.trim();
+      if (assistantText) {
+        return undefined;
+      }
+      continue;
+    }
+
+    const messageTimestampMs = parseTranscriptTimestampMs(
+      (message as { timestamp?: unknown }).timestamp,
+    );
+    if (
+      typeof messageTimestampMs === "number" &&
+      nowMs - messageTimestampMs < SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS
+    ) {
+      return undefined;
+    }
+
+    return {
+      outcome: { status: "error", error },
+      endedAt: messageTimestampMs ?? latestMessageTimestampMs ?? nowMs,
+    };
+  }
+
+  return undefined;
 }
 
 function startSweeper() {
@@ -779,52 +873,94 @@ export function registerSubagentRun(params: {
 
 async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
   try {
-    const timeoutMs = Math.max(1, Math.floor(waitTimeoutMs));
-    const wait = await callGateway<{
-      status?: string;
-      startedAt?: number;
-      endedAt?: number;
-      error?: string;
-    }>({
-      method: "agent.wait",
-      params: {
+    const overallTimeoutMs = Math.max(1, Math.floor(waitTimeoutMs));
+    let effectiveNowMs = Date.now();
+    const deadlineMs = effectiveNowMs + overallTimeoutMs;
+
+    while (true) {
+      const entry = subagentRuns.get(runId);
+      if (!entry) {
+        return;
+      }
+
+      const remainingMs = Math.max(0, deadlineMs - effectiveNowMs);
+      const waitWindowMs =
+        remainingMs > 0 ? Math.max(1, Math.min(remainingMs, SUBAGENT_WAIT_POLL_INTERVAL_MS)) : 1;
+      const rpcStartedAtMs = Date.now();
+      const wait = await callGateway<{
+        status?: string;
+        startedAt?: number;
+        endedAt?: number;
+        error?: string;
+      }>({
+        method: "agent.wait",
+        params: {
+          runId,
+          timeoutMs: waitWindowMs,
+        },
+        timeoutMs: waitWindowMs + 10_000,
+      });
+      // Count gateway-reported timeouts as if the requested wait window elapsed.
+      // This prevents zero-latency timeout responses from spinning the poll loop.
+      effectiveNowMs = Math.max(Date.now(), effectiveNowMs + waitWindowMs, rpcStartedAtMs);
+      if (wait?.status !== "ok" && wait?.status !== "error" && wait?.status !== "timeout") {
+        return;
+      }
+
+      let mutated = false;
+      if (typeof wait.startedAt === "number" && entry.startedAt !== wait.startedAt) {
+        entry.startedAt = wait.startedAt;
+        mutated = true;
+      }
+      if (mutated) {
+        persistSubagentRuns();
+      }
+
+      if (wait.status === "timeout") {
+        const transcriptTerminal = await detectTerminalOutcomeFromTranscript({
+          childSessionKey: entry.childSessionKey,
+          nowMs: effectiveNowMs,
+        });
+        if (transcriptTerminal) {
+          scheduleSubagentRunCompletion({
+            runId,
+            endedAt: transcriptTerminal.endedAt ?? Date.now(),
+            outcome: transcriptTerminal.outcome,
+            reason:
+              transcriptTerminal.outcome.status === "error"
+                ? SUBAGENT_ENDED_REASON_ERROR
+                : SUBAGENT_ENDED_REASON_COMPLETE,
+            sendFarewell: true,
+            accountId: entry.requesterOrigin?.accountId,
+            triggerCleanup: true,
+          });
+          return;
+        }
+        effectiveNowMs = Math.max(effectiveNowMs, Date.now());
+        if (effectiveNowMs < deadlineMs) {
+          continue;
+        }
+      }
+
+      const waitError = typeof wait.error === "string" ? wait.error : undefined;
+      const outcome: SubagentRunOutcome =
+        wait.status === "error"
+          ? { status: "error", error: waitError }
+          : wait.status === "timeout"
+            ? { status: "timeout" }
+            : { status: "ok" };
+      scheduleSubagentRunCompletion({
         runId,
-        timeoutMs,
-      },
-      timeoutMs: timeoutMs + 10_000,
-    });
-    if (wait?.status !== "ok" && wait?.status !== "error" && wait?.status !== "timeout") {
+        endedAt: typeof wait.endedAt === "number" ? wait.endedAt : Date.now(),
+        outcome,
+        reason:
+          wait.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
+        sendFarewell: true,
+        accountId: entry.requesterOrigin?.accountId,
+        triggerCleanup: true,
+      });
       return;
     }
-    const entry = subagentRuns.get(runId);
-    if (!entry) {
-      return;
-    }
-    let mutated = false;
-    if (typeof wait.startedAt === "number") {
-      entry.startedAt = wait.startedAt;
-      mutated = true;
-    }
-    const waitError = typeof wait.error === "string" ? wait.error : undefined;
-    const outcome: SubagentRunOutcome =
-      wait.status === "error"
-        ? { status: "error", error: waitError }
-        : wait.status === "timeout"
-          ? { status: "timeout" }
-          : { status: "ok" };
-    if (mutated) {
-      persistSubagentRuns();
-    }
-    scheduleSubagentRunCompletion({
-      runId,
-      endedAt: typeof wait.endedAt === "number" ? wait.endedAt : Date.now(),
-      outcome,
-      reason:
-        wait.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
-      sendFarewell: true,
-      accountId: entry.requesterOrigin?.accountId,
-      triggerCleanup: true,
-    });
   } catch {
     // ignore
   }
