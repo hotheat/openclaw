@@ -1084,6 +1084,7 @@ export async function runEmbeddedAttempt(
             model: params.model,
             existingImages: params.images,
             historyMessages: activeSession.messages,
+            inboundMediaPaths: params.inboundMediaPaths,
             maxBytes: MAX_IMAGE_BYTES,
             maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
             // Enforce sandbox path restrictions when sandbox is enabled
