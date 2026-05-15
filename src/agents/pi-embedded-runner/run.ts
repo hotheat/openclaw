@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import { emitAgentEvent } from "../../infra/agent-events.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookBeforeAgentStartResult } from "../../plugins/types.js";
@@ -55,6 +56,11 @@ import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
+import {
+  assessRunCompletion,
+  buildCompletionContinuationPrompt,
+  isCompletionContractEnabled,
+} from "./run/completion.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
 import {
@@ -119,6 +125,7 @@ const BASE_RUN_RETRY_ITERATIONS = 24;
 const RUN_RETRY_ITERATIONS_PER_PROFILE = 8;
 const MIN_RUN_RETRY_ITERATIONS = 32;
 const MAX_RUN_RETRY_ITERATIONS = 160;
+const MAX_COMPLETION_CONTRACT_CONTINUATIONS = 2;
 
 function resolveMaxRunRetryIterations(profileCandidateCount: number): number {
   const scaled =
@@ -237,6 +244,58 @@ function buildCancelledPendingRunResult(params: {
   };
 }
 
+function emitEmbeddedRunTerminalEvent(params: {
+  runId: string;
+  startedAt: number;
+  phase: "end" | "error";
+  aborted?: boolean;
+  error?: string;
+  onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+}) {
+  const endedAt = Date.now();
+  const data = {
+    phase: params.phase,
+    startedAt: params.startedAt,
+    endedAt,
+    ...(params.aborted !== undefined ? { aborted: params.aborted } : {}),
+    ...(params.error ? { error: params.error } : {}),
+  };
+  emitAgentEvent({
+    runId: params.runId,
+    stream: "lifecycle",
+    data,
+  });
+  void params.onAgentEvent?.({
+    stream: "lifecycle",
+    data,
+  });
+}
+
+function withCompletionContractTerminal<T extends EmbeddedPiRunResult>(params: {
+  enabled: boolean;
+  emittedRef: { value: boolean };
+  runId: string;
+  startedAt: number;
+  phase?: "end" | "error";
+  aborted?: boolean;
+  error?: string;
+  onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+  result: T;
+}): T {
+  if (params.enabled && !params.emittedRef.value) {
+    emitEmbeddedRunTerminalEvent({
+      runId: params.runId,
+      startedAt: params.startedAt,
+      phase: params.phase ?? "end",
+      aborted: params.aborted,
+      error: params.error,
+      onAgentEvent: params.onAgentEvent,
+    });
+    params.emittedRef.value = true;
+  }
+  return params.result;
+}
+
 async function waitForPendingRunResult<T>(params: {
   token: PendingEmbeddedRunToken;
   task: Promise<T>;
@@ -290,13 +349,37 @@ export async function runEmbeddedPiAgent(
       : "markdown");
   const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
   const pendingRunToken = registerPendingEmbeddedRun(params.sessionId, params.sessionKey);
+  const completionContractTerminalEmitted = { value: false };
+  let completionContractEnabled = isCompletionContractEnabled({
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+  });
+  const buildCancelledRunResult = (cancelParams: {
+    startedAt: number;
+    provider?: string;
+    model?: string;
+  }): EmbeddedPiRunResult =>
+    withCompletionContractTerminal({
+      enabled: completionContractEnabled,
+      emittedRef: completionContractTerminalEmitted,
+      runId: params.runId,
+      startedAt: cancelParams.startedAt,
+      phase: "end",
+      aborted: true,
+      onAgentEvent: params.onAgentEvent,
+      result: buildCancelledPendingRunResult({
+        sessionId: params.sessionId,
+        startedAt: cancelParams.startedAt,
+        provider: cancelParams.provider,
+        model: cancelParams.model,
+      }),
+    });
 
   try {
     return await enqueueSession(async (): Promise<EmbeddedPiRunResult> => {
       const sessionTaskStarted = Date.now();
       if (isPendingEmbeddedRunCancelled(pendingRunToken)) {
-        return buildCancelledPendingRunResult({
-          sessionId: params.sessionId,
+        return buildCancelledRunResult({
           startedAt: sessionTaskStarted,
           provider: params.provider,
           model: params.model,
@@ -307,8 +390,7 @@ export async function runEmbeddedPiAgent(
         let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
         let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
         const resolveCancelledRun = (): EmbeddedPiRunResult =>
-          buildCancelledPendingRunResult({
-            sessionId: params.sessionId,
+          buildCancelledRunResult({
             startedAt: started,
             provider,
             model: modelId,
@@ -321,6 +403,10 @@ export async function runEmbeddedPiAgent(
           sessionKey: params.sessionKey,
           agentId: params.agentId,
           config: params.config,
+        });
+        completionContractEnabled = isCompletionContractEnabled({
+          sessionKey: params.sessionKey,
+          agentId: workspaceResolution.agentId,
         });
         const resolvedWorkspace = workspaceResolution.workspaceDir;
         const redactedSessionId = redactRunIdentifier(params.sessionId);
@@ -629,6 +715,8 @@ export async function runEmbeddedPiAgent(
         const MAX_RUN_LOOP_ITERATIONS = resolveMaxRunRetryIterations(profileCandidates.length);
         let overflowCompactionAttempts = 0;
         let toolResultTruncationAttempted = false;
+        let completionContinuationPrompt: string | undefined;
+        let completionContinuationCount = 0;
         const usageAccumulator = createUsageAccumulator();
         let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
         let autoCompactionCount = 0;
@@ -663,25 +751,34 @@ export async function runEmbeddedPiAgent(
                   `provider=${provider}/${modelId} attempts=${runLoopIterations} ` +
                   `maxAttempts=${MAX_RUN_LOOP_ITERATIONS}`,
               );
-              return {
-                payloads: [
-                  {
-                    text:
-                      "Request failed after repeated internal retries. " +
-                      "Please try again, or use /new to start a fresh session.",
-                    isError: true,
+              return withCompletionContractTerminal({
+                enabled: completionContractEnabled,
+                emittedRef: completionContractTerminalEmitted,
+                runId: params.runId,
+                startedAt: started,
+                phase: "error",
+                error: message,
+                onAgentEvent: params.onAgentEvent,
+                result: {
+                  payloads: [
+                    {
+                      text:
+                        "Request failed after repeated internal retries. " +
+                        "Please try again, or use /new to start a fresh session.",
+                      isError: true,
+                    },
+                  ],
+                  meta: {
+                    durationMs: Date.now() - started,
+                    agentMeta: {
+                      sessionId: params.sessionId,
+                      provider,
+                      model: model.id,
+                    },
+                    error: { kind: "retry_limit", message },
                   },
-                ],
-                meta: {
-                  durationMs: Date.now() - started,
-                  agentMeta: {
-                    sessionId: params.sessionId,
-                    provider,
-                    model: model.id,
-                  },
-                  error: { kind: "retry_limit", message },
                 },
-              };
+              });
             }
             runLoopIterations += 1;
             attemptedThinking.add(thinkLevel);
@@ -690,8 +787,10 @@ export async function runEmbeddedPiAgent(
               return resolveCancelledRun();
             }
 
+            const promptInput = completionContinuationPrompt ?? params.prompt;
             const prompt =
-              provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
+              provider === "anthropic" ? scrubAnthropicRefusalMagic(promptInput) : promptInput;
+            const isContinuationAttempt = Boolean(completionContinuationPrompt);
 
             const attempt = await runEmbeddedAttempt({
               sessionId: params.sessionId,
@@ -716,7 +815,8 @@ export async function runEmbeddedPiAgent(
               config: params.config,
               skillsSnapshot: params.skillsSnapshot,
               prompt,
-              images: params.images,
+              images: isContinuationAttempt ? undefined : params.images,
+              inboundMediaPaths: isContinuationAttempt ? undefined : params.inboundMediaPaths,
               disableTools: params.disableTools,
               provider,
               modelId,
@@ -750,6 +850,7 @@ export async function runEmbeddedPiAgent(
               inputProvenance: params.inputProvenance,
               streamParams: params.streamParams,
               ownerNumbers: params.ownerNumbers,
+              suppressLifecycleTerminal: completionContractEnabled,
               enforceFinalTag: params.enforceFinalTag,
             });
 
@@ -948,38 +1049,19 @@ export async function runEmbeddedPiAgent(
                 );
               }
               const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
-              return {
-                payloads: [
-                  {
-                    text:
-                      "Context overflow: prompt too large for the model. " +
-                      "Try /reset (or /new) to start a fresh session, or use a larger-context model.",
-                    isError: true,
-                  },
-                ],
-                meta: {
-                  durationMs: Date.now() - started,
-                  agentMeta: {
-                    sessionId: sessionIdUsed,
-                    provider,
-                    model: model.id,
-                  },
-                  systemPromptReport: attempt.systemPromptReport,
-                  error: { kind, message: errorText },
-                },
-              };
-            }
-
-            if (promptError && !aborted) {
-              const errorText = describeUnknownError(promptError);
-              // Handle role ordering errors with a user-friendly message
-              if (/incorrect role information|roles must alternate/i.test(errorText)) {
-                return {
+              return withCompletionContractTerminal({
+                enabled: completionContractEnabled,
+                emittedRef: completionContractTerminalEmitted,
+                runId: params.runId,
+                startedAt: started,
+                phase: "end",
+                onAgentEvent: params.onAgentEvent,
+                result: {
                   payloads: [
                     {
                       text:
-                        "Message ordering conflict - please try again. " +
-                        "If this persists, use /new to start a fresh session.",
+                        "Context overflow: prompt too large for the model. " +
+                        "Try /reset (or /new) to start a fresh session, or use a larger-context model.",
                       isError: true,
                     },
                   ],
@@ -991,9 +1073,44 @@ export async function runEmbeddedPiAgent(
                       model: model.id,
                     },
                     systemPromptReport: attempt.systemPromptReport,
-                    error: { kind: "role_ordering", message: errorText },
+                    error: { kind, message: errorText },
                   },
-                };
+                },
+              });
+            }
+
+            if (promptError && !aborted) {
+              const errorText = describeUnknownError(promptError);
+              // Handle role ordering errors with a user-friendly message
+              if (/incorrect role information|roles must alternate/i.test(errorText)) {
+                return withCompletionContractTerminal({
+                  enabled: completionContractEnabled,
+                  emittedRef: completionContractTerminalEmitted,
+                  runId: params.runId,
+                  startedAt: started,
+                  phase: "end",
+                  onAgentEvent: params.onAgentEvent,
+                  result: {
+                    payloads: [
+                      {
+                        text:
+                          "Message ordering conflict - please try again. " +
+                          "If this persists, use /new to start a fresh session.",
+                        isError: true,
+                      },
+                    ],
+                    meta: {
+                      durationMs: Date.now() - started,
+                      agentMeta: {
+                        sessionId: sessionIdUsed,
+                        provider,
+                        model: model.id,
+                      },
+                      systemPromptReport: attempt.systemPromptReport,
+                      error: { kind: "role_ordering", message: errorText },
+                    },
+                  },
+                });
               }
               // Handle image size errors with a user-friendly message (no retry needed)
               const imageSizeError = parseImageSizeError(errorText);
@@ -1002,26 +1119,34 @@ export async function runEmbeddedPiAgent(
                 const maxMbLabel =
                   typeof maxMb === "number" && Number.isFinite(maxMb) ? `${maxMb}` : null;
                 const maxBytesHint = maxMbLabel ? ` (max ${maxMbLabel}MB)` : "";
-                return {
-                  payloads: [
-                    {
-                      text:
-                        `Image too large for the model${maxBytesHint}. ` +
-                        "Please compress or resize the image and try again.",
-                      isError: true,
+                return withCompletionContractTerminal({
+                  enabled: completionContractEnabled,
+                  emittedRef: completionContractTerminalEmitted,
+                  runId: params.runId,
+                  startedAt: started,
+                  phase: "end",
+                  onAgentEvent: params.onAgentEvent,
+                  result: {
+                    payloads: [
+                      {
+                        text:
+                          `Image too large for the model${maxBytesHint}. ` +
+                          "Please compress or resize the image and try again.",
+                        isError: true,
+                      },
+                    ],
+                    meta: {
+                      durationMs: Date.now() - started,
+                      agentMeta: {
+                        sessionId: sessionIdUsed,
+                        provider,
+                        model: model.id,
+                      },
+                      systemPromptReport: attempt.systemPromptReport,
+                      error: { kind: "image_size", message: errorText },
                     },
-                  ],
-                  meta: {
-                    durationMs: Date.now() - started,
-                    agentMeta: {
-                      sessionId: sessionIdUsed,
-                      provider,
-                      model: model.id,
-                    },
-                    systemPromptReport: attempt.systemPromptReport,
-                    error: { kind: "image_size", message: errorText },
                   },
-                };
+                });
               }
               const promptFailoverReason = classifyFailoverReason(errorText);
               await maybeMarkAuthProfileFailure({
@@ -1171,6 +1296,44 @@ export async function runEmbeddedPiAgent(
               }
             }
 
+            if (completionContractEnabled && !aborted && !timedOut) {
+              const completionAssessment = assessRunCompletion(attempt);
+              if (
+                completionAssessment.classification === "non_terminal_text" ||
+                completionAssessment.classification === "empty_result" ||
+                completionAssessment.classification === "failed_but_incomplete"
+              ) {
+                if (completionContinuationCount >= MAX_COMPLETION_CONTRACT_CONTINUATIONS) {
+                  const errorMessage =
+                    `Run completion contract violated after ${completionContinuationCount + 1} ` +
+                    `attempt(s): ${completionAssessment.reason}`;
+                  log.error(
+                    `[completion-contract] sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                      `runId=${params.runId} provider=${provider}/${modelId} ` +
+                      `classification=${completionAssessment.classification} ` +
+                      `reason=${completionAssessment.reason} action=fail`,
+                  );
+                  throw new Error(errorMessage);
+                }
+                const retryIndex = completionContinuationCount;
+                completionContinuationCount += 1;
+                completionContinuationPrompt = buildCompletionContinuationPrompt({
+                  assessment: completionAssessment,
+                  attempt,
+                  retryIndex,
+                });
+                log.warn(
+                  `[completion-contract] sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                    `runId=${params.runId} provider=${provider}/${modelId} ` +
+                    `classification=${completionAssessment.classification} ` +
+                    `reason=${completionAssessment.reason} action=continue ` +
+                    `retry=${completionContinuationCount}/${MAX_COMPLETION_CONTRACT_CONTINUATIONS}`,
+                );
+                continue;
+              }
+              completionContinuationPrompt = undefined;
+            }
+
             const usage = toNormalizedUsage(usageAccumulator);
             if (usage && lastTurnTotal && lastTurnTotal > 0) {
               usage.total = lastTurnTotal;
@@ -1213,27 +1376,36 @@ export async function runEmbeddedPiAgent(
             // Emit an explicit timeout error instead of silently completing, so
             // callers do not lose the turn as an orphaned user message.
             if (timedOut && !timedOutDuringCompaction && payloads.length === 0) {
-              return {
-                payloads: [
-                  {
-                    text:
-                      "Request timed out before a response was generated. " +
-                      "Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
-                    isError: true,
+              return withCompletionContractTerminal({
+                enabled: completionContractEnabled,
+                emittedRef: completionContractTerminalEmitted,
+                runId: params.runId,
+                startedAt: started,
+                phase: "end",
+                aborted,
+                onAgentEvent: params.onAgentEvent,
+                result: {
+                  payloads: [
+                    {
+                      text:
+                        "Request timed out before a response was generated. " +
+                        "Please try again, or increase `agents.defaults.timeoutSeconds` in your config.",
+                      isError: true,
+                    },
+                  ],
+                  meta: {
+                    durationMs: Date.now() - started,
+                    agentMeta,
+                    aborted,
+                    systemPromptReport: attempt.systemPromptReport,
                   },
-                ],
-                meta: {
-                  durationMs: Date.now() - started,
-                  agentMeta,
-                  aborted,
-                  systemPromptReport: attempt.systemPromptReport,
+                  didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                  messagingToolSentTexts: attempt.messagingToolSentTexts,
+                  messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+                  messagingToolSentTargets: attempt.messagingToolSentTargets,
+                  successfulCronAdds: attempt.successfulCronAdds,
                 },
-                didSendViaMessagingTool: attempt.didSendViaMessagingTool,
-                messagingToolSentTexts: attempt.messagingToolSentTexts,
-                messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
-                messagingToolSentTargets: attempt.messagingToolSentTargets,
-                successfulCronAdds: attempt.successfulCronAdds,
-              };
+              });
             }
 
             log.debug(
@@ -1252,32 +1424,53 @@ export async function runEmbeddedPiAgent(
                 agentDir: params.agentDir,
               });
             }
-            return {
-              payloads: payloads.length ? payloads : undefined,
-              meta: {
-                durationMs: Date.now() - started,
-                agentMeta,
-                aborted,
-                systemPromptReport: attempt.systemPromptReport,
-                // Handle client tool calls (OpenResponses hosted tools)
-                stopReason: attempt.clientToolCall ? "tool_calls" : undefined,
-                pendingToolCalls: attempt.clientToolCall
-                  ? [
-                      {
-                        id: randomBytes(5).toString("hex").slice(0, 9),
-                        name: attempt.clientToolCall.name,
-                        arguments: JSON.stringify(attempt.clientToolCall.params),
-                      },
-                    ]
-                  : undefined,
+            return withCompletionContractTerminal({
+              enabled: completionContractEnabled,
+              emittedRef: completionContractTerminalEmitted,
+              runId: params.runId,
+              startedAt: started,
+              phase: "end",
+              aborted,
+              onAgentEvent: params.onAgentEvent,
+              result: {
+                payloads: payloads.length ? payloads : undefined,
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta,
+                  aborted,
+                  systemPromptReport: attempt.systemPromptReport,
+                  // Handle client tool calls (OpenResponses hosted tools)
+                  stopReason: attempt.clientToolCall ? "tool_calls" : undefined,
+                  pendingToolCalls: attempt.clientToolCall
+                    ? [
+                        {
+                          id: randomBytes(5).toString("hex").slice(0, 9),
+                          name: attempt.clientToolCall.name,
+                          arguments: JSON.stringify(attempt.clientToolCall.params),
+                        },
+                      ]
+                    : undefined,
+                },
+                didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                messagingToolSentTexts: attempt.messagingToolSentTexts,
+                messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
+                messagingToolSentTargets: attempt.messagingToolSentTargets,
+                successfulCronAdds: attempt.successfulCronAdds,
               },
-              didSendViaMessagingTool: attempt.didSendViaMessagingTool,
-              messagingToolSentTexts: attempt.messagingToolSentTexts,
-              messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
-              messagingToolSentTargets: attempt.messagingToolSentTargets,
-              successfulCronAdds: attempt.successfulCronAdds,
-            };
+            });
           }
+        } catch (err) {
+          if (completionContractEnabled && !completionContractTerminalEmitted.value) {
+            emitEmbeddedRunTerminalEvent({
+              runId: params.runId,
+              startedAt: started,
+              phase: "error",
+              error: String(err),
+              onAgentEvent: params.onAgentEvent,
+            });
+            completionContractTerminalEmitted.value = true;
+          }
+          throw err;
         } finally {
           process.chdir(prevCwd);
         }
@@ -1286,8 +1479,7 @@ export async function runEmbeddedPiAgent(
         token: pendingRunToken,
         task: globalRunPromise,
         onCancelled: () =>
-          buildCancelledPendingRunResult({
-            sessionId: params.sessionId,
+          buildCancelledRunResult({
             startedAt: sessionTaskStarted,
             provider: params.provider,
             model: params.model,

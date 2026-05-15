@@ -28,6 +28,23 @@ export function handleAgentStart(ctx: EmbeddedPiSubscribeContext) {
 export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
   const lastAssistant = ctx.state.lastAssistant;
   const isError = isAssistantMessage(lastAssistant) && lastAssistant.stopReason === "error";
+  const suppressLifecycleTerminal = ctx.params.suppressLifecycleTerminal === true;
+
+  if (suppressLifecycleTerminal) {
+    ctx.log.debug(
+      `embedded run agent end: runId=${ctx.params.runId} suppressedLifecycleTerminal=true isError=${isError}`,
+    );
+    ctx.flushBlockReplyBuffer();
+    ctx.state.blockState.thinking = false;
+    ctx.state.blockState.final = false;
+    ctx.state.blockState.inlineCode = createInlineCodeState();
+    if (ctx.state.pendingCompactionRetry > 0) {
+      ctx.resolveCompactionRetry();
+    } else {
+      ctx.maybeResolveCompactionWait();
+    }
+    return;
+  }
 
   if (isError && lastAssistant) {
     const friendlyError = formatAssistantErrorText(lastAssistant, {

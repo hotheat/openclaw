@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import { emitAgentEvent } from "../../infra/agent-events.js";
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { runEmbeddedAttempt } from "./run/attempt.js";
 import {
@@ -14,6 +15,7 @@ export const mockedSessionLikelyHasOversizedToolResults = vi.mocked(
 export const mockedTruncateOversizedToolResultsInSession = vi.mocked(
   truncateOversizedToolResultsInSession,
 );
+export const mockedEmitAgentEvent = vi.mocked(emitAgentEvent);
 
 export const overflowBaseRunParams = {
   sessionId: "test-session",

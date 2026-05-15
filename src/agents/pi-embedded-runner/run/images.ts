@@ -372,8 +372,10 @@ export async function detectAndLoadPromptImages(params: {
   model: { input?: string[] };
   existingImages?: ImageContent[];
   historyMessages?: unknown[];
+  inboundMediaPaths?: string[];
   maxBytes?: number;
   maxDimensionPx?: number;
+  workspaceOnly?: boolean;
   sandbox?: { root: string; bridge: SandboxFsBridge };
 }): Promise<{
   /** Images for the current prompt (existingImages + detected in current prompt) */
@@ -395,8 +397,50 @@ export async function detectAndLoadPromptImages(params: {
     };
   }
 
-  // Detect images from current prompt
+  /* ========================================
+   * 步骤1：收集当前轮图片引用
+   * 目标：
+   * 1) 保留基于 prompt 文本的现有图片路径检测。
+   * 2) 补上通道层显式传入的 inboundMediaPaths。
+   * 操作要点：
+   * 1) 某些消息只有入站图片，没有可解析路径文本。
+   * 2) 这种情况下直接消费 inboundMediaPaths，避免模型侧再猜路径。
+   */
+  log.info("detectAndLoadPromptImages: collect current-turn refs start");
   const promptRefs = detectImageReferences(params.prompt);
+  const inboundRefs: DetectedImageRef[] = [];
+  const inboundSeen = new Set<string>();
+  for (const rawPath of params.inboundMediaPaths ?? []) {
+    // 1.1 仅处理看起来是图片的本地路径
+    if (typeof rawPath !== "string") {
+      continue;
+    }
+    const trimmed = rawPath.trim();
+    if (!trimmed || !isImageExtension(trimmed)) {
+      continue;
+    }
+    const resolved = trimmed.startsWith("~") ? resolveUserPath(trimmed) : trimmed;
+    const key = resolved.toLowerCase();
+    // 1.2 去重，避免与 prompt 中同一路径重复注入
+    if (inboundSeen.has(key)) {
+      continue;
+    }
+    inboundSeen.add(key);
+    inboundRefs.push({
+      raw: trimmed,
+      type: "path",
+      resolved,
+    });
+  }
+  const promptSeen = new Set(promptRefs.map((ref) => ref.resolved.toLowerCase()));
+  const currentPromptRefs = [...promptRefs];
+  for (const inboundRef of inboundRefs) {
+    if (promptSeen.has(inboundRef.resolved.toLowerCase())) {
+      continue;
+    }
+    currentPromptRefs.push(inboundRef);
+  }
+  log.info("detectAndLoadPromptImages: collect current-turn refs end");
 
   // Detect images from conversation history (with message indices)
   const historyRefs = params.historyMessages ? detectImagesFromHistory(params.historyMessages) : [];
@@ -405,10 +449,10 @@ export async function detectAndLoadPromptImages(params: {
   // Current prompt images are passed via the `images` parameter to prompt(), while history
   // images are injected into their original message positions. We don't want the same
   // image loaded and sent twice (wasting tokens and potentially causing confusion).
-  const seenPaths = new Set(promptRefs.map((r) => r.resolved.toLowerCase()));
+  const seenPaths = new Set(currentPromptRefs.map((r) => r.resolved.toLowerCase()));
   const uniqueHistoryRefs = historyRefs.filter((r) => !seenPaths.has(r.resolved.toLowerCase()));
 
-  const allRefs = [...promptRefs, ...uniqueHistoryRefs];
+  const allRefs = [...currentPromptRefs, ...uniqueHistoryRefs];
 
   if (allRefs.length === 0) {
     return {
@@ -421,7 +465,7 @@ export async function detectAndLoadPromptImages(params: {
   }
 
   log.debug(
-    `Native image: detected ${allRefs.length} image refs (${promptRefs.length} in prompt, ${uniqueHistoryRefs.length} in history)`,
+    `Native image: detected ${allRefs.length} image refs (${currentPromptRefs.length} in prompt, ${uniqueHistoryRefs.length} in history)`,
   );
 
   // Load images for current prompt
@@ -435,6 +479,7 @@ export async function detectAndLoadPromptImages(params: {
   for (const ref of allRefs) {
     const image = await loadImageFromRef(ref, params.workspaceDir, {
       maxBytes: params.maxBytes,
+      workspaceOnly: params.workspaceOnly,
       sandbox: params.sandbox,
     });
     if (image) {

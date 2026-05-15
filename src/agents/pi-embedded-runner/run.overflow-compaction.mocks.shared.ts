@@ -200,3 +200,7 @@ vi.mock("./utils.js", () => ({
     return String(err);
   }),
 }));
+
+vi.mock("../../infra/agent-events.js", () => ({
+  emitAgentEvent: vi.fn(),
+}));

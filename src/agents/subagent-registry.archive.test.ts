@@ -1,17 +1,24 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const callGatewayMock = vi.hoisted(() => vi.fn());
 
 const noop = () => {};
 
 vi.mock("../gateway/call.js", () => ({
-  callGateway: vi.fn(async (request: unknown) => {
+  callGateway: callGatewayMock,
+}));
+
+beforeEach(() => {
+  callGatewayMock.mockReset();
+  callGatewayMock.mockImplementation(async (request: unknown) => {
     const method = (request as { method?: string }).method;
     if (method === "agent.wait") {
       // Keep lifecycle unsettled so register/replace assertions can inspect stored state.
       return { status: "pending" };
     }
     return {};
-  }),
-}));
+  });
+});
 
 vi.mock("../infra/agent-events.js", () => ({
   onAgentEvent: vi.fn((_handler: unknown) => noop),
@@ -90,5 +97,47 @@ describe("subagent registry archive behavior", () => {
       .find((entry) => entry.runId === "run-new");
     expect(run?.spawnMode).toBe("session");
     expect(run?.archiveAtMs).toBeUndefined();
+  });
+
+  it("does not finalize completion on the first agent.wait timeout before the overall deadline", async () => {
+    vi.useFakeTimers();
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const method = (request as { method?: string }).method;
+      if (method === "agent.wait") {
+        return { status: "timeout" };
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-timeout-window",
+        childSessionKey: "agent:main:subagent:timeout-window",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "long-running-task",
+        cleanup: "keep",
+        runTimeoutSeconds: 1,
+      });
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(900);
+
+      const beforeDeadline = mod
+        .listSubagentRunsForRequester("agent:main:main")
+        .find((entry) => entry.runId === "run-timeout-window");
+      expect(beforeDeadline?.endedAt).toBeUndefined();
+      expect(beforeDeadline?.cleanupCompletedAt).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(200);
+
+      const afterDeadline = mod
+        .listSubagentRunsForRequester("agent:main:main")
+        .find((entry) => entry.runId === "run-timeout-window");
+      expect(afterDeadline?.outcome).toEqual({ status: "timeout" });
+      expect(afterDeadline?.endedAt).toBeTypeOf("number");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

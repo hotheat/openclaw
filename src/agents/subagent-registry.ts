@@ -66,6 +66,17 @@ const MAX_ANNOUNCE_RETRY_COUNT = 3;
  */
 const ANNOUNCE_EXPIRY_MS = 5 * 60_000; // 5 minutes
 
+async function sleepMs(ms: number): Promise<void> {
+  const delayMs = Math.max(0, Math.floor(ms));
+  if (delayMs <= 0) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
+}
+
 function resolveAnnounceRetryDelayMs(retryCount: number) {
   const boundedRetryCount = Math.max(0, Math.min(retryCount, 10));
   // retryCount is "attempts already made", so retry #1 waits 1s, then 2s, 4s...
@@ -900,12 +911,14 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         },
         timeoutMs: waitWindowMs + 10_000,
       });
-      // Count gateway-reported timeouts as if the requested wait window elapsed.
-      // This prevents zero-latency timeout responses from spinning the poll loop.
-      effectiveNowMs = Math.max(Date.now(), effectiveNowMs + waitWindowMs, rpcStartedAtMs);
       if (wait?.status !== "ok" && wait?.status !== "error" && wait?.status !== "timeout") {
         return;
       }
+      const waitElapsedMs = Math.max(0, Date.now() - rpcStartedAtMs);
+      if (wait.status === "timeout" && waitElapsedMs < waitWindowMs) {
+        await sleepMs(waitWindowMs - waitElapsedMs);
+      }
+      effectiveNowMs = Date.now();
 
       let mutated = false;
       if (typeof wait.startedAt === "number" && entry.startedAt !== wait.startedAt) {
