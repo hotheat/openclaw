@@ -344,6 +344,38 @@ describe("detectAndLoadPromptImages", () => {
     }
   });
 
+  it("loads inboundMediaPaths even when prompt has no explicit image path", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-detect-inbound-image-"));
+    try {
+      const workspaceDir = path.join(root, "workspace");
+      await fs.mkdir(path.join(workspaceDir, "media", "inbound"), { recursive: true });
+      const imagePath = path.join(workspaceDir, "media", "inbound", "input.png");
+      const pngB64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+      await fs.writeFile(imagePath, Buffer.from(pngB64, "base64"));
+
+      const result = await detectAndLoadPromptImages({
+        prompt: "[User sent media without caption]",
+        workspaceDir,
+        model: { input: ["text", "image"] },
+        inboundMediaPaths: ["media/inbound/input.png"],
+        sandbox: {
+          root: workspaceDir,
+          bridge: createHostSandboxFsBridge(workspaceDir),
+        },
+      });
+
+      expect(result.detectedRefs).toHaveLength(1);
+      expect(result.loadedCount).toBe(1);
+      expect(result.images).toHaveLength(1);
+      expect(result.historyImagesByIndex.size).toBe(0);
+      expect(result.images[0]?.type).toBe("image");
+      expect(result.images[0]?.data.length).toBeGreaterThan(0);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rewrites absolute inboundMediaPaths through the full detection flow in workspace-only sandbox mode", async () => {
     const root = await fs.mkdtemp(
       path.join(os.tmpdir(), "openclaw-detect-absolute-inbound-image-"),
