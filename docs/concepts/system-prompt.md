@@ -18,6 +18,7 @@ The prompt is intentionally compact and uses fixed sections:
 
 - **Tooling**: current tool list + short descriptions.
 - **Safety**: short guardrail reminder to avoid power-seeking behavior or bypassing oversight.
+- **Runtime Safety Policy (Enforced)** (when the configured policy file exists): operator-managed mandatory policy text injected directly into the system prompt. Defaults to `policy/SECURITY_POLICY.md` under the active state dir, or override with `agents.defaults.securityPolicyPath`.
 - **Skills** (when available): tells the model how to load skill instructions on demand.
 - **OpenClaw Self-Update**: how to run `config.apply` and `update.run`.
 - **Workspace**: working directory (`agents.defaults.workspace`).

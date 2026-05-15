@@ -13,6 +13,7 @@ import { buildModelAliasLines } from "../model-alias-lines.js";
 import { resolveDefaultModelForAgent } from "../model-selection.js";
 import { resolveOwnerDisplaySetting } from "../owner-display.js";
 import type { EmbeddedContextFile } from "../pi-embedded-helpers.js";
+import { readRuntimeSecurityPolicy } from "../security-policy.js";
 import { detectRuntimeShell } from "../shell-utils.js";
 import { buildSystemPromptParams } from "../system-prompt-params.js";
 import { buildAgentSystemPrompt } from "../system-prompt.js";
@@ -48,7 +49,7 @@ export type CliOutput = {
   usage?: CliUsage;
 };
 
-export function buildSystemPrompt(params: {
+export async function buildSystemPrompt(params: {
   workspaceDir: string;
   config?: OpenClawConfig;
   defaultThinkLevel?: ThinkLevel;
@@ -83,10 +84,12 @@ export function buildSystemPrompt(params: {
   });
   const ttsHint = params.config ? buildTtsSystemPromptHint(params.config) : undefined;
   const ownerDisplay = resolveOwnerDisplaySetting(params.config);
+  const securityPolicyPrompt = await readRuntimeSecurityPolicy(params.config);
   return buildAgentSystemPrompt({
     workspaceDir: params.workspaceDir,
     defaultThinkLevel: params.defaultThinkLevel,
     extraSystemPrompt: params.extraSystemPrompt,
+    securityPolicyPrompt,
     ownerNumbers: params.ownerNumbers,
     ownerDisplay: ownerDisplay.ownerDisplay,
     ownerDisplaySecret: ownerDisplay.ownerDisplaySecret,

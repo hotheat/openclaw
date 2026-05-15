@@ -50,6 +50,19 @@ describe("ui.seamColor", () => {
   });
 });
 
+describe("agents.defaults.securityPolicyPath", () => {
+  it("accepts a custom security policy path", () => {
+    const res = validateConfigObject({
+      agents: {
+        defaults: {
+          securityPolicyPath: "~/.openclaw/policy/SECURITY_POLICY.md",
+        },
+      },
+    });
+    expect(res.ok).toBe(true);
+  });
+});
+
 describe("web search config", () => {
   it("accepts grokSearch config", () => {
     const res = validateConfigObject({

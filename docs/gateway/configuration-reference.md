@@ -624,6 +624,17 @@ Optional repository root shown in the system prompt's Runtime line. If unset, Op
 }
 ```
 
+### `agents.defaults.securityPolicyPath`
+
+Optional markdown file path injected into every agent system prompt as the runtime security policy.
+If unset, OpenClaw reads `policy/SECURITY_POLICY.md` under the active state dir.
+
+```json5
+{
+  agents: { defaults: { securityPolicyPath: "~/.openclaw/policy/SECURITY_POLICY.md" } },
+}
+```
+
 ### `agents.defaults.skipBootstrap`
 
 Disables automatic creation of workspace bootstrap files (`AGENTS.md`, `SOUL.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `HEARTBEAT.md`, `BOOTSTRAP.md`).
