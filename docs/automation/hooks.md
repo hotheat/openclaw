@@ -32,7 +32,7 @@ If you can write a small TypeScript function, you can write a hook. Hooks are di
 
 The hooks system allows you to:
 
-- Save session context to memory when `/new` is issued
+- Save structured reset summaries into workspace memory
 - Log all commands for auditing
 - Trigger custom automations on agent lifecycle events
 - Extend OpenClaw's behavior without modifying core code
@@ -43,7 +43,7 @@ The hooks system allows you to:
 
 OpenClaw ships with four bundled hooks that are automatically discovered:
 
-- **💾 session-memory**: Saves session context to your agent workspace (default `~/.openclaw/workspace/memory/`) when you issue `/new`
+- **💾 session-memory**: Appends a structured summary to your agent workspace daily note when you issue `/reset`; builtin daily rollover reuses the same helper
 - **📎 bootstrap-extra-files**: Injects additional workspace bootstrap files from configured glob/path patterns during `agent:bootstrap`
 - **📝 command-logger**: Logs all command events to `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**: Runs `BOOT.md` when the gateway starts (requires internal hooks enabled)
@@ -525,36 +525,38 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-Saves session context to memory when you issue `/new`.
+Saves a structured memory summary when you issue `/reset`.
 
-**Events**: `command:new`
+Builtin runtime also reuses the same summary helper when an old session rolls
+over because of a daily reset. That reuse is not a separate hook event. Idle
+rollover does not trigger it.
+
+**Events**: `command:reset`
 
 **Requirements**: `workspace.dir` must be configured
 
-**Output**: `<workspace>/memory/YYYY-MM-DD-slug.md` (defaults to `~/.openclaw/workspace`)
+**Output**: `<workspace>/memory/YYYY-MM-DD.md` (defaults to `~/.openclaw/workspace`)
 
 **What it does**:
 
 1. Uses the pre-reset session entry to locate the correct transcript
-2. Extracts the last 15 lines of conversation
-3. Uses LLM to generate a descriptive filename slug
-4. Saves session metadata to a dated memory file
+2. Extracts the last N user/assistant messages (default: 15)
+3. Uses the configured model to generate a grounded structured summary
+4. Appends that summary as a new block to the daily memory note only when it has reliable additions
+
+If every structured section is empty (`无可靠新增项。`) and there is no researcher
+export handoff, no Markdown block is written. Daily rollover still records the
+old session as processed to avoid retrying the same empty summary.
 
 **Example output**:
 
 ```markdown
-# Session: 2026-01-16 14:30:00 UTC
+## Daily Structured Summary
 
-- **Session Key**: agent:main:main
-- **Session ID**: abc123def456
-- **Source**: telegram
+- **Generated At**: 2026-01-16 14:30:00 UTC
+- **Source**: reset
+- **Source Sessions**: abc123def456
 ```
-
-**Filename examples**:
-
-- `2026-01-16-vendor-pitch.md`
-- `2026-01-16-api-design.md`
-- `2026-01-16-1430.md` (fallback timestamp if slug generation fails)
 
 **Enable**:
 
@@ -736,7 +738,7 @@ metadata: { "openclaw": { "events": ["command"] } } # General - more overhead
 The gateway logs hook loading at startup:
 
 ```
-Registered hook: session-memory -> command:new
+Registered hook: session-memory -> command:reset
 Registered hook: bootstrap-extra-files -> agent:bootstrap
 Registered hook: command-logger -> command
 Registered hook: boot-md -> gateway:startup

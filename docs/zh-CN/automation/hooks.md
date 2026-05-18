@@ -39,7 +39,7 @@ Hooks 也可以捆绑在插件中；参见 [插件](/tools/plugin#plugin-hooks)�
 
 hooks 系统允许你：
 
-- 在发出 `/new` 时将会话上下文保存到记忆
+- 在发出 `/new` 或 `/reset` 时触发会话类自动化
 - 记录所有命令以供审计
 - 在智能体生命周期事件上触发自定义自动化
 - 在不修改核心代码的情况下扩展 OpenClaw 的行为
@@ -48,9 +48,10 @@ hooks 系统允许你：
 
 ### 捆绑的 Hooks
 
-OpenClaw 附带三个自动发现的捆绑 hooks：
+OpenClaw 附带四个自动发现的捆绑 hooks：
 
-- **💾 session-memory**：当你发出 `/new` 时将会话上下文保存到智能体工作区（默认 `~/.openclaw/workspace/memory/`）
+- **💾 session-memory**：当你发出 `/reset` 时，将旧会话摘要追加到智能体工作区 daily note；builtin runtime 的 daily rollover 也会复用同一条 helper
+- **📎 bootstrap-extra-files**：在 `agent:bootstrap` 时按配置注入额外工作区文件
 - **📝 command-logger**：将所有命令事件记录到 `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**：当 Gateway 网关启动时运行 `BOOT.md`（需要启用内部 hooks）
 
@@ -453,36 +454,40 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-当你发出 `/new` 时将会话上下文保存到记忆。
+当你发出 `/reset` 时，将旧会话沉淀为结构化记忆摘要。
 
-**事件**：`command:new`
+builtin runtime 在旧会话因 daily reset 自动 rollover 时，也会复用同一份 capture helper。
+这不是新的 hook event。
+idle rollover 不会触发它。
+
+**事件**：`command:reset`
 
 **要求**：必须配置 `workspace.dir`
 
-**输出**：`<workspace>/memory/YYYY-MM-DD-slug.md`（默认为 `~/.openclaw/workspace`）
+**当前输出**：`<workspace>/memory/YYYY-MM-DD.md`（默认为 `~/.openclaw/workspace`）
 
-**功能**：
+**当前功能**：
 
 1. 使用预重置会话条目定位正确的记录
-2. 提取最后 15 行对话
-3. 使用 LLM 生成描述性文件名 slug
-4. 将会话元数据保存到带日期的记忆文件
+2. 提取最后 N 条 user / assistant 消息，默认 15 条
+3. 使用配置好的模型生成 grounded structured summary
+4. 将摘要以 append-only block 追加到当天 daily note
 
 **示例输出**：
 
 ```markdown
-# Session: 2026-01-16 14:30:00 UTC
+## Daily Structured Summary
 
-- **Session Key**: agent:main:main
-- **Session ID**: abc123def456
-- **Source**: telegram
+- **Generated At**: 2026-01-16 14:30:00 UTC
+- **Source**: reset
+- **Source Sessions**: abc123def456
 ```
 
-**文件名示例**：
+**说明**：
 
-- `2026-01-16-vendor-pitch.md`
-- `2026-01-16-api-design.md`
-- `2026-01-16-1430.md`（如果 slug 生成失败则回退到时间戳）
+- 当前实现里，`/new` 不再触发这条写盘链路。
+- builtin memory 的推荐方向是 `memory/*.md` 负责结构化摘要，`sessions` source 负责原始 transcript recall。
+- pre-compaction memory flush 会继续保留，作为上下文压缩前的同日写盘兜底；它写入后的索引更新继续走默认 watcher / debounced sync，不会额外触发 compaction rebuild。
 
 **启用**：
 
@@ -623,8 +628,9 @@ metadata: { "openclaw": { "events": ["command"] } } # General - more overhead
 Gateway 网关在启动时记录 hook 加载：
 
 ```
-Registered hook: session-memory -> command:new
+Registered hook: session-memory -> command:reset
 Registered hook: command-logger -> command
+Registered hook: bootstrap-extra-files -> agent:bootstrap
 Registered hook: boot-md -> gateway:startup
 ```
 

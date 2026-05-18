@@ -3,6 +3,7 @@ node_modules
 .env
 docker-compose.extra.yml
 dist
+dist-runtime/
 pnpm-lock.yaml
 bun.lock
 bun.lockb
@@ -104,3 +105,8 @@ apps/ios/LocalSigning.xcconfig
 # Generated protocol schema (produced via pnpm protocol:gen)
 dist/protocol.schema.json
 .ant-colony/
+
+# Generated local build/test artifacts
+.artifacts/
+docs/.generated/
+tmp-docker-compose.local.fixed.yml

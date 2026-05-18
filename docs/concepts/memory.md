@@ -28,6 +28,24 @@ The default workspace layout uses two memory layers:
 These files live under the workspace (`agents.defaults.workspace`, default
 `~/.openclaw/workspace`). See [Agent workspace](/concepts/agent-workspace) for the full layout.
 
+## Recall layers
+
+Builtin memory works best when you separate **explicit notes** from **raw transcript recall**:
+
+- `memory/*.md`
+  - Curated notes, summaries, decisions, and preferences you want to preserve.
+- `sessions` source
+  - Raw transcript recall from session JSONL files.
+
+For lower-noise recall, prefer writing structured notes into
+`memory/YYYY-MM-DD.md` and let the optional `sessions` source own raw
+conversation lookup, instead of copying transcript-style captures into memory
+Markdown files.
+
+Daily structured summaries are skipped when every section has no reliable
+addition and there is no researcher export handoff, so empty housekeeping blocks
+do not enter the Markdown layer or memory index.
+
 ## Memory tools
 
 OpenClaw exposes two agent-facing tools for these Markdown files:
@@ -85,6 +103,12 @@ Details:
 - **One flush per compaction cycle** (tracked in `sessions.json`).
 - **Workspace must be writable**: if the session runs sandboxed with
   `workspaceAccess: "ro"` or `"none"`, the flush is skipped.
+- **Keep this even if you use daily summaries**: pre-compaction flush is a
+  same-day safety net before context compression, not a replacement for daily
+  consolidation.
+- **No special compaction reindex path**: flush writes are picked up by the
+  normal memory file watcher / debounced sync flow. Compaction itself does not
+  trigger a separate rebuild or reindex.
 
 For the full compaction lifecycle, see
 [Session management + compaction](/reference/session-management-compaction).
@@ -632,6 +656,8 @@ agents: {
 
 You can optionally index **session transcripts** and surface them via `memory_search`.
 This is gated behind an experimental flag.
+The default source list can remain `["memory"]`; add `sessions` only when you
+want raw transcript recall.
 
 ```json5
 agents: {
@@ -647,11 +673,16 @@ agents: {
 Notes:
 
 - Session indexing is **opt-in** (off by default).
+- Use both curated memory files and session recall only when raw transcript
+  lookup is desired, for example `sources: ["memory", "sessions"]`.
 - Session updates are debounced and **indexed asynchronously** once they cross delta thresholds (best-effort).
 - `memory_search` never blocks on indexing; results can be slightly stale until background sync finishes.
 - Results still include snippets only; `memory_get` remains limited to memory files.
 - Session indexing is isolated per agent (only that agent’s session logs are indexed).
 - Session logs live on disk (`~/.openclaw/agents/<agentId>/sessions/*.jsonl`). Any process/user with filesystem access can read them, so treat disk access as the trust boundary. For stricter isolation, run agents under separate OS users or hosts.
+
+In that shape, `memory/*.md` stays focused on structured summaries and durable
+notes, while `sessions` provides raw transcript recall.
 
 Delta thresholds (defaults shown):
 

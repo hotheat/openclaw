@@ -42,19 +42,38 @@ export async function ensurePostgresMemorySchema(params: {
   await params.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   const vectorAvailable = await tryEnsureExtension(params.sql, "vector");
   const trigramAvailable = await tryEnsureExtension(params.sql, "pg_trgm");
+  const indexMetaTable = qualifyTable(params.config.schema, "index_meta");
 
   await params.sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS ${qualifyTable(params.config.schema, "index_meta")} (
+    CREATE TABLE IF NOT EXISTS ${indexMetaTable} (
       agent_id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
       model TEXT NOT NULL,
       provider_key TEXT NOT NULL,
       sources JSONB NOT NULL,
+      exclude_globs JSONB NOT NULL DEFAULT '[]'::jsonb,
       chunk_tokens INTEGER NOT NULL,
       chunk_overlap INTEGER NOT NULL,
       vector_dims INTEGER,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+  await params.sql.unsafe(`
+    ALTER TABLE ${indexMetaTable}
+      ADD COLUMN IF NOT EXISTS exclude_globs JSONB
+  `);
+  await params.sql.unsafe(`
+    UPDATE ${indexMetaTable}
+      SET exclude_globs = '[]'::jsonb
+      WHERE exclude_globs IS NULL
+  `);
+  await params.sql.unsafe(`
+    ALTER TABLE ${indexMetaTable}
+      ALTER COLUMN exclude_globs SET DEFAULT '[]'::jsonb
+  `);
+  await params.sql.unsafe(`
+    ALTER TABLE ${indexMetaTable}
+      ALTER COLUMN exclude_globs SET NOT NULL
   `);
 
   await params.sql.unsafe(`

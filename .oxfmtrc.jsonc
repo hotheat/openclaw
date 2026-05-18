@@ -9,11 +9,14 @@
   "tabWidth": 2,
   "useTabs": false,
   "ignorePatterns": [
+    ".artifacts/",
     "apps/",
     "assets/",
     "CLAUDE.md",
     "docker-compose.yml",
     "dist/",
+    "dist-runtime/",
+    "docs/.generated/",
     "docs/_layouts/",
     "node_modules/",
     "patches/",
@@ -21,6 +24,7 @@
     "src/gateway/server-methods/CLAUDE.md",
     "src/auto-reply/reply/export-html/",
     "Swabble/",
+    "tmp-docker-compose.local.fixed.yml",
     "vendor/",
   ],
 }

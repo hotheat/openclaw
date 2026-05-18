@@ -16,9 +16,16 @@ describe("startGatewayMemoryBackend", () => {
     getMemorySearchManagerMock.mockClear();
   });
 
-  it("skips initialization when memory backend is not qmd", async () => {
+  it("skips initialization when memory search is disabled", async () => {
     const cfg = {
-      agents: { list: [{ id: "main", default: true }] },
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: false,
+          },
+        },
+        list: [{ id: "main", default: true }],
+      },
       memory: { backend: "builtin" },
     } as OpenClawConfig;
     const log = { info: vi.fn(), warn: vi.fn() };
@@ -36,7 +43,9 @@ describe("startGatewayMemoryBackend", () => {
       memory: { backend: "qmd", qmd: {} },
     } as OpenClawConfig;
     const log = { info: vi.fn(), warn: vi.fn() };
-    getMemorySearchManagerMock.mockResolvedValue({ manager: { search: vi.fn() } });
+    getMemorySearchManagerMock.mockResolvedValue({
+      manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+    });
 
     await startGatewayMemoryBackend({ cfg, log });
 
@@ -49,7 +58,109 @@ describe("startGatewayMemoryBackend", () => {
     );
     expect(log.info).toHaveBeenNthCalledWith(
       2,
+      'qmd memory startup sync completed for agent "ops"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      3,
       'qmd memory startup initialization armed for agent "main"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      4,
+      'qmd memory startup sync completed for agent "main"',
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("initializes builtin postgres memory for each configured agent", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "postgres",
+              postgres: {
+                host: "127.0.0.1",
+                port: 5432,
+                database: "openclaw",
+                user: "tester",
+                password: "secret",
+                schema: "openclaw_memory",
+              },
+            },
+          },
+        },
+        list: [{ id: "ops", default: true }, { id: "main" }],
+      },
+      memory: { backend: "builtin" },
+    } as OpenClawConfig;
+    const log = { info: vi.fn(), warn: vi.fn() };
+    getMemorySearchManagerMock.mockResolvedValue({
+      manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+    });
+
+    await startGatewayMemoryBackend({ cfg, log });
+
+    expect(getMemorySearchManagerMock).toHaveBeenCalledTimes(2);
+    expect(getMemorySearchManagerMock).toHaveBeenNthCalledWith(1, { cfg, agentId: "ops" });
+    expect(getMemorySearchManagerMock).toHaveBeenNthCalledWith(2, { cfg, agentId: "main" });
+    expect(log.info).toHaveBeenNthCalledWith(
+      1,
+      'builtin-postgres memory startup initialization armed for agent "ops"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      2,
+      'builtin-postgres memory startup sync completed for agent "ops"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      3,
+      'builtin-postgres memory startup initialization armed for agent "main"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      4,
+      'builtin-postgres memory startup sync completed for agent "main"',
+    );
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("initializes builtin sqlite memory for each configured agent", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "sqlite",
+            },
+          },
+        },
+        list: [{ id: "ops", default: true }, { id: "main" }],
+      },
+      memory: { backend: "builtin" },
+    } as OpenClawConfig;
+    const log = { info: vi.fn(), warn: vi.fn() };
+    getMemorySearchManagerMock.mockResolvedValue({
+      manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+    });
+
+    await startGatewayMemoryBackend({ cfg, log });
+
+    expect(getMemorySearchManagerMock).toHaveBeenCalledTimes(2);
+    expect(log.info).toHaveBeenNthCalledWith(
+      1,
+      'builtin-sqlite memory startup initialization armed for agent "ops"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      2,
+      'builtin-sqlite memory startup sync completed for agent "ops"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      3,
+      'builtin-sqlite memory startup initialization armed for agent "main"',
+    );
+    expect(log.info).toHaveBeenNthCalledWith(
+      4,
+      'builtin-sqlite memory startup sync completed for agent "main"',
     );
     expect(log.warn).not.toHaveBeenCalled();
   });
@@ -62,7 +173,9 @@ describe("startGatewayMemoryBackend", () => {
     const log = { info: vi.fn(), warn: vi.fn() };
     getMemorySearchManagerMock
       .mockResolvedValueOnce({ manager: null, error: "qmd missing" })
-      .mockResolvedValueOnce({ manager: { search: vi.fn() } });
+      .mockResolvedValueOnce({
+        manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+      });
 
     await startGatewayMemoryBackend({ cfg, log });
 
@@ -72,6 +185,7 @@ describe("startGatewayMemoryBackend", () => {
     expect(log.info).toHaveBeenCalledWith(
       'qmd memory startup initialization armed for agent "ops"',
     );
+    expect(log.info).toHaveBeenCalledWith('qmd memory startup sync completed for agent "ops"');
   });
 
   it("skips agents with memory search disabled", async () => {
@@ -86,7 +200,9 @@ describe("startGatewayMemoryBackend", () => {
       memory: { backend: "qmd", qmd: {} },
     } as OpenClawConfig;
     const log = { info: vi.fn(), warn: vi.fn() };
-    getMemorySearchManagerMock.mockResolvedValue({ manager: { search: vi.fn() } });
+    getMemorySearchManagerMock.mockResolvedValue({
+      manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+    });
 
     await startGatewayMemoryBackend({ cfg, log });
 
@@ -95,6 +211,64 @@ describe("startGatewayMemoryBackend", () => {
     expect(log.info).toHaveBeenCalledWith(
       'qmd memory startup initialization armed for agent "main"',
     );
+    expect(log.info).toHaveBeenCalledWith('qmd memory startup sync completed for agent "main"');
     expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs a warning when startup sync fails and continues", async () => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }, { id: "ops" }] },
+      memory: { backend: "builtin" },
+    } as OpenClawConfig;
+    const log = { info: vi.fn(), warn: vi.fn() };
+    getMemorySearchManagerMock
+      .mockResolvedValueOnce({
+        manager: { search: vi.fn(), sync: vi.fn(async () => Promise.reject(new Error("boom"))) },
+      })
+      .mockResolvedValueOnce({
+        manager: { search: vi.fn(), sync: vi.fn(async () => undefined) },
+      });
+
+    await startGatewayMemoryBackend({ cfg, log });
+
+    await vi.waitFor(() => {
+      expect(log.warn).toHaveBeenCalledWith(
+        'builtin-sqlite memory startup sync failed for agent "main": boom',
+      );
+      expect(log.info).toHaveBeenCalledWith(
+        'builtin-sqlite memory startup sync completed for agent "ops"',
+      );
+    });
+  });
+
+  it("returns before a long-running startup sync completes", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "sqlite",
+            },
+          },
+        },
+        list: [{ id: "main", default: true }],
+      },
+      memory: { backend: "builtin" },
+    } as OpenClawConfig;
+    const log = { info: vi.fn(), warn: vi.fn() };
+    getMemorySearchManagerMock.mockResolvedValue({
+      manager: {
+        search: vi.fn(),
+        sync: vi.fn(() => new Promise<void>(() => {})),
+      },
+    });
+
+    const result = await Promise.race([
+      startGatewayMemoryBackend({ cfg, log }).then(() => "completed"),
+      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+    ]);
+
+    expect(result).toBe("completed");
   });
 });

@@ -199,6 +199,41 @@ describe("memory index", () => {
     await statusOnly.manager.close?.();
   });
 
+  it("rebuilds sqlite index when excludeGlobs change and drops excluded files", async () => {
+    const indexExcludePath = path.join(workspaceDir, `index-exclude-${Date.now()}.sqlite`);
+    await fs.writeFile(path.join(memoryDir, "keep.md"), "alpha keep", "utf-8");
+    await fs.writeFile(
+      path.join(memoryDir, "agent-security-policy.md"),
+      "alpha should be excluded",
+      "utf-8",
+    );
+
+    const initialCfg = createCfg({ storePath: indexExcludePath });
+    const initial = await getMemorySearchManager({ cfg: initialCfg, agentId: "main" });
+    expect(initial.manager).not.toBeNull();
+    if (!initial.manager) {
+      throw new Error("initial manager missing");
+    }
+    await initial.manager.sync?.({ reason: "test" });
+    expect(initial.manager.status().files).toBe(3);
+    await initial.manager.close?.();
+
+    const excludedCfg = createCfg({ storePath: indexExcludePath });
+    excludedCfg.agents!.defaults!.memorySearch!.excludeGlobs = ["**/*-security-policy.md"];
+    const updated = await getMemorySearchManager({ cfg: excludedCfg, agentId: "main" });
+    expect(updated.manager).not.toBeNull();
+    if (!updated.manager) {
+      throw new Error("updated manager missing");
+    }
+    await updated.manager.sync?.({ reason: "test" });
+
+    const status = updated.manager.status();
+    expect(status.files).toBe(2);
+    const results = await updated.manager.search("excluded");
+    expect(results.some((entry) => entry.path.endsWith("agent-security-policy.md"))).toBe(false);
+    await updated.manager.close?.();
+  });
+
   it("reindexes sessions when source config adds sessions to an existing index", async () => {
     const indexSourceChangePath = path.join(
       workspaceDir,

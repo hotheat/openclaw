@@ -15,6 +15,7 @@ export type SessionFreshness = {
   fresh: boolean;
   dailyResetAt?: number;
   idleExpiresAt?: number;
+  staleReason?: "daily" | "idle";
 };
 
 export const DEFAULT_RESET_MODE: SessionResetMode = "daily";
@@ -151,10 +152,12 @@ export function evaluateSessionFreshness(params: {
       : undefined;
   const staleDaily = dailyResetAt != null && params.updatedAt < dailyResetAt;
   const staleIdle = idleExpiresAt != null && params.now > idleExpiresAt;
+  const staleReason = staleIdle ? "idle" : staleDaily ? "daily" : undefined;
   return {
     fresh: !(staleDaily || staleIdle),
     dailyResetAt,
     idleExpiresAt,
+    staleReason,
   };
 }
 

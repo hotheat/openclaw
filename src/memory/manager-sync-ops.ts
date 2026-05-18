@@ -52,6 +52,7 @@ type MemoryIndexMeta = {
   chunkTokens: number;
   chunkOverlap: number;
   vectorDims?: number;
+  excludeGlobs?: string[];
 };
 
 type MemorySyncProgressState = {
@@ -883,6 +884,7 @@ export abstract class MemoryManagerSyncOps {
     const vectorReady = await this.ensureVectorReady();
     const meta = this.readMeta();
     const configuredSources = this.resolveConfiguredSourcesForMeta();
+    const configuredExcludeGlobs = this.resolveConfiguredExcludeGlobsForMeta();
     const needsFullReindex =
       params?.force ||
       !meta ||
@@ -890,6 +892,7 @@ export abstract class MemoryManagerSyncOps {
       (this.provider && meta.provider !== this.provider.id) ||
       meta.providerKey !== this.providerKey ||
       this.metaSourcesDiffer(meta, configuredSources) ||
+      this.metaExcludeGlobsDiffer(meta, configuredExcludeGlobs) ||
       meta.chunkTokens !== this.settings.chunking.tokens ||
       meta.chunkOverlap !== this.settings.chunking.overlap ||
       (vectorReady && !meta?.vectorDims);
@@ -1095,6 +1098,7 @@ export abstract class MemoryManagerSyncOps {
         sources: this.resolveConfiguredSourcesForMeta(),
         chunkTokens: this.settings.chunking.tokens,
         chunkOverlap: this.settings.chunking.overlap,
+        excludeGlobs: this.resolveConfiguredExcludeGlobsForMeta(),
       };
       if (!nextMeta) {
         throw new Error("Failed to compute memory index metadata for reindexing.");
@@ -1166,6 +1170,7 @@ export abstract class MemoryManagerSyncOps {
       sources: this.resolveConfiguredSourcesForMeta(),
       chunkTokens: this.settings.chunking.tokens,
       chunkOverlap: this.settings.chunking.overlap,
+      excludeGlobs: this.resolveConfiguredExcludeGlobsForMeta(),
     };
     if (this.vector.available && this.vector.dims) {
       nextMeta.vectorDims = this.vector.dims;
@@ -1233,11 +1238,31 @@ export abstract class MemoryManagerSyncOps {
     return normalized.length > 0 ? normalized : ["memory"];
   }
 
+  private resolveConfiguredExcludeGlobsForMeta(): string[] {
+    return Array.from(
+      new Set((this.settings.excludeGlobs ?? []).map((pattern) => pattern.trim()).filter(Boolean)),
+    ).toSorted();
+  }
+
+  private normalizeMetaExcludeGlobs(meta: MemoryIndexMeta): string[] {
+    return Array.from(
+      new Set((meta.excludeGlobs ?? []).map((pattern) => String(pattern).trim()).filter(Boolean)),
+    ).toSorted();
+  }
+
   private metaSourcesDiffer(meta: MemoryIndexMeta, configuredSources: MemorySource[]): boolean {
     const metaSources = this.normalizeMetaSources(meta);
     if (metaSources.length !== configuredSources.length) {
       return true;
     }
     return metaSources.some((source, index) => source !== configuredSources[index]);
+  }
+
+  private metaExcludeGlobsDiffer(meta: MemoryIndexMeta, configuredExcludeGlobs: string[]): boolean {
+    const metaExcludeGlobs = this.normalizeMetaExcludeGlobs(meta);
+    if (metaExcludeGlobs.length !== configuredExcludeGlobs.length) {
+      return true;
+    }
+    return metaExcludeGlobs.some((pattern, index) => pattern !== configuredExcludeGlobs[index]);
   }
 }

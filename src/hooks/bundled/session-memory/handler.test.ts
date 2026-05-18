@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { runEmbeddedPiAgent } from "../../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { makeTempWorkspace, writeWorkspaceFile } from "../../../test-helpers/workspace.js";
 import type { HookHandler } from "../../hooks.js";
@@ -11,10 +12,49 @@ vi.mock("../../llm-slug-generator.js", () => ({
   generateSlugViaLLM: vi.fn().mockResolvedValue("simple-math"),
 }));
 
+vi.mock("../../../agents/pi-embedded.js", () => ({
+  runEmbeddedPiAgent: vi.fn(async () => ({
+    payloads: [
+      {
+        text: [
+          "## Daily Structured Summary",
+          "",
+          "- **Generated At**: 2026-05-15 04:00 CST",
+          "- **Source**: reset",
+          "- **Source Sessions**: test-123",
+          "",
+          "### 用户偏好",
+          "- 偏好精确结论。",
+          "",
+          "### 自定义需求",
+          "- 输出中文。",
+          "",
+          "### 失败经验 / 反模式",
+          "- 避免模糊剂量。",
+          "",
+          "### 重要决策",
+          "- 仅采官方来源。",
+          "",
+          "### 未完成事项",
+          "- 继续核对 Roche 财报。",
+          "",
+          "### 风险 / 注意点",
+          "- 未披露剂量不得推断。",
+        ].join("\n"),
+      },
+    ],
+  })),
+}));
+
 let handler: HookHandler;
+let captureSessionToMemory: typeof import("./handler.js").captureSessionToMemory;
 
 beforeAll(async () => {
-  ({ default: handler } = await import("./handler.js"));
+  ({ default: handler, captureSessionToMemory } = await import("./handler.js"));
+});
+
+beforeEach(() => {
+  vi.mocked(runEmbeddedPiAgent).mockClear();
 });
 
 /**
@@ -45,7 +85,8 @@ async function runNewWithPreviousSessionEntry(params: {
   previousSessionEntry: { sessionId: string; sessionFile?: string };
   cfg?: OpenClawConfig;
   action?: "new" | "reset";
-}): Promise<{ files: string[]; memoryContent: string }> {
+  timestamp?: Date;
+}): Promise<{ files: string[]; memoryContent: string; memoryDir: string }> {
   const event = createHookEvent("command", params.action ?? "new", "agent:main:main", {
     cfg:
       params.cfg ??
@@ -54,21 +95,28 @@ async function runNewWithPreviousSessionEntry(params: {
       } satisfies OpenClawConfig),
     previousSessionEntry: params.previousSessionEntry,
   });
+  event.timestamp = params.timestamp ?? new Date("2026-05-15T04:00:00.000Z");
 
   await handler(event);
 
   const memoryDir = path.join(params.tempDir, "memory");
-  const files = await fs.readdir(memoryDir);
-  const memoryContent =
-    files.length > 0 ? await fs.readFile(path.join(memoryDir, files[0]), "utf-8") : "";
-  return { files, memoryContent };
+  let files: string[] = [];
+  let memoryContent = "";
+  try {
+    files = await fs.readdir(memoryDir);
+    memoryContent =
+      files.length > 0 ? await fs.readFile(path.join(memoryDir, files[0]), "utf-8") : "";
+  } catch {
+    // Allow callers to assert that no memory file was created.
+  }
+  return { files, memoryContent, memoryDir };
 }
 
 async function runNewWithPreviousSession(params: {
   sessionContent: string;
   cfg?: (tempDir: string) => OpenClawConfig;
   action?: "new" | "reset";
-}): Promise<{ tempDir: string; files: string[]; memoryContent: string }> {
+}): Promise<{ tempDir: string; files: string[]; memoryContent: string; memoryDir: string }> {
   const tempDir = await makeTempWorkspace("openclaw-session-memory-");
   const sessionsDir = path.join(tempDir, "sessions");
   await fs.mkdir(sessionsDir, { recursive: true });
@@ -85,7 +133,7 @@ async function runNewWithPreviousSession(params: {
       agents: { defaults: { workspace: tempDir } },
     } satisfies OpenClawConfig);
 
-  const { files, memoryContent } = await runNewWithPreviousSessionEntry({
+  const { files, memoryContent, memoryDir } = await runNewWithPreviousSessionEntry({
     tempDir,
     cfg,
     action: params.action,
@@ -94,7 +142,7 @@ async function runNewWithPreviousSession(params: {
       sessionFile,
     },
   });
-  return { tempDir, files, memoryContent };
+  return { tempDir, files, memoryContent, memoryDir };
 }
 
 function makeSessionMemoryConfig(tempDir: string, messages?: number): OpenClawConfig {
@@ -136,9 +184,11 @@ async function createSessionMemoryWorkspace(params?: {
 async function loadMemoryFromActiveSessionPointer(params: {
   tempDir: string;
   activeSessionFile: string;
+  action?: "new" | "reset";
 }): Promise<string> {
   const { memoryContent } = await runNewWithPreviousSessionEntry({
     tempDir: params.tempDir,
+    action: params.action,
     previousSessionEntry: {
       sessionId: "test-123",
       sessionFile: params.activeSessionFile,
@@ -147,20 +197,102 @@ async function loadMemoryFromActiveSessionPointer(params: {
   return memoryContent;
 }
 
-function expectMemoryConversation(params: {
-  memoryContent: string;
-  user: string;
-  assistant: string;
-  absent?: string;
-}) {
-  expect(params.memoryContent).toContain(`user: ${params.user}`);
-  expect(params.memoryContent).toContain(`assistant: ${params.assistant}`);
-  if (params.absent) {
-    expect(params.memoryContent).not.toContain(params.absent);
-  }
-}
-
 describe("session-memory hook", () => {
+  it("exports reusable structured summary helper for non-command session capture flows", async () => {
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "Discussed release train handoff" },
+      { role: "assistant", content: "Captured the daily rollover handoff" },
+    ]);
+    const tempDir = await makeTempWorkspace("openclaw-session-memory-");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "daily-rollover.jsonl",
+      content: sessionContent,
+    });
+
+    const output = await captureSessionToMemory({
+      cfg: {
+        agents: { defaults: { workspace: tempDir } },
+      } satisfies OpenClawConfig,
+      sessionKey: "agent:main:main",
+      sessionId: "daily-rollover-session",
+      sessionFile,
+      source: "daily-rollover",
+      timestamp: new Date("2026-05-14T00:05:00.000Z"),
+    });
+
+    expect(output?.memoryFilePath).toBeTruthy();
+    const saved = await fs.readFile(output!.memoryFilePath, "utf-8");
+    expect(output?.memoryFilePath.endsWith(path.join("memory", "2026-05-14.md"))).toBe(true);
+    expect(saved).toContain("## Daily Structured Summary");
+    expect(saved).toContain("**Source**: daily-rollover");
+    expect(saved).toContain("### 用户偏好");
+  });
+
+  it("preserves all blocks when multiple captures append to the same daily file concurrently", async () => {
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "Capture this conversation" },
+      { role: "assistant", content: "Structured summary incoming" },
+    ]);
+    const tempDir = await makeTempWorkspace("openclaw-session-memory-concurrent-");
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "shared-session.jsonl",
+      content: sessionContent,
+    });
+    const timestamp = new Date("2026-05-14T00:05:00.000Z");
+    const memoryFilePath = path.join(tempDir, "memory", "2026-05-14.md");
+    const originalWriteFile = fs.writeFile.bind(fs);
+    const writeSpy = vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, options) => {
+      const writeTarget =
+        typeof file === "string"
+          ? file
+          : Buffer.isBuffer(file)
+            ? file.toString("utf-8")
+            : file instanceof URL
+              ? file.pathname
+              : null;
+      if (writeTarget === memoryFilePath) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return await originalWriteFile(file, data, options);
+    });
+
+    try {
+      await Promise.all([
+        captureSessionToMemory({
+          cfg: {
+            agents: { defaults: { workspace: tempDir } },
+          } satisfies OpenClawConfig,
+          sessionKey: "agent:main:main",
+          sessionId: "daily-rollover-a",
+          sessionFile,
+          source: "daily-rollover",
+          timestamp,
+        }),
+        captureSessionToMemory({
+          cfg: {
+            agents: { defaults: { workspace: tempDir } },
+          } satisfies OpenClawConfig,
+          sessionKey: "agent:main:main",
+          sessionId: "daily-rollover-b",
+          sessionFile,
+          source: "reset",
+          timestamp,
+        }),
+      ]);
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    const saved = await fs.readFile(memoryFilePath, "utf-8");
+    expect(saved.match(/^## Daily Structured Summary$/gm)).toHaveLength(2);
+  });
+
   it("skips non-command events", async () => {
     const tempDir = await makeTempWorkspace("openclaw-session-memory-");
 
@@ -175,7 +307,7 @@ describe("session-memory hook", () => {
     await expect(fs.access(memoryDir)).rejects.toThrow();
   });
 
-  it("skips commands other than new", async () => {
+  it("skips commands other than reset", async () => {
     const tempDir = await makeTempWorkspace("openclaw-session-memory-");
 
     const event = createHookEvent("command", "help", "agent:main:main", {
@@ -189,7 +321,7 @@ describe("session-memory hook", () => {
     await expect(fs.access(memoryDir)).rejects.toThrow();
   });
 
-  it("creates memory file with session content on /new command", async () => {
+  it("does not create memory file on /new command", async () => {
     // Create a mock session file with user/assistant messages
     const sessionContent = createMockSessionContent([
       { role: "user", content: "Hello there" },
@@ -197,17 +329,12 @@ describe("session-memory hook", () => {
       { role: "user", content: "What is 2+2?" },
       { role: "assistant", content: "2+2 equals 4" },
     ]);
-    const { files, memoryContent } = await runNewWithPreviousSession({ sessionContent });
-    expect(files.length).toBe(1);
-
-    // Read the memory file and verify content
-    expect(memoryContent).toContain("user: Hello there");
-    expect(memoryContent).toContain("assistant: Hi! How can I help?");
-    expect(memoryContent).toContain("user: What is 2+2?");
-    expect(memoryContent).toContain("assistant: 2+2 equals 4");
+    const { files, memoryDir } = await runNewWithPreviousSession({ sessionContent });
+    expect(files.length).toBe(0);
+    await expect(fs.access(memoryDir)).rejects.toThrow();
   });
 
-  it("creates memory file with session content on /reset command", async () => {
+  it("creates structured summary in daily note on /reset command", async () => {
     const sessionContent = createMockSessionContent([
       { role: "user", content: "Please reset and keep notes" },
       { role: "assistant", content: "Captured before reset" },
@@ -217,121 +344,80 @@ describe("session-memory hook", () => {
       action: "reset",
     });
 
-    expect(files.length).toBe(1);
-    expect(memoryContent).toContain("user: Please reset and keep notes");
-    expect(memoryContent).toContain("assistant: Captured before reset");
+    expect(files).toEqual(["2026-05-15.md"]);
+    expect(memoryContent).toContain("## Daily Structured Summary");
+    expect(memoryContent).toContain("**Source**: reset");
+    expect(memoryContent).toContain("### 用户偏好");
+    expect(memoryContent).not.toContain("Please reset and keep notes");
+    expect(memoryContent).not.toContain("Captured before reset");
+    expect(memoryContent.match(/\*\*Generated At\*\*/g)?.length).toBe(1);
+    expect(memoryContent.match(/\*\*Source\*\*/g)?.length).toBe(1);
+    expect(memoryContent.match(/\*\*Source Sessions\*\*/g)?.length).toBe(1);
   });
 
-  it("filters out non-message entries (tool calls, system)", async () => {
-    // Create session with mixed entry types
+  it("uses configured session-memory model for structured summary generation", async () => {
     const sessionContent = createMockSessionContent([
-      { role: "user", content: "Hello" },
-      { type: "tool_use", tool: "search", input: "test" },
-      { role: "assistant", content: "World" },
-      { type: "tool_result", result: "found it" },
-      { role: "user", content: "Thanks" },
+      { role: "user", content: "Please keep this preference" },
+      { role: "assistant", content: "Preference captured" },
     ]);
-    const { memoryContent } = await runNewWithPreviousSession({ sessionContent });
+    const configuredModel = "deepseek/deepseek-v4-pro";
 
-    // Only user/assistant messages should be present
-    expect(memoryContent).toContain("user: Hello");
-    expect(memoryContent).toContain("assistant: World");
-    expect(memoryContent).toContain("user: Thanks");
-    // Tool entries should not appear
-    expect(memoryContent).not.toContain("tool_use");
-    expect(memoryContent).not.toContain("tool_result");
-    expect(memoryContent).not.toContain("search");
-  });
-
-  it("filters out inter-session user messages", async () => {
-    const sessionContent = [
-      JSON.stringify({
-        type: "message",
-        message: {
-          role: "user",
-          content: "Forwarded internal instruction",
-          provenance: { kind: "inter_session", sourceTool: "sessions_send" },
-        },
-      }),
-      JSON.stringify({
-        type: "message",
-        message: { role: "assistant", content: "Acknowledged" },
-      }),
-      JSON.stringify({
-        type: "message",
-        message: { role: "user", content: "External follow-up" },
-      }),
-    ].join("\n");
-    const { memoryContent } = await runNewWithPreviousSession({ sessionContent });
-
-    expect(memoryContent).not.toContain("Forwarded internal instruction");
-    expect(memoryContent).toContain("assistant: Acknowledged");
-    expect(memoryContent).toContain("user: External follow-up");
-  });
-
-  it("filters out command messages starting with /", async () => {
-    const sessionContent = createMockSessionContent([
-      { role: "user", content: "/help" },
-      { role: "assistant", content: "Here is help info" },
-      { role: "user", content: "Normal message" },
-      { role: "user", content: "/new" },
-    ]);
-    const { memoryContent } = await runNewWithPreviousSession({ sessionContent });
-
-    // Command messages should be filtered out
-    expect(memoryContent).not.toContain("/help");
-    expect(memoryContent).not.toContain("/new");
-    // Normal messages should be present
-    expect(memoryContent).toContain("assistant: Here is help info");
-    expect(memoryContent).toContain("user: Normal message");
-  });
-
-  it("respects custom messages config (limits to N messages)", async () => {
-    // Create 10 messages
-    const entries = [];
-    for (let i = 1; i <= 10; i++) {
-      entries.push({ role: "user", content: `Message ${i}` });
-    }
-    const sessionContent = createMockSessionContent(entries);
-    const { memoryContent } = await runNewWithPreviousSession({
+    await runNewWithPreviousSession({
       sessionContent,
-      cfg: (tempDir) => makeSessionMemoryConfig(tempDir, 3),
+      action: "reset",
+      cfg: (tempDir) =>
+        ({
+          agents: { defaults: { workspace: tempDir } },
+          hooks: {
+            internal: {
+              entries: {
+                "session-memory": {
+                  enabled: true,
+                  model: configuredModel,
+                },
+              },
+            },
+          },
+        }) satisfies OpenClawConfig,
     });
 
-    // Only last 3 messages should be present
-    expect(memoryContent).not.toContain("user: Message 1\n");
-    expect(memoryContent).not.toContain("user: Message 7\n");
-    expect(memoryContent).toContain("user: Message 8");
-    expect(memoryContent).toContain("user: Message 9");
-    expect(memoryContent).toContain("user: Message 10");
+    expect(runEmbeddedPiAgent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0]).toMatchObject({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    });
   });
 
-  it("filters messages before slicing (fix for #2681)", async () => {
-    // Create session with many tool entries interspersed with messages
-    // This tests that we filter FIRST, then slice - not the other way around
-    const entries = [
-      { role: "user", content: "First message" },
-      { type: "tool_use", tool: "test1" },
-      { type: "tool_result", result: "result1" },
-      { role: "assistant", content: "Second message" },
-      { type: "tool_use", tool: "test2" },
-      { type: "tool_result", result: "result2" },
-      { role: "user", content: "Third message" },
-      { type: "tool_use", tool: "test3" },
-      { type: "tool_result", result: "result3" },
-      { role: "assistant", content: "Fourth message" },
-    ];
-    const sessionContent = createMockSessionContent(entries);
+  it("appends export-file handoff summary even when assistant text has no researcher label", async () => {
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "整理成文件" },
+      {
+        role: "assistant",
+        content: [
+          "已完成导出。",
+          "",
+          "<SUBAGENT_HANDOFF>",
+          JSON.stringify({
+            mode: "export-file",
+            summary: "已输出研究草案。",
+            export: {
+              path: "artifacts/exports/feishu/test/no-header-report.md",
+              title: "研究草案",
+            },
+          }),
+          "</SUBAGENT_HANDOFF>",
+        ].join("\n"),
+      },
+    ]);
     const { memoryContent } = await runNewWithPreviousSession({
       sessionContent,
-      cfg: (tempDir) => makeSessionMemoryConfig(tempDir, 3),
+      action: "reset",
     });
 
-    // Should have exactly 3 user/assistant messages (the last 3)
-    expect(memoryContent).not.toContain("First message");
-    expect(memoryContent).toContain("user: Third message");
-    expect(memoryContent).toContain("assistant: Second message");
-    expect(memoryContent).toContain("assistant: Fourth message");
+    expect(memoryContent).toContain("### Researcher 产物");
+    expect(memoryContent).toContain("`artifacts/exports/feishu/test/no-header-report.md`");
+    expect(memoryContent).toContain("已输出研究草案。");
+    expect(memoryContent).not.toContain("<SUBAGENT_HANDOFF>");
   });
 
   it("falls back to latest .jsonl.reset.* transcript when active file is empty", async () => {
@@ -352,14 +438,14 @@ describe("session-memory hook", () => {
 
     const { memoryContent } = await runNewWithPreviousSessionEntry({
       tempDir,
+      action: "reset",
       previousSessionEntry: {
         sessionId: "test-123",
         sessionFile: activeSessionFile!,
       },
     });
 
-    expect(memoryContent).toContain("user: Message from rotated transcript");
-    expect(memoryContent).toContain("assistant: Recovered from reset fallback");
+    expect(memoryContent).toContain("## Daily Structured Summary");
   });
 
   it("handles reset-path session pointers from previousSessionEntry", async () => {
@@ -378,15 +464,14 @@ describe("session-memory hook", () => {
     const { files, memoryContent } = await runNewWithPreviousSessionEntry({
       tempDir,
       cfg: makeSessionMemoryConfig(tempDir),
+      action: "reset",
       previousSessionEntry: {
         sessionId,
         sessionFile: resetSessionFile,
       },
     });
     expect(files.length).toBe(1);
-
-    expect(memoryContent).toContain("user: Message from reset pointer");
-    expect(memoryContent).toContain("assistant: Recovered directly from reset file");
+    expect(memoryContent).toContain("## Daily Structured Summary");
   });
 
   it("recovers transcript when previousSessionEntry.sessionFile is missing", async () => {
@@ -410,14 +495,43 @@ describe("session-memory hook", () => {
     const { files, memoryContent } = await runNewWithPreviousSessionEntry({
       tempDir,
       cfg: makeSessionMemoryConfig(tempDir),
+      action: "reset",
       previousSessionEntry: {
         sessionId,
       },
     });
     expect(files.length).toBe(1);
+    expect(memoryContent).toContain("## Daily Structured Summary");
+  });
 
-    expect(memoryContent).toContain("user: Recovered with missing sessionFile pointer");
-    expect(memoryContent).toContain("assistant: Recovered by sessionId fallback");
+  it("does not summarize another transcript when the target reset transcript is absent", async () => {
+    const { tempDir, sessionsDir } = await createSessionMemoryWorkspace();
+
+    await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "other-session-a.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "Wrong transcript A" }]),
+    });
+    await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "other-session-b.jsonl",
+      content: createMockSessionContent([{ role: "user", content: "Wrong transcript B" }]),
+    });
+
+    const { files } = await runNewWithPreviousSessionEntry({
+      tempDir,
+      cfg: makeSessionMemoryConfig(tempDir),
+      action: "reset",
+      previousSessionEntry: {
+        sessionId: "missing-target-session",
+        sessionFile: path.join(
+          sessionsDir,
+          "missing-target-session.jsonl.reset.2026-02-16T22-26-33.000Z",
+        ),
+      },
+    });
+
+    expect(files).toEqual([]);
   });
 
   it("prefers the newest reset transcript when multiple reset candidates exist", async () => {
@@ -445,14 +559,11 @@ describe("session-memory hook", () => {
     const memoryContent = await loadMemoryFromActiveSessionPointer({
       tempDir,
       activeSessionFile: activeSessionFile!,
+      action: "reset",
     });
 
-    expectMemoryConversation({
-      memoryContent,
-      user: "Newest rotated transcript",
-      assistant: "Newest summary",
-      absent: "Older rotated transcript",
-    });
+    expect(memoryContent).toContain("## Daily Structured Summary");
+    expect(memoryContent).not.toContain("Older rotated transcript");
   });
 
   it("prefers active transcript when it is non-empty even with reset candidates", async () => {
@@ -478,32 +589,126 @@ describe("session-memory hook", () => {
     const memoryContent = await loadMemoryFromActiveSessionPointer({
       tempDir,
       activeSessionFile: activeSessionFile!,
+      action: "reset",
     });
 
-    expectMemoryConversation({
-      memoryContent,
-      user: "Active transcript message",
-      assistant: "Active transcript summary",
-      absent: "Reset fallback message",
-    });
+    expect(memoryContent).toContain("## Daily Structured Summary");
+    expect(memoryContent).not.toContain("Reset fallback message");
   });
 
-  it("handles empty session files gracefully", async () => {
-    // Should not throw
-    const { files } = await runNewWithPreviousSession({ sessionContent: "" });
+  it("skips writing memory when the structured summary has no reliable additions", async () => {
+    const { files } = await runNewWithPreviousSession({ sessionContent: "", action: "reset" });
+    expect(files.length).toBe(0);
+  });
+
+  it("skips writing memory when the model summary has only empty sections", async () => {
+    vi.mocked(runEmbeddedPiAgent).mockResolvedValueOnce({
+      payloads: [
+        {
+          text: [
+            "## Daily Structured Summary",
+            "",
+            "- **Generated At**: 2026-05-15 04:00 CST",
+            "- **Source**: reset",
+            "- **Source Sessions**: test-123",
+            "",
+            "### 用户偏好",
+            "- 无可靠新增项。",
+            "",
+            "### 自定义需求",
+            "- 无可靠新增项。",
+            "",
+            "### 失败经验 / 反模式",
+            "- 无可靠新增项。",
+            "",
+            "### 重要决策",
+            "- 无可靠新增项。",
+            "",
+            "### 未完成事项",
+            "- 无可靠新增项。",
+            "",
+            "### 风险 / 注意点",
+            "- 无可靠新增项。",
+          ].join("\n"),
+        },
+      ],
+    } as Awaited<ReturnType<typeof runEmbeddedPiAgent>>);
+
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "闲聊，没有需要沉淀的信息" },
+      { role: "assistant", content: "收到。" },
+    ]);
+    const { files } = await runNewWithPreviousSession({ sessionContent, action: "reset" });
+    expect(files.length).toBe(0);
+  });
+
+  it("writes memory when researcher export is the only reliable addition", async () => {
+    const sessionContent = createMockSessionContent([
+      {
+        role: "assistant",
+        content: [
+          "<SUBAGENT_HANDOFF>",
+          JSON.stringify({
+            mode: "export-file",
+            summary: "已输出研究草案。",
+            export: {
+              path: "artifacts/exports/feishu/test/report.md",
+              title: "研究草案",
+            },
+          }),
+          "</SUBAGENT_HANDOFF>",
+        ].join("\n"),
+      },
+    ]);
+    const { files, memoryContent } = await runNewWithPreviousSession({
+      sessionContent,
+      action: "reset",
+    });
     expect(files.length).toBe(1);
+    expect(memoryContent).toContain("### Researcher 产物");
+    expect(memoryContent).toContain("`artifacts/exports/feishu/test/report.md`");
   });
 
-  it("handles session files with fewer messages than requested", async () => {
+  it("appends a new summary block instead of overwriting daily note", async () => {
     // Only 2 messages but requesting 15 (default)
+    const tempDir = await makeTempWorkspace("openclaw-session-memory-");
+    await fs.mkdir(path.join(tempDir, "memory"), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, "memory", "2026-05-15.md"),
+      "# Existing note\n\n- Keep this.\n",
+      "utf-8",
+    );
     const sessionContent = createMockSessionContent([
       { role: "user", content: "Only message 1" },
       { role: "assistant", content: "Only message 2" },
     ]);
-    const { memoryContent } = await runNewWithPreviousSession({ sessionContent });
+    const sessionsDir = path.join(tempDir, "sessions");
+    await fs.mkdir(sessionsDir, { recursive: true });
+    const sessionFile = await writeWorkspaceFile({
+      dir: sessionsDir,
+      name: "test-session.jsonl",
+      content: sessionContent,
+    });
 
-    // Both messages should be included
-    expect(memoryContent).toContain("user: Only message 1");
-    expect(memoryContent).toContain("assistant: Only message 2");
+    const { memoryContent } = await runNewWithPreviousSessionEntry({
+      tempDir,
+      action: "reset",
+      previousSessionEntry: {
+        sessionId: "test-123",
+        sessionFile,
+      },
+      cfg: {
+        agents: {
+          defaults: {
+            workspace: tempDir,
+            userTimezone: "Asia/Shanghai",
+          },
+        },
+      } satisfies OpenClawConfig,
+    });
+
+    expect(memoryContent).toContain("# Existing note");
+    expect(memoryContent).toContain("## Daily Structured Summary");
+    expect(memoryContent.match(/## Daily Structured Summary/g)?.length).toBe(1);
   });
 });

@@ -63,6 +63,7 @@ type MemoryIndexMeta = {
   chunkTokens: number;
   chunkOverlap: number;
   vectorDims?: number;
+  excludeGlobs?: string[];
 };
 
 type SqlExecutor = PostgresMemoryClient;
@@ -938,6 +939,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
   }): Promise<void> {
     const reporter = ensureProgressReporter(params?.progress);
     const configuredSources = this.resolveConfiguredSourcesForMeta();
+    const configuredExcludeGlobs = this.resolveConfiguredExcludeGlobsForMeta();
     let shouldSyncMemory = false;
     let shouldSyncSessions = false;
 
@@ -969,7 +971,8 @@ export class PostgresMemoryManager implements MemorySearchManager {
           meta.providerKey !== this.providerKey ||
           meta.chunkTokens !== this.settings.chunking.tokens ||
           meta.chunkOverlap !== this.settings.chunking.overlap ||
-          JSON.stringify(meta.sources) !== JSON.stringify(configuredSources);
+          JSON.stringify(meta.sources) !== JSON.stringify(configuredSources) ||
+          this.metaExcludeGlobsDiffer(meta, configuredExcludeGlobs);
 
         if (needsFullReindex) {
           const filesTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "files"));
@@ -997,6 +1000,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
           chunkTokens: this.settings.chunking.tokens,
           chunkOverlap: this.settings.chunking.overlap,
           vectorDims: this.vector.dims,
+          excludeGlobs: configuredExcludeGlobs,
         });
         await this.pruneEmbeddingCacheIfNeeded();
       } finally {
@@ -1530,12 +1534,13 @@ export class PostgresMemoryManager implements MemorySearchManager {
         model: string;
         provider_key: string;
         sources: unknown;
+        exclude_globs: unknown;
         chunk_tokens: number;
         chunk_overlap: number;
         vector_dims: number | null;
       }[]
     >`
-      SELECT provider, model, provider_key, sources, chunk_tokens, chunk_overlap, vector_dims
+      SELECT provider, model, provider_key, sources, exclude_globs, chunk_tokens, chunk_overlap, vector_dims
       FROM ${table}
       WHERE agent_id = ${this.agentId}
     `;
@@ -1550,6 +1555,9 @@ export class PostgresMemoryManager implements MemorySearchManager {
       sources: Array.isArray(row.sources)
         ? row.sources.map((source: unknown) => toMemorySource(String(source)))
         : ["memory"],
+      excludeGlobs: Array.isArray(row.exclude_globs)
+        ? row.exclude_globs.map((pattern: unknown) => String(pattern))
+        : [],
       chunkTokens: row.chunk_tokens,
       chunkOverlap: row.chunk_overlap,
       vectorDims: row.vector_dims ?? undefined,
@@ -1560,7 +1568,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     const table = this.activeSql.unsafe(qualifyTable(this.store.schema, "index_meta"));
     await this.activeSql`
       INSERT INTO ${table}
-        (agent_id, provider, model, provider_key, sources, chunk_tokens, chunk_overlap, vector_dims, updated_at)
+        (agent_id, provider, model, provider_key, sources, exclude_globs, chunk_tokens, chunk_overlap, vector_dims, updated_at)
       VALUES
         (
           ${this.agentId},
@@ -1568,6 +1576,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
           ${meta.model},
           ${meta.providerKey},
           ${this.activeSql.json(meta.sources)},
+          ${this.activeSql.json(meta.excludeGlobs ?? [])},
           ${meta.chunkTokens},
           ${meta.chunkOverlap},
           ${meta.vectorDims ?? null},
@@ -1578,6 +1587,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
         model = EXCLUDED.model,
         provider_key = EXCLUDED.provider_key,
         sources = EXCLUDED.sources,
+        exclude_globs = EXCLUDED.exclude_globs,
         chunk_tokens = EXCLUDED.chunk_tokens,
         chunk_overlap = EXCLUDED.chunk_overlap,
         vector_dims = EXCLUDED.vector_dims,
@@ -1593,6 +1603,26 @@ export class PostgresMemoryManager implements MemorySearchManager {
       )
       .toSorted();
     return normalized.length > 0 ? normalized : ["memory"];
+  }
+
+  private resolveConfiguredExcludeGlobsForMeta(): string[] {
+    return Array.from(
+      new Set((this.settings.excludeGlobs ?? []).map((pattern) => pattern.trim()).filter(Boolean)),
+    ).toSorted();
+  }
+
+  private normalizeMetaExcludeGlobs(meta: MemoryIndexMeta): string[] {
+    return Array.from(
+      new Set((meta.excludeGlobs ?? []).map((pattern) => String(pattern).trim()).filter(Boolean)),
+    ).toSorted();
+  }
+
+  private metaExcludeGlobsDiffer(meta: MemoryIndexMeta, configuredExcludeGlobs: string[]): boolean {
+    const metaExcludeGlobs = this.normalizeMetaExcludeGlobs(meta);
+    if (metaExcludeGlobs.length !== configuredExcludeGlobs.length) {
+      return true;
+    }
+    return metaExcludeGlobs.some((pattern, index) => pattern !== configuredExcludeGlobs[index]);
   }
 
   private async refreshStatusSnapshot(): Promise<void> {

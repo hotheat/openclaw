@@ -48,6 +48,7 @@ const sqlTag = vi.hoisted(() => {
     chunk_tokens: number;
     chunk_overlap: number;
     vector_dims: number | null;
+    exclude_globs: string[];
   };
   type CacheRow = {
     provider: string;
@@ -69,6 +70,18 @@ const sqlTag = vi.hoisted(() => {
   const cache = new Map<string, CacheRow>();
   const beginCalls: string[] = [];
   const txCalls: string[] = [];
+
+  function projectMetaRow(query: string, row: MetaRow): Partial<MetaRow> {
+    const selectClause = query.match(/SELECT\s+([\s\S]*?)\s+FROM \?/i)?.[1];
+    if (!selectClause) {
+      return row;
+    }
+    const selectedColumns = selectClause
+      .split(",")
+      .map((column) => column.trim())
+      .filter((column): column is keyof MetaRow => column in row);
+    return Object.fromEntries(selectedColumns.map((column) => [column, row[column]]));
+  }
 
   const tag = Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -146,6 +159,7 @@ const sqlTag = vi.hoisted(() => {
           model,
           providerKey,
           sources,
+          excludeGlobs,
           chunkTokens,
           chunkOverlap,
           vectorDims,
@@ -160,6 +174,9 @@ const sqlTag = vi.hoisted(() => {
           chunk_tokens: Number(chunkTokens),
           chunk_overlap: Number(chunkOverlap),
           vector_dims: vectorDims == null ? null : Number(vectorDims),
+          exclude_globs: Array.isArray(excludeGlobs)
+            ? excludeGlobs.map((pattern) => String(pattern))
+            : [],
         });
         return Promise.resolve([]);
       }
@@ -225,7 +242,7 @@ const sqlTag = vi.hoisted(() => {
       if (query.includes("FROM ?") && firstArgText.includes("index_meta")) {
         const [, agentId] = values;
         const row = meta.get(String(agentId));
-        return Promise.resolve(row ? [row] : []);
+        return Promise.resolve(row ? [projectMetaRow(query, row)] : []);
       }
       if (query.includes("FROM ?") && firstArgText.includes("embedding_cache")) {
         if (query.includes("COUNT(*)::int AS count")) {
@@ -667,6 +684,58 @@ describe("PostgresMemoryManager", () => {
     expect(sqlTag.txCalls.some((query) => query.includes("pg_advisory_"))).toBe(true);
 
     await manager?.close?.();
+  });
+
+  it("rebuilds postgres index when excludeGlobs change and drops excluded files", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-exclude-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "keep.md"), "Alpha keep note\n", "utf-8");
+    await fs.writeFile(
+      path.join(memoryDir, "agent-security-policy.md"),
+      "Alpha should be excluded\n",
+      "utf-8",
+    );
+
+    const initialCfg = createConfig();
+    initialCfg.agents!.defaults!.workspace = workspaceDir;
+    const initialManager = await PostgresMemoryManager.get({
+      cfg: initialCfg,
+      agentId: "main",
+    });
+    expect(initialManager).toBeTruthy();
+    await initialManager?.initStore?.();
+    await initialManager?.sync?.({ reason: "test" });
+    expect(initialManager?.status().files).toBe(2);
+    await initialManager?.close?.();
+
+    const excludedCfg = createConfig();
+    excludedCfg.agents!.defaults!.workspace = workspaceDir;
+    excludedCfg.agents!.defaults!.memorySearch = {
+      ...excludedCfg.agents!.defaults!.memorySearch!,
+      excludeGlobs: ["**/*-security-policy.md"],
+    };
+    const updatedManager = await PostgresMemoryManager.get({
+      cfg: excludedCfg,
+      agentId: "main",
+    });
+    expect(updatedManager).toBeTruthy();
+    await updatedManager?.initStore?.();
+    await updatedManager?.sync?.({ reason: "test" });
+
+    expect(updatedManager?.status().files).toBe(1);
+    expect(
+      Array.from(sqlTag.files.values()).some((row) => row.path.endsWith("security-policy.md")),
+    ).toBe(false);
+
+    sqlTag.txCalls.length = 0;
+    await updatedManager?.sync?.({ reason: "test" });
+
+    expect(
+      sqlTag.txCalls.some((query) => query.startsWith("DELETE FROM ? WHERE agent_id = ?")),
+    ).toBe(false);
+    await updatedManager?.close?.();
   });
 
   it("does not reuse a status-only postgres manager for later default calls", async () => {

@@ -28,6 +28,8 @@ import {
 } from "../../config/sessions.js";
 import type { TtsAutoMode } from "../../config/types.tts.js";
 import { archiveSessionTranscripts } from "../../gateway/session-utils.fs.js";
+import { captureSessionToMemory } from "../../hooks/bundled/session-memory/handler.js";
+import { resolveHookConfig } from "../../hooks/config.js";
 import { deliverSessionMaintenanceWarning } from "../../infra/session-maintenance-warning.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
@@ -50,6 +52,7 @@ import {
 } from "./recent-media.js";
 
 const log = createSubsystemLogger("session-init");
+const DAILY_MEMORY_CAPTURE_PENDING_TTL_MS = 10 * 60 * 1000;
 
 type ResolvedSessionStoreTarget = {
   sessionCtxForState: MsgContext;
@@ -95,6 +98,106 @@ function resolveSessionStoreTarget(params: {
 
 function isPendingRecentMediaSnapshotInit(entry?: SessionEntry): boolean {
   return entry?.pendingRecentMediaSnapshotInit === true;
+}
+
+function hasFreshDailyMemoryCapturePending(params: {
+  entry: SessionEntry;
+  sourceSessionId: string;
+  now: number;
+}): boolean {
+  if (params.entry.dailyMemoryCapturePendingSessionId !== params.sourceSessionId) {
+    return false;
+  }
+  const pendingAt = params.entry.dailyMemoryCapturePendingAt;
+  return (
+    typeof pendingAt === "number" &&
+    Number.isFinite(pendingAt) &&
+    params.now - pendingAt < DAILY_MEMORY_CAPTURE_PENDING_TTL_MS
+  );
+}
+
+async function markDailyMemoryCapturePending(params: {
+  storePath: string;
+  sessionKey: string;
+  sourceSessionId: string;
+  targetSessionId: string;
+}): Promise<boolean> {
+  const now = Date.now();
+  try {
+    return await updateSessionStore(
+      params.storePath,
+      (store) => {
+        const current = store[params.sessionKey];
+        if (!current) {
+          return false;
+        }
+        if (current.sessionId !== params.targetSessionId) {
+          return false;
+        }
+        if (current.dailyMemoryCaptureSessionId === params.sourceSessionId) {
+          return false;
+        }
+        if (
+          hasFreshDailyMemoryCapturePending({
+            entry: current,
+            sourceSessionId: params.sourceSessionId,
+            now,
+          })
+        ) {
+          return false;
+        }
+
+        store[params.sessionKey] = {
+          ...current,
+          dailyMemoryCapturePendingAt: now,
+          dailyMemoryCapturePendingSessionId: params.sourceSessionId,
+        };
+        return true;
+      },
+      { activeSessionKey: params.sessionKey },
+    );
+  } catch (err) {
+    log.warn(`failed to persist daily memory capture pending marker: ${String(err)}`);
+    return false;
+  }
+}
+
+async function finishDailyMemoryCapture(params: {
+  storePath: string;
+  sessionKey: string;
+  sourceSessionId: string;
+  targetSessionId: string;
+  completed: boolean;
+}): Promise<void> {
+  try {
+    await updateSessionStore(
+      params.storePath,
+      (store) => {
+        const current = store[params.sessionKey];
+        if (
+          !current ||
+          current.sessionId !== params.targetSessionId ||
+          current.dailyMemoryCapturePendingSessionId !== params.sourceSessionId
+        ) {
+          return;
+        }
+        store[params.sessionKey] = {
+          ...current,
+          dailyMemoryCapturePendingAt: undefined,
+          dailyMemoryCapturePendingSessionId: undefined,
+          ...(params.completed
+            ? {
+                dailyMemoryCaptureAt: Date.now(),
+                dailyMemoryCaptureSessionId: params.sourceSessionId,
+              }
+            : {}),
+        };
+      },
+      { activeSessionKey: params.sessionKey },
+    );
+  } catch (err) {
+    log.warn(`failed to persist daily memory capture metadata: ${String(err)}`);
+  }
 }
 
 export async function persistRecentMediaSnapshotEarly(params: {
@@ -341,6 +444,7 @@ export async function initSessionState(params: {
   const pendingRecentMediaSnapshotInit = isPendingRecentMediaSnapshotInit(entry);
   const existingSessionEntry = pendingRecentMediaSnapshotInit ? undefined : entry;
   const storedRecentMediaSnapshot = entry?.recentMediaSnapshot;
+  const rolloverSourceEntry = existingSessionEntry ? { ...existingSessionEntry } : undefined;
   const previousSessionEntry =
     resetTriggered && existingSessionEntry ? { ...existingSessionEntry } : undefined;
   const now = Date.now();
@@ -365,13 +469,14 @@ export async function initSessionState(params: {
     resetType,
     resetOverride: channelReset,
   });
-  const freshEntry = existingSessionEntry
+  const freshness = existingSessionEntry
     ? evaluateSessionFreshness({
         updatedAt: existingSessionEntry.updatedAt,
         now,
         policy: resetPolicy,
-      }).fresh
-    : false;
+      })
+    : undefined;
+  const freshEntry = freshness?.fresh ?? false;
 
   if (!isNewSession && freshEntry && existingSessionEntry) {
     sessionId = existingSessionEntry.sessionId;
@@ -568,8 +673,63 @@ export async function initSessionState(params: {
     },
   );
 
+  const rolloverCaptureTargetSessionId = sessionEntry.sessionId;
+  const shouldCaptureDailyRollover =
+    !resetTriggered &&
+    isNewSession &&
+    rolloverSourceEntry?.sessionId &&
+    resolveHookConfig(cfg, "session-memory")?.enabled !== false &&
+    freshness?.staleReason === "daily" &&
+    rolloverSourceEntry.dailyMemoryCaptureSessionId !== rolloverSourceEntry.sessionId;
+
+  const markedDailyRolloverCapturePending =
+    shouldCaptureDailyRollover && rolloverSourceEntry?.sessionId
+      ? await markDailyMemoryCapturePending({
+          storePath,
+          sessionKey,
+          sourceSessionId: rolloverSourceEntry.sessionId,
+          targetSessionId: rolloverCaptureTargetSessionId,
+        })
+      : false;
+
+  if (markedDailyRolloverCapturePending && rolloverSourceEntry) {
+    void (async () => {
+      let completed = false;
+      try {
+        const result = await captureSessionToMemory({
+          cfg,
+          sessionKey,
+          sessionId: rolloverSourceEntry.sessionId,
+          sessionFile: rolloverSourceEntry.sessionFile,
+          source: "daily-rollover",
+          timestamp: new Date(now),
+        });
+        completed = Boolean(result && result.status !== "skipped-missing-source");
+        if (completed) {
+          archiveSessionTranscripts({
+            sessionId: rolloverSourceEntry.sessionId,
+            storePath,
+            sessionFile: rolloverSourceEntry.sessionFile,
+            agentId,
+            reason: "reset",
+          });
+        }
+      } catch (err) {
+        log.warn(`failed to capture daily rollover memory: ${String(err)}`);
+      } finally {
+        await finishDailyMemoryCapture({
+          storePath,
+          sessionKey,
+          sourceSessionId: rolloverSourceEntry.sessionId,
+          targetSessionId: rolloverCaptureTargetSessionId,
+          completed,
+        });
+      }
+    })();
+  }
+
   // Archive old transcript so it doesn't accumulate on disk (#14869).
-  if (previousSessionEntry?.sessionId) {
+  if (resetTriggered && previousSessionEntry?.sessionId) {
     archiveSessionTranscripts({
       sessionId: previousSessionEntry.sessionId,
       storePath,

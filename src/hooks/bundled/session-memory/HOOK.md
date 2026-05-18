@@ -1,13 +1,13 @@
 ---
 name: session-memory
-description: "Save session context to memory when /new or /reset command is issued"
+description: "Append a structured memory summary when /reset is issued"
 homepage: https://docs.openclaw.ai/automation/hooks#session-memory
 metadata:
   {
     "openclaw":
       {
         "emoji": "💾",
-        "events": ["command:new", "command:reset"],
+        "events": ["command:reset"],
         "requires": { "config": ["workspace.dir"] },
         "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with OpenClaw" }],
       },
@@ -16,52 +16,62 @@ metadata:
 
 # Session Memory Hook
 
-Automatically saves session context to your workspace memory when you issue `/new` or `/reset`.
+Automatically appends a structured memory summary to your workspace daily note when you issue `/reset`.
+
+Builtin runtime 也会在旧会话因 daily reset 自动 rollover 时复用同一份 summary helper。
+这不是新的 hook event。
+它仍受 `session-memory.enabled` 控制。
+idle rollover 不会触发这条自动 summary。
 
 ## What It Does
 
-When you run `/new` or `/reset` to start a fresh session:
+When you run `/reset` to start a fresh session:
 
 1. **Finds the previous session** - Uses the pre-reset session entry to locate the correct transcript
 2. **Extracts conversation** - Reads the last N user/assistant messages from the session (default: 15, configurable)
-3. **Generates descriptive slug** - Uses LLM to create a meaningful filename slug based on conversation content
-4. **Saves to memory** - Creates a new file at `<workspace>/memory/YYYY-MM-DD-slug.md`
-5. **Sends confirmation** - Notifies you with the file path
+3. **Generates structured summary** - Uses the configured model to create a grounded structured summary
+4. **Saves to memory** - Appends a new block to `<workspace>/memory/YYYY-MM-DD.md` only when the summary has reliable additions
+5. **Finishes silently** - The capture is internal housekeeping; it does not send a user-visible confirmation
+
+When builtin runtime rotates a stale session because of **daily reset**:
+
+1. It reuses the same summary helper in the background
+2. It writes the same structured summary block shape
+3. It does not emit a separate hook event
+4. It skips empty summaries without writing a memory file
+5. It skips idle-triggered rollover
+
+If every structured section is `无可靠新增项。` and there is no researcher export handoff, no Markdown block is written. The daily rollover still marks the old session as processed so it is not retried.
 
 ## Output Format
 
-Memory files are created with the following format:
+Memory blocks are appended with the following format:
 
 ```markdown
-# Session: 2026-01-16 14:30:00 UTC
+## Daily Structured Summary
 
-- **Session Key**: agent:main:main
-- **Session ID**: abc123def456
-- **Source**: telegram
+- **Generated At**: 2026-01-16 14:30:00 UTC
+- **Source**: reset
+- **Source Sessions**: abc123def456
+
+### 用户偏好
+
+- ...
 ```
-
-## Filename Examples
-
-The LLM generates descriptive slugs based on your conversation:
-
-- `2026-01-16-vendor-pitch.md` - Discussion about vendor evaluation
-- `2026-01-16-api-design.md` - API architecture planning
-- `2026-01-16-bug-fix.md` - Debugging session
-- `2026-01-16-1430.md` - Fallback timestamp if slug generation fails
 
 ## Requirements
 
 - **Config**: `workspace.dir` must be set (automatically configured during onboarding)
 
-The hook uses your configured LLM provider to generate slugs, so it works with any provider (Anthropic, OpenAI, etc.).
+The hook uses your configured model provider to generate summaries, so it works with any configured runtime provider.
 
 ## Configuration
 
 The hook supports optional configuration:
 
-| Option     | Type   | Default | Description                                                     |
-| ---------- | ------ | ------- | --------------------------------------------------------------- |
-| `messages` | number | 15      | Number of user/assistant messages to include in the memory file |
+| Option     | Type   | Default | Description                                                                |
+| ---------- | ------ | ------- | -------------------------------------------------------------------------- |
+| `messages` | number | 15      | Number of recent user/assistant messages to consider for summary grounding |
 
 Example configuration:
 
@@ -83,8 +93,8 @@ Example configuration:
 The hook automatically:
 
 - Uses your workspace directory (`~/.openclaw/workspace` by default)
-- Uses your configured LLM for slug generation
-- Falls back to timestamp slugs if LLM is unavailable
+- Reuses the same helper for builtin daily rollover summaries
+- Falls back to a minimal empty-section block if summary generation fails
 
 ## Disabling
 

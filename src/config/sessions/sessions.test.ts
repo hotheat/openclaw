@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   clearSessionStoreCacheForTest,
+  evaluateSessionFreshness,
   loadSessionStore,
   resolveAndPersistSessionFile,
   updateSessionStore,
@@ -85,6 +86,50 @@ describe("resolveSessionResetPolicy", () => {
 
       expect(groupPolicy.mode).toBe("daily");
     });
+  });
+});
+
+describe("evaluateSessionFreshness", () => {
+  it("reports staleReason=daily when daily boundary invalidates the session", () => {
+    const now = new Date(2026, 0, 18, 5, 0, 0).getTime();
+    const updatedAt = new Date(2026, 0, 18, 3, 0, 0).getTime();
+
+    const result = evaluateSessionFreshness({
+      updatedAt,
+      now,
+      policy: { mode: "daily", atHour: 4 },
+    });
+
+    expect(result.fresh).toBe(false);
+    expect(result.staleReason).toBe("daily");
+  });
+
+  it("reports staleReason=idle when idle timeout invalidates the session", () => {
+    const updatedAt = new Date(2026, 0, 18, 4, 0, 0).getTime();
+    const now = new Date(2026, 0, 18, 5, 1, 0).getTime();
+
+    const result = evaluateSessionFreshness({
+      updatedAt,
+      now,
+      policy: { mode: "idle", atHour: 4, idleMinutes: 60 },
+    });
+
+    expect(result.fresh).toBe(false);
+    expect(result.staleReason).toBe("idle");
+  });
+
+  it("prefers staleReason=idle when daily mode also has idleMinutes and idle expires first", () => {
+    const updatedAt = new Date(2026, 0, 18, 4, 0, 0).getTime();
+    const now = new Date(2026, 0, 18, 6, 1, 0).getTime();
+
+    const result = evaluateSessionFreshness({
+      updatedAt,
+      now,
+      policy: { mode: "daily", atHour: 23, idleMinutes: 60 },
+    });
+
+    expect(result.fresh).toBe(false);
+    expect(result.staleReason).toBe("idle");
   });
 });
 

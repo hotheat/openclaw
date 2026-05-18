@@ -100,6 +100,13 @@ describe("ensurePostgresMemorySchema", () => {
       sql.queries.some((query) => query.includes("CREATE EXTENSION IF NOT EXISTS pg_trgm")),
     ).toBe(true);
     expect(sql.queries.some((query) => query.includes("gin_trgm_ops"))).toBe(true);
+    expect(sql.queries.some((query) => query.includes("exclude_globs JSONB"))).toBe(true);
+    expect(
+      sql.queries.some(
+        (query) =>
+          query.includes("ALTER TABLE") && query.includes("ADD COLUMN IF NOT EXISTS exclude_globs"),
+      ),
+    ).toBe(true);
   });
 
   it("continues when optional extensions cannot be created", async () => {
