@@ -16,8 +16,11 @@ x-i18n:
 
 - 完整测试套件（测试集、实时测试、Docker）：[测试](/help/testing)
 
-- `pnpm test:force`：终止任何占用默认控制端口的遗留 Gateway 网关进程，然后使用隔离的 Gateway 网关端口运行完整的 Vitest 套件，这样服务器测试不会与正在运行的实例冲突。当之前的 Gateway 网关运行占用了端口 18789 时使用此命令。
+- `pnpm test`：运行基于 `vitest.unit.config.ts` 的快速核心 CI 通道。这个默认 PR gate 排除了最耗时的 provider/media、extension、gateway 切面。
+- `pnpm test:full`：通过 `scripts/test-parallel.mjs` 运行更宽的本地回归通道，把 unit、extension、gateway 切面一起覆盖。
+- `pnpm test:force`：终止任何占用默认控制端口的遗留 Gateway 网关进程，然后使用隔离的 Gateway 网关端口执行一次原始 `vitest run`，这样服务器测试不会与正在运行的实例冲突。当之前的 Gateway 网关运行占用了端口 18789 时使用此命令。
 - `pnpm test:coverage`：使用 V8 覆盖率运行 Vitest。全局阈值为 70% 的行/分支/函数/语句覆盖率。覆盖率排除了集成密集型入口点（CLI 连接、gateway/telegram 桥接、webchat 静态服务器），以保持目标集中在可单元测试的逻辑上。
+- `pnpm test:full` 在 Node 24+ 上会自动关闭 Vitest `vmForks` 并回退到 `forks`，以规避 `ERR_VM_MODULE_LINK_FAILURE` / `module is already linked`。你也可以用 `OPENCLAW_TEST_VM_FORKS=0|1` 手动覆盖。
 - `pnpm test:e2e`：运行 Gateway 网关端到端冒烟测试（多实例 WS/HTTP/节点配对）。
 - `pnpm test:live`：运行提供商实时测试（minimax/zai）。需要 API 密钥和 `LIVE=1`（或提供商特定的 `*_LIVE_TEST=1`）才能取消跳过。
 

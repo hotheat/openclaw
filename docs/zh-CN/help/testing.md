@@ -16,7 +16,7 @@ x-i18n:
 
 # 测试
 
-OpenClaw 包含三个 Vitest 测试套件（单元/集成、端到端、实时）以及一小组 Docker 运行器。
+OpenClaw 包含一个默认的快速 Vitest 测试通道（`pnpm test`）、一个更宽的本地回归通道（`pnpm test:full`），以及端到端/实时测试套件和一小组 Docker 运行器。
 
 本文档是一份"我们如何测试"的指南：
 
@@ -29,10 +29,12 @@ OpenClaw 包含三个 Vitest 测试套件（单元/集成、端到端、实时�
 
 日常使用：
 
-- 完整检查（推送前的预期流程）：`pnpm build && pnpm check && pnpm test`
+- 与 CI 对齐的检查：`make build && make lint && make test`
+- 不通过 Makefile 的等价命令：`pnpm build && pnpm check && pnpm test`
 
 当你修改测试或需要额外的信心时：
 
+- 更宽的本地回归通道：`pnpm test:full`
 - 覆盖率检查：`pnpm test:coverage`
 - 端到端套件：`pnpm test:e2e`
 
@@ -46,19 +48,34 @@ OpenClaw 包含三个 Vitest 测试套件（单元/集成、端到端、实时�
 
 可以将这些套件理解为"逐渐增强的真实性"（以及逐渐增加的不稳定性/成本）：
 
-### 单元/集成测试（默认）
+### 快速核心测试（默认）
 
 - 命令：`pnpm test`
-- 配置：`vitest.config.ts`
-- 文件：`src/**/*.test.ts`
+- 配置：`vitest.unit.config.ts`
+- 文件：
+  - 核心 `src/**/*.test.ts`
+  - 选定的 `test/**/*.test.ts`
+  - 排除更重的 gateway、extension、provider/media 以及其他高波动切面
 - 范围：
   - 纯单元测试
-  - 进程内集成测试（Gateway 网关认证、路由、工具、解析、配置）
+  - 核心进程内集成测试（路由、工具、解析、配置、agent/runtime 回归）
   - 已知问题的确定性回归测试
 - 预期：
   - 在 CI 中运行
   - 不需要真实密钥
   - 应该快速且稳定
+  - 默认 PR gate 依赖这个通道
+
+### 扩展本地回归通道
+
+- 命令：`pnpm test:full`
+- 配置：`scripts/test-parallel.mjs`（会一起运行 `vitest.unit.config.ts`、`vitest.extensions.config.ts`、`vitest.gateway.config.ts`）
+- 范围：
+  - 增加 extension 和 gateway 相关切面
+  - 需要比默认 `pnpm test` 更高信心时使用
+- 预期：
+  - 以手动运行为主
+  - 比默认 `pnpm test` 更慢、更宽
 
 ### 端到端测试（Gateway 网关冒烟测试）
 
@@ -94,6 +111,7 @@ OpenClaw 包含三个 Vitest 测试套件（单元/集成、端到端、实时�
 使用这个决策表：
 
 - 编辑逻辑/测试：运行 `pnpm test`（如果改动较大，加上 `pnpm test:coverage`）
+- 涉及 extensions、更宽的 gateway 行为、跨切面回归：加上 `pnpm test:full`
 - 涉及 Gateway 网关网络/WS 协议/配对：加上 `pnpm test:e2e`
 - 调试"我的机器人挂了"/提供商特定故障/工具调用：运行缩小范围的 `pnpm test:live`
 

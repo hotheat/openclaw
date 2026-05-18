@@ -9,7 +9,8 @@ title: "Testing"
 
 # Testing
 
-OpenClaw has three Vitest suites (unit/integration, e2e, live) and a small set of Docker runners.
+OpenClaw has a fast default Vitest lane (`pnpm test`), a broader local regression lane
+(`pnpm test:full`), plus e2e/live suites and a small set of Docker runners.
 
 This doc is a “how we test” guide:
 
@@ -22,10 +23,12 @@ This doc is a “how we test” guide:
 
 Most days:
 
-- Full gate (expected before push): `pnpm build && pnpm check && pnpm test`
+- CI-aligned gate: `make build && make lint && make test`
+- Same gate without Makefile: `pnpm build && pnpm check && pnpm test`
 
 When you touch tests or want extra confidence:
 
+- Broader local regression lane: `pnpm test:full`
 - Coverage gate: `pnpm test:coverage`
 - E2E suite: `pnpm test:e2e`
 
@@ -39,19 +42,34 @@ Tip: when you only need one failing case, prefer narrowing live tests via the al
 
 Think of the suites as “increasing realism” (and increasing flakiness/cost):
 
-### Unit / integration (default)
+### Fast core suite (default)
 
 - Command: `pnpm test`
-- Config: `scripts/test-parallel.mjs` (runs `vitest.unit.config.ts`, `vitest.extensions.config.ts`, `vitest.gateway.config.ts`)
-- Files: `src/**/*.test.ts`, `extensions/**/*.test.ts`
+- Config: `vitest.unit.config.ts`
+- Files:
+  - Core `src/**/*.test.ts`
+  - Selected `test/**/*.test.ts`
+  - Excludes heavier gateway, extension, provider/media, and other slow or high-variance slices
 - Scope:
   - Pure unit tests
-  - In-process integration tests (gateway auth, routing, tooling, parsing, config)
+  - Core in-process integration tests (routing, tooling, parsing, config, agent/runtime regressions)
   - Deterministic regressions for known bugs
 - Expectations:
   - Runs in CI
   - No real keys required
-  - Should be fast and stable
+  - Should stay fast and stable
+  - Target runtime is short enough for the default PR gate
+
+### Expanded local regression lane
+
+- Command: `pnpm test:full`
+- Config: `scripts/test-parallel.mjs` (runs `vitest.unit.config.ts`, `vitest.extensions.config.ts`, `vitest.gateway.config.ts`)
+- Scope:
+  - Adds extension and gateway slices that are valuable before larger merges
+  - Preserves the older broader local regression path when you need more confidence than CI requires
+- Expectations:
+  - Usually run manually
+  - Slower and broader than the default `pnpm test`
 - Pool note:
   - OpenClaw uses Vitest `vmForks` on Node 22/23 for faster unit shards.
   - On Node 24+, OpenClaw automatically falls back to regular `forks` to avoid Node VM linking errors (`ERR_VM_MODULE_LINK_FAILURE` / `module is already linked`).
@@ -98,6 +116,7 @@ Think of the suites as “increasing realism” (and increasing flakiness/cost):
 Use this decision table:
 
 - Editing logic/tests: run `pnpm test` (and `pnpm test:coverage` if you changed a lot)
+- Touching extensions, broader gateway behavior, or cross-surface regressions: add `pnpm test:full`
 - Touching gateway networking / WS protocol / pairing: add `pnpm test:e2e`
 - Debugging “my bot is down” / provider-specific failures / tool calling: run a narrowed `pnpm test:live`
 

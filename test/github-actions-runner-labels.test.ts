@@ -27,30 +27,42 @@ describe("GitHub Actions workflow runners", () => {
     );
   });
 
-  it("keeps pull request CI on the fast test slice and sidecar heavy slices instead of the full parallel suite", async () => {
+  it("keeps pull request CI on a single make-driven lint/build/test flow", async () => {
     const ciWorkflowPath = path.resolve(process.cwd(), ".github", "workflows", "ci.yml");
     const content = await readFile(ciWorkflowPath, "utf8");
 
-    expect(content).toMatch(/name:\s+test \/ shard-\$\{\{\s*matrix\.shard\s*\}\}/);
-    expect(content).toMatch(
-      /strategy:\s*\n\s+fail-fast:\s*false\s*\n\s+matrix:\s*\n\s+shard:\s+\["1\/4", "2\/4", "3\/4", "4\/4"\]/,
-    );
-    expect(content).toMatch(
-      /- name: Run fast unit shard\n\s+run: node scripts\/run-test-fast-shard\.mjs \$\{\{\s*matrix\.shard\s*\}\}/,
-    );
-    expect(content).toMatch(/name:\s+test-browser/);
-    expect(content).toMatch(/run:\s+pnpm test:browser -- --silent=passed-only/);
-    expect(content).toMatch(/name:\s+test-embedded/);
-    expect(content).toMatch(/run:\s+pnpm test:embedded -- --silent=passed-only/);
-    expect(content).toMatch(/name:\s+test-triggers/);
-    expect(content).toMatch(/run:\s+pnpm test:triggers -- --silent=passed-only/);
-    expect(content).toMatch(/name:\s+test-web-auto-reply/);
-    expect(content).toMatch(/run:\s+pnpm test:web-auto-reply -- --silent=passed-only/);
-    expect(content).toMatch(/name:\s+test-doctor/);
-    expect(content).toMatch(/run:\s+pnpm test:doctor-only -- --silent=passed-only/);
-    expect(content).toMatch(/name:\s+test-telegram-media/);
-    expect(content).toMatch(/run:\s+pnpm test:telegram-media -- --silent=passed-only/);
-    expect(content).not.toMatch(/run:\s+pnpm test\s*$/m);
+    expect(content).toMatch(/\n  lint:\n/);
+    expect(content).toMatch(/name:\s+lint/);
+    expect(content).toMatch(/run:\s+make lint/);
+
+    expect(content).toMatch(/\n  build:\n/);
+    expect(content).toMatch(/name:\s+build/);
+    expect(content).toMatch(/run:\s+make build/);
+
+    expect(content).toMatch(/\n  test:\n/);
+    expect(content).toMatch(/name:\s+test/);
+    expect(content).toMatch(/run:\s+make test/);
+    expect(content).toMatch(/needs:\s*\n\s+- lint\s*\n\s+- build/);
+
+    expect(content).not.toMatch(/matrix:\s*\n/);
+    expect(content).not.toMatch(/run-test-fast-shard/);
+    expect(content).not.toMatch(/name:\s+check/);
+    expect(content).not.toMatch(/name:\s+test-browser/);
+    expect(content).not.toMatch(/name:\s+test-embedded/);
+    expect(content).not.toMatch(/name:\s+test-triggers/);
+    expect(content).not.toMatch(/name:\s+test-web-auto-reply/);
+    expect(content).not.toMatch(/name:\s+test-doctor/);
+    expect(content).not.toMatch(/name:\s+test-telegram-media/);
+  });
+
+  it("keeps the CI Makefile targets mapped to the intended pnpm commands", async () => {
+    const makefilePath = path.resolve(process.cwd(), "Makefile");
+    const content = await readFile(makefilePath, "utf8");
+
+    expect(content).toMatch(/\.PHONY:\s+lint build test/);
+    expect(content).toMatch(/lint:\n\tpnpm check/);
+    expect(content).toMatch(/build:\n\tpnpm build\n\tpnpm smoke:build\n\tpnpm ui:build/);
+    expect(content).toMatch(/test:\n\tpnpm test\n/);
   });
 
   it("includes a Codex review workflow for pull requests", async () => {
