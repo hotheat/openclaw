@@ -61,19 +61,29 @@ type SubagentAnnounceDeliveryResult = {
 async function mirrorCompletionDirectSendToTranscript(params: {
   sessionKey: string;
   text?: string;
+  mediaUrls?: string[];
 }): Promise<void> {
   const text = typeof params.text === "string" ? params.text.trim() : "";
-  if (!text) {
+  const mediaUrls = params.mediaUrls?.filter((url) => url.trim()) ?? [];
+  if (!text && mediaUrls.length === 0) {
     return;
   }
-  const result = await appendAssistantMessageToSessionTranscript({
-    sessionKey: params.sessionKey,
-    agentId: resolveAgentIdFromSessionKey(params.sessionKey),
-    text,
-  });
-  if (!result.ok) {
+  try {
+    const result = await appendAssistantMessageToSessionTranscript({
+      sessionKey: params.sessionKey,
+      agentId: resolveAgentIdFromSessionKey(params.sessionKey),
+      text,
+      mediaUrls: mediaUrls.length > 0 ? mediaUrls : undefined,
+    });
+    if (result.ok) {
+      return;
+    }
     defaultRuntime.error?.(
       `Subagent completion transcript mirror failed for ${params.sessionKey}: ${result.reason}`,
+    );
+  } catch (err) {
+    defaultRuntime.error?.(
+      `Subagent completion transcript mirror failed for ${params.sessionKey}: ${summarizeDeliveryError(err)}`,
     );
   }
 }
@@ -233,7 +243,7 @@ async function readLatestSubagentOutput(sessionKey: string): Promise<string | un
   } catch {
     // Best-effort: fall back to richer history parsing below.
   }
-  const history = await callGateway<{ messages?: Array<unknown> }>({
+  const history = await callGateway({
     method: "chat.history",
     params: { sessionKey, limit: 50 },
   });
@@ -260,7 +270,7 @@ async function readLatestSubagentAssistantOutput(sessionKey: string): Promise<st
   } catch {
     // Best-effort only; fall through to transcript scan below.
   }
-  const history = await callGateway<{ messages?: Array<unknown> }>({
+  const history = await callGateway({
     method: "chat.history",
     params: { sessionKey, limit: 50 },
   });
@@ -705,6 +715,7 @@ async function sendSubagentAnnounceDirectly(params: {
   targetRequesterSessionKey: string;
   triggerMessage: string;
   completionMessage?: string;
+  completionMediaUrls?: string[];
   expectsCompletionMessage: boolean;
   completionRouteMode?: "bound" | "fallback" | "hook";
   spawnMode?: SpawnSubagentMode;
@@ -769,6 +780,7 @@ async function sendSubagentAnnounceDirectly(params: {
       }
 
       if (shouldSendCompletionDirectly) {
+        const completionMediaUrls = params.completionMediaUrls?.filter((url) => url.trim()) ?? [];
         const completionThreadId =
           completionDirectOrigin?.threadId != null && completionDirectOrigin.threadId !== ""
             ? String(completionDirectOrigin.threadId)
@@ -788,6 +800,7 @@ async function sendSubagentAnnounceDirectly(params: {
             threadId: completionThreadId,
             sessionKey: canonicalRequesterSessionKey,
             message: params.completionMessage,
+            mediaUrls: completionMediaUrls.length > 0 ? completionMediaUrls : undefined,
             idempotencyKey: params.directIdempotencyKey,
           },
           timeoutMs: announceTimeoutMs,
@@ -795,6 +808,7 @@ async function sendSubagentAnnounceDirectly(params: {
         await mirrorCompletionDirectSendToTranscript({
           sessionKey: canonicalRequesterSessionKey,
           text: params.completionMessage,
+          mediaUrls: completionMediaUrls,
         });
 
         return {
@@ -849,6 +863,7 @@ async function deliverSubagentAnnouncement(params: {
   announceId?: string;
   triggerMessage: string;
   completionMessage?: string;
+  completionMediaUrls?: string[];
   summaryLine?: string;
   requesterOrigin?: DeliveryContext;
   completionDirectOrigin?: DeliveryContext;
@@ -890,6 +905,7 @@ async function deliverSubagentAnnouncement(params: {
     targetRequesterSessionKey: params.targetRequesterSessionKey,
     triggerMessage: params.triggerMessage,
     completionMessage: params.completionMessage,
+    completionMediaUrls: params.completionMediaUrls,
     directIdempotencyKey: params.directIdempotencyKey,
     completionDirectOrigin: params.completionDirectOrigin,
     completionRouteMode: params.completionRouteMode,
@@ -1096,12 +1112,7 @@ export async function runSubagentAnnounceFlow(params: {
 
     if (!reply && params.waitForCompletion !== false) {
       const waitMs = settleTimeoutMs;
-      const wait = await callGateway<{
-        status?: string;
-        startedAt?: number;
-        endedAt?: number;
-        error?: string;
-      }>({
+      const wait = await callGateway({
         method: "agent.wait",
         params: {
           runId: params.childRunId,
@@ -1334,6 +1345,7 @@ export async function runSubagentAnnounceFlow(params: {
       announceId,
       triggerMessage,
       completionMessage,
+      completionMediaUrls: [],
       summaryLine: taskLabel,
       requesterOrigin:
         expectsCompletionMessage && !requesterIsSubagent

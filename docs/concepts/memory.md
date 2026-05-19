@@ -25,6 +25,16 @@ The default workspace layout uses two memory layers:
   - Curated long-term memory.
   - **Only load in the main, private session** (never in group contexts).
 
+In the current builtin flow, daily rollover and `/reset` can update **both**
+layers:
+
+- `memory/YYYY-MM-DD.md`
+  - Receives the grounded daily structured summary block.
+- `MEMORY.md`
+  - Receives durable long-term updates derived from that summary.
+  - The model emits a structured JSON patch internally, but the file on disk
+    stays Markdown for readability and stable indexing.
+
 These files live under the workspace (`agents.defaults.workspace`, default
 `~/.openclaw/workspace`). See [Agent workspace](/concepts/agent-workspace) for the full layout.
 
@@ -42,9 +52,22 @@ For lower-noise recall, prefer writing structured notes into
 conversation lookup, instead of copying transcript-style captures into memory
 Markdown files.
 
-Daily structured summaries are skipped when every section has no reliable
-addition and there is no researcher export handoff, so empty housekeeping blocks
-do not enter the Markdown layer or memory index.
+That split now works in three layers:
+
+- `sessions` source
+  - Raw transcript evidence and detailed recall.
+- `memory/YYYY-MM-DD.md`
+  - Daily structured summaries and short-term explicit notes.
+  - Best used as a task-first recall layer:
+    - current main problem / daily theme
+    - main task progress
+    - negative feedback / failure signals
+    - improvement directions
+    - positive progress / validated wins
+    - then durable preference / decision sections
+- `MEMORY.md`
+  - Durable promoted memory such as preferences, stable context, work style,
+    long-term goals, and high-confidence corrections.
 
 ## Memory tools
 
@@ -66,6 +89,20 @@ tool call in try/catch logic.
 - If someone says "remember this," write it down (do not keep it in RAM).
 - This area is still evolving. It helps to remind the model to store memories; it will know what to do.
 - If you want something to stick, **ask the bot to write it** into memory.
+
+Builtin daily rollover and `/reset` now follow the same principle automatically:
+
+- First, generate a grounded structured session summary into the daily note.
+- Then, promote only durable deltas into `MEMORY.md`.
+- Promotion is category-limited and programmatically filtered before the file is
+  rewritten.
+
+In practice:
+
+- `memory/YYYY-MM-DD.md`
+  - keeps day-scoped work progression and short-horizon feedback.
+- `MEMORY.md`
+  - stays conservative and should avoid short-lived task churn.
 
 ## Automatic memory flush (pre-compaction ping)
 
@@ -656,8 +693,6 @@ agents: {
 
 You can optionally index **session transcripts** and surface them via `memory_search`.
 This is gated behind an experimental flag.
-The default source list can remain `["memory"]`; add `sessions` only when you
-want raw transcript recall.
 
 ```json5
 agents: {
@@ -673,8 +708,8 @@ agents: {
 Notes:
 
 - Session indexing is **opt-in** (off by default).
-- Use both curated memory files and session recall only when raw transcript
-  lookup is desired, for example `sources: ["memory", "sessions"]`.
+- Recommended direction for builtin memory: use both curated memory files and
+  session recall together, for example `sources: ["memory", "sessions"]`.
 - Session updates are debounced and **indexed asynchronously** once they cross delta thresholds (best-effort).
 - `memory_search` never blocks on indexing; results can be slightly stale until background sync finishes.
 - Results still include snippets only; `memory_get` remains limited to memory files.

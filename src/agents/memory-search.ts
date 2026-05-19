@@ -112,7 +112,7 @@ const DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS = 30;
 const DEFAULT_CACHE_ENABLED = true;
 const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
 const DEFAULT_POSTGRES_PORT = 5432;
-const DEFAULT_POSTGRES_SCHEMA = "openclaw_memory";
+const DEFAULT_POSTGRES_SCHEMA = "agent_memory";
 const DEFAULT_POSTGRES_POOL_MAX = 10;
 
 function parseConfigNumber(

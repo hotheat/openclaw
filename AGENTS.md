@@ -28,6 +28,8 @@
 
 ## Key Directories
 
+- Current working directory `~/github/openclaw-integration` is the local runtime directory for this environment.
+- Local runtime config lives at `~/.openclaw/openclaw.json`; use that path when inspecting or updating the active OpenClaw configuration.
 - Docs are hosted on Mintlify (docs.openclaw.ai).
 - For plugin, architecture, or test-impact work, read `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md` first.
 - Internal doc links in `docs/**/*.md`: root-relative, no `.md`/`.mdx` (example: `[Config](/configuration)`).
@@ -48,6 +50,12 @@
 - `ui/`: gateway Control UI and WebChat frontend. Refs: `ui/package.json:1`.
 - `apps/`: macOS/iOS/Android clients and shared native code. Refs: `apps/macos/Package.swift:6`.
 - `docs/`: Mintlify product docs; use the `.codex/docs/*` files below as the short index before diving deeper.
+
+## Git Workflow
+
+- Do not commit directly on `otr-integration-v2.22`.
+- Before committing, check the current branch. If it is `otr-integration-v2.22`, create a new branch first.
+- New branch names and commit messages should use conventional prefixes such as `feat:`, `fix:`, `docs:`, or `refactor:`.
 
 ## Essential Commands
 

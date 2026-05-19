@@ -63,6 +63,31 @@ describe("memory search config", () => {
     expect(resolved?.fallback).toBe("none");
   });
 
+  it("defaults postgres schema to agent_memory when omitted", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "postgres",
+              postgres: {
+                host: "${POSTGRES__HOST}",
+                port: 5432,
+                database: "${POSTGRES__DATABASE}",
+                user: "${POSTGRES__USERNAME}",
+                password: "${POSTGRES__PASSWORD}",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.store.postgres?.schema).toBe("agent_memory");
+  });
+
   it("merges defaults and overrides", () => {
     const cfg = asConfig({
       agents: {
@@ -122,7 +147,7 @@ describe("memory search config", () => {
                 database: "${POSTGRES__DATABASE}",
                 user: "${POSTGRES__USERNAME}",
                 password: "${POSTGRES__PASSWORD}",
-                schema: "openclaw_memory",
+                schema: "agent_memory",
                 ssl: false,
                 poolMax: 10,
                 echo: false,

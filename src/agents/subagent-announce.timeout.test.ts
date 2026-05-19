@@ -35,6 +35,10 @@ vi.mock("../config/config.js", async (importOriginal) => {
 });
 
 vi.mock("../config/sessions.js", () => ({
+  appendAssistantMessageToSessionTranscript: vi.fn(async () => ({
+    ok: true,
+    sessionFile: "/tmp/session.jsonl",
+  })),
   loadSessionStore: vi.fn(() => sessionStore),
   resolveAgentIdFromSessionKey: () => "main",
   resolveStorePath: () => "/tmp/sessions-main.json",

@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const execFileMock = vi.hoisted(() => vi.fn());
@@ -11,6 +14,7 @@ import { parseSystemdExecStart } from "./systemd-unit.js";
 import {
   isSystemdUserServiceAvailable,
   parseSystemdShow,
+  readSystemdServiceExecStart,
   restartSystemdService,
   resolveSystemdUserUnitPath,
   stopSystemdService,
@@ -57,6 +61,41 @@ describe("systemd runtime parsing", () => {
       execMainStatus: 2,
       execMainCode: "exited",
     });
+  });
+});
+
+describe("readSystemdServiceExecStart", () => {
+  it("loads gateway token from drop-in EnvironmentFile", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-systemd-env-"));
+    const unitDir = path.join(home, ".config", "systemd", "user");
+    const dropInDir = path.join(unitDir, "openclaw-gateway.service.d");
+    const envDir = path.join(home, ".openclaw");
+    await fs.mkdir(dropInDir, { recursive: true });
+    await fs.mkdir(envDir, { recursive: true });
+    await fs.writeFile(
+      path.join(unitDir, "openclaw-gateway.service"),
+      [
+        "[Service]",
+        "ExecStart=/usr/bin/node /repo/dist/index.js gateway --port 18789",
+        "Environment=OPENCLAW_GATEWAY_PORT=18789",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(dropInDir, "env.conf"),
+      ["[Service]", `EnvironmentFile=-${path.join(envDir, ".env")}`, ""].join("\n"),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(envDir, ".env"),
+      ["OPENCLAW_GATEWAY_TOKEN=env-token", "OTHER_KEY=ignored", ""].join("\n"),
+      "utf8",
+    );
+
+    const command = await readSystemdServiceExecStart({ HOME: home });
+
+    expect(command?.environment?.OPENCLAW_GATEWAY_TOKEN).toBe("env-token");
   });
 });
 

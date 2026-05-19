@@ -1232,7 +1232,8 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
       alice: ["telegram:123456789", "discord:987654321012345678"],
     },
     reset: {
-      mode: "daily", // daily | idle
+      mode: "daily", // daily | weekly | idle
+      weekday: 1, // 0-6, Sunday-Saturday; used with mode: "weekly"
       atHour: 4,
       idleMinutes: 60,
     },
@@ -1271,8 +1272,9 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
   - `per-channel-peer`: isolate per channel + sender (recommended for multi-user inboxes).
   - `per-account-channel-peer`: isolate per account + channel + sender (recommended for multi-account).
 - **`identityLinks`**: map canonical ids to provider-prefixed peers for cross-channel session sharing.
-- **`reset`**: primary reset policy. `daily` resets at `atHour` local time; `idle` resets after `idleMinutes`. When both configured, whichever expires first wins.
+- **`reset`**: primary reset policy. Omit it to keep reusing sessions; the bundled session-memory hook may still perform daily memory capture without changing `sessionId`. Set `daily` to reset at `atHour` local time, `weekly` to reset at `weekday` + `atHour` local time, or `idle` to reset after `idleMinutes`. When `idleMinutes` is configured with a scheduled mode, whichever expires first wins.
 - **`resetByType`**: per-type overrides (`direct`, `group`, `thread`). Legacy `dm` accepted as alias for `direct`.
+- **`resetByChannel`**: per-channel overrides that take precedence over `reset` and `resetByType`.
 - **`mainKey`**: legacy field. Runtime now always uses `"main"` for the main direct-chat bucket.
 - **`sendPolicy`**: match by `channel`, `chatType` (`direct|group|channel`, with legacy `dm` alias), `keyPrefix`, or `rawKeyPrefix`. First deny wins.
 - **`maintenance`**: `warn` warns the active session on eviction; `enforce` applies pruning and rotation.

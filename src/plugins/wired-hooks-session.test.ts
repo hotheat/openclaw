@@ -30,13 +30,29 @@ describe("session hook runner methods", () => {
     const runner = createHookRunner(registry);
 
     await runner.runSessionEnd(
-      { sessionId: "abc-123", messageCount: 42 },
-      { sessionId: "abc-123", agentId: "main" },
+      {
+        sessionId: "abc-123",
+        sessionKey: "agent:main:abc",
+        messageCount: 42,
+        reason: "daily",
+        sessionFile: "/tmp/abc-123.jsonl",
+        transcriptArchived: false,
+        nextSessionId: "def-456",
+      },
+      { sessionId: "abc-123", sessionKey: "agent:main:abc", agentId: "main" },
     );
 
     expect(handler).toHaveBeenCalledWith(
-      { sessionId: "abc-123", messageCount: 42 },
-      { sessionId: "abc-123", agentId: "main" },
+      {
+        sessionId: "abc-123",
+        sessionKey: "agent:main:abc",
+        messageCount: 42,
+        reason: "daily",
+        sessionFile: "/tmp/abc-123.jsonl",
+        transcriptArchived: false,
+        nextSessionId: "def-456",
+      },
+      { sessionId: "abc-123", sessionKey: "agent:main:abc", agentId: "main" },
     );
   });
 

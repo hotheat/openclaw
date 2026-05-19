@@ -1066,6 +1066,65 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("old tool output");
   });
 
+  it("does not attach export-file handoff paths to direct completion delivery", async () => {
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: [
+                "已完成一版可交付的内部扫描。",
+                "",
+                "<SUBAGENT_HANDOFF>",
+                JSON.stringify({
+                  mode: "export-file",
+                  summary: "已完成 GLP-1 路线扫描。",
+                  reason: "该任务信息量较大，适合文件交付。",
+                  export: {
+                    path: "artifacts/exports/feishu/glp1-route-scan-20260518/glp1-route-scan.md",
+                    title: "GLP-1 路线扫描",
+                    mime: "text/markdown",
+                  },
+                }),
+                "</SUBAGENT_HANDOFF>",
+              ].join("\n"),
+            },
+          ],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-export-file",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
+    expect(call?.params).toEqual(
+      expect.objectContaining({
+        channel: "discord",
+        to: "channel:12345",
+      }),
+    );
+    expect(call?.params?.mediaUrls).toBeUndefined();
+    expect(call?.params?.message).toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
+    expect(call?.params).not.toMatchObject({
+      channel: "discord",
+      to: "channel:12345",
+      mediaUrls: ["artifacts/exports/feishu/glp1-route-scan-20260518/glp1-route-scan.md"],
+    });
+  });
+
   it("falls back to latest tool output for completion-mode when assistant output is empty", async () => {
     chatHistoryMock.mockResolvedValueOnce({
       messages: [

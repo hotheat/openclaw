@@ -44,7 +44,7 @@ Hooks (3/3 ready)
 Ready:
   🚀 boot-md ✓ - Run BOOT.md on gateway startup
   📝 command-logger ✓ - Log all command events to a centralized audit file
-  💾 session-memory ✓ - Append a structured memory summary when /reset is issued
+  💾 session-memory ✓ - 保存结构化 reset 摘要与 daily rollover 记忆
 ```
 
 **示例（详细模式）：**
@@ -90,7 +90,7 @@ openclaw hooks info session-memory
 ```
 💾 session-memory ✓ Ready
 
-Append a structured memory summary when /reset is issued
+保存结构化 reset 摘要与 daily rollover 记忆
 
 Details:
   Source: openclaw-bundled
@@ -244,7 +244,8 @@ openclaw hooks update --all
 
 ### session-memory
 
-在你执行 `/reset` 时向记忆追加结构化会话总结。内置 runtime 在 daily rollover 时也会复用同一逻辑。`/new` 不触发 session memory capture。
+在你执行 `/reset` 时保存结构化摘要，builtin runtime 也会在 daily
+rollover 时复用同一条 helper。
 
 **启用：**
 
@@ -252,7 +253,7 @@ openclaw hooks update --all
 openclaw hooks enable session-memory
 ```
 
-**输出：** `~/.openclaw/workspace/memory/YYYY-MM-DD.md`
+**输出：** `~/.openclaw/workspace/memory/YYYY-MM-DD.md`，以及按需更新的 `MEMORY.md`
 
 **参见：** [session-memory 文档](/automation/hooks#session-memory)
 

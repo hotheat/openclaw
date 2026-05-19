@@ -95,6 +95,13 @@ const HookConfigSchema = z
   // whole config invalid (which triggers doctor/best-effort loads).
   .passthrough();
 
+const SessionMemoryHookConfigSchema = HookConfigSchema.extend({
+  messages: z.number().int().positive().optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+});
+
 const HookInstallRecordSchema = z
   .object({
     ...InstallRecordShape,
@@ -106,7 +113,16 @@ export const InternalHooksSchema = z
   .object({
     enabled: z.boolean().optional(),
     handlers: z.array(InternalHookHandlerSchema).optional(),
-    entries: z.record(z.string(), HookConfigSchema).optional(),
+    entries: z
+      .record(z.string(), HookConfigSchema)
+      .and(
+        z
+          .object({
+            "session-memory": SessionMemoryHookConfigSchema.optional(),
+          })
+          .partial(),
+      )
+      .optional(),
     load: z
       .object({
         extraDirs: z.array(z.string()).optional(),

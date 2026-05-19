@@ -14,6 +14,7 @@ import {
   mergeSessionEntry,
   resolveAndPersistSessionFile,
   resolveChannelResetConfig,
+  resolveDailyResetAtMs,
   resolveThreadFlag,
   resolveSessionResetPolicy,
   resolveSessionResetType,
@@ -53,6 +54,11 @@ import {
 
 const log = createSubsystemLogger("session-init");
 const DAILY_MEMORY_CAPTURE_PENDING_TTL_MS = 10 * 60 * 1000;
+
+function resolveExplicitSessionEndReason(triggerBodyNormalized: string): "new" | "reset" {
+  const firstToken = triggerBodyNormalized.trim().split(/\s+/, 1)[0]?.toLowerCase();
+  return firstToken === "/reset" ? "reset" : "new";
+}
 
 type ResolvedSessionStoreTarget = {
   sessionCtxForState: MsgContext;
@@ -444,7 +450,6 @@ export async function initSessionState(params: {
   const pendingRecentMediaSnapshotInit = isPendingRecentMediaSnapshotInit(entry);
   const existingSessionEntry = pendingRecentMediaSnapshotInit ? undefined : entry;
   const storedRecentMediaSnapshot = entry?.recentMediaSnapshot;
-  const rolloverSourceEntry = existingSessionEntry ? { ...existingSessionEntry } : undefined;
   const previousSessionEntry =
     resetTriggered && existingSessionEntry ? { ...existingSessionEntry } : undefined;
   const now = Date.now();
@@ -476,7 +481,22 @@ export async function initSessionState(params: {
         policy: resetPolicy,
       })
     : undefined;
-  const freshEntry = freshness?.fresh ?? false;
+  const dailyMemoryResetAt =
+    existingSessionEntry != null ? resolveDailyResetAtMs(now, resetPolicy.atHour) : undefined;
+  const shouldCaptureDailyMemoryForExistingSession =
+    existingSessionEntry != null &&
+    dailyMemoryResetAt != null &&
+    existingSessionEntry.updatedAt < dailyMemoryResetAt &&
+    (existingSessionEntry.dailyMemoryCaptureAt ?? 0) < dailyMemoryResetAt &&
+    resolveHookConfig(cfg, "session-memory")?.enabled !== false;
+  const resetFreshness =
+    !resetPolicy.explicit && freshness?.staleReason === "daily"
+      ? { ...freshness, fresh: true, staleReason: undefined }
+      : freshness;
+  const freshEntry = resetFreshness?.fresh ?? false;
+  const endedSessionReason = resetTriggered
+    ? resolveExplicitSessionEndReason(triggerBodyNormalized)
+    : resetFreshness?.staleReason;
 
   if (!isNewSession && freshEntry && existingSessionEntry) {
     sessionId = existingSessionEntry.sessionId;
@@ -672,72 +692,8 @@ export async function initSessionState(params: {
         }),
     },
   );
-
-  const rolloverCaptureTargetSessionId = sessionEntry.sessionId;
-  const shouldCaptureDailyRollover =
-    !resetTriggered &&
-    isNewSession &&
-    rolloverSourceEntry?.sessionId &&
-    resolveHookConfig(cfg, "session-memory")?.enabled !== false &&
-    freshness?.staleReason === "daily" &&
-    rolloverSourceEntry.dailyMemoryCaptureSessionId !== rolloverSourceEntry.sessionId;
-
-  const markedDailyRolloverCapturePending =
-    shouldCaptureDailyRollover && rolloverSourceEntry?.sessionId
-      ? await markDailyMemoryCapturePending({
-          storePath,
-          sessionKey,
-          sourceSessionId: rolloverSourceEntry.sessionId,
-          targetSessionId: rolloverCaptureTargetSessionId,
-        })
-      : false;
-
-  if (markedDailyRolloverCapturePending && rolloverSourceEntry) {
-    void (async () => {
-      let completed = false;
-      try {
-        const result = await captureSessionToMemory({
-          cfg,
-          sessionKey,
-          sessionId: rolloverSourceEntry.sessionId,
-          sessionFile: rolloverSourceEntry.sessionFile,
-          source: "daily-rollover",
-          timestamp: new Date(now),
-        });
-        completed = Boolean(result && result.status !== "skipped-missing-source");
-        if (completed) {
-          archiveSessionTranscripts({
-            sessionId: rolloverSourceEntry.sessionId,
-            storePath,
-            sessionFile: rolloverSourceEntry.sessionFile,
-            agentId,
-            reason: "reset",
-          });
-        }
-      } catch (err) {
-        log.warn(`failed to capture daily rollover memory: ${String(err)}`);
-      } finally {
-        await finishDailyMemoryCapture({
-          storePath,
-          sessionKey,
-          sourceSessionId: rolloverSourceEntry.sessionId,
-          targetSessionId: rolloverCaptureTargetSessionId,
-          completed,
-        });
-      }
-    })();
-  }
-
-  // Archive old transcript so it doesn't accumulate on disk (#14869).
-  if (resetTriggered && previousSessionEntry?.sessionId) {
-    archiveSessionTranscripts({
-      sessionId: previousSessionEntry.sessionId,
-      storePath,
-      sessionFile: previousSessionEntry.sessionFile,
-      agentId,
-      reason: "reset",
-    });
-  }
+  const endedSessionEntry =
+    isNewSession && existingSessionEntry ? { ...existingSessionEntry } : undefined;
 
   const sessionCtx: TemplateContext = {
     ...ctx,
@@ -756,23 +712,137 @@ export async function initSessionState(params: {
     IsNewSession: isNewSession ? "true" : "false",
   };
 
+  const effectiveSessionId = sessionId ?? "";
+  const effectiveAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+  const replacedSessionEntry =
+    isNewSession &&
+    endedSessionEntry?.sessionId &&
+    endedSessionEntry.sessionId !== effectiveSessionId
+      ? endedSessionEntry
+      : undefined;
+  let transcriptArchived = false;
+
+  // Archive old transcript so it doesn't accumulate on disk (#14869).
+  if (replacedSessionEntry) {
+    const archived = archiveSessionTranscripts({
+      sessionId: replacedSessionEntry.sessionId,
+      storePath,
+      sessionFile: replacedSessionEntry.sessionFile,
+      agentId,
+      reason: "reset",
+    });
+    transcriptArchived = archived.length > 0;
+  }
+
+  const shouldCaptureDailyRollover =
+    !resetTriggered &&
+    Boolean(replacedSessionEntry) &&
+    shouldCaptureDailyMemoryForExistingSession &&
+    replacedSessionEntry?.dailyMemoryCaptureSessionId !== replacedSessionEntry?.sessionId &&
+    resolveHookConfig(cfg, "session-memory")?.enabled !== false;
+
+  const markedDailyRolloverCapturePending =
+    shouldCaptureDailyRollover && replacedSessionEntry?.sessionId
+      ? await markDailyMemoryCapturePending({
+          storePath,
+          sessionKey,
+          sourceSessionId: replacedSessionEntry.sessionId,
+          targetSessionId: effectiveSessionId,
+        })
+      : false;
+
+  if (markedDailyRolloverCapturePending && replacedSessionEntry) {
+    const dailyRolloverEntry = replacedSessionEntry;
+    void (async () => {
+      let completed = false;
+      try {
+        const result = await captureSessionToMemory({
+          cfg,
+          sessionKey,
+          sessionId: dailyRolloverEntry.sessionId,
+          sessionFile: dailyRolloverEntry.sessionFile,
+          source: "daily-rollover",
+          timestamp: new Date(now),
+        });
+        completed = Boolean(result && result.status !== "skipped-missing-source");
+      } catch (err) {
+        log.warn(`failed to capture daily rollover memory: ${String(err)}`);
+      } finally {
+        await finishDailyMemoryCapture({
+          storePath,
+          sessionKey,
+          sourceSessionId: dailyRolloverEntry.sessionId,
+          targetSessionId: effectiveSessionId,
+          completed,
+        });
+      }
+    })();
+  }
+
+  const shouldCaptureDailyMemoryInPlace =
+    !replacedSessionEntry && shouldCaptureDailyMemoryForExistingSession && existingSessionEntry;
+  const markedInPlaceDailyCapturePending =
+    shouldCaptureDailyMemoryInPlace && existingSessionEntry?.sessionId
+      ? await markDailyMemoryCapturePending({
+          storePath,
+          sessionKey,
+          sourceSessionId: existingSessionEntry.sessionId,
+          targetSessionId: effectiveSessionId,
+        })
+      : false;
+
+  if (markedInPlaceDailyCapturePending && existingSessionEntry) {
+    const dailyMemoryEntry = {
+      ...existingSessionEntry,
+      sessionFile: sessionEntry.sessionFile ?? existingSessionEntry.sessionFile,
+    };
+    void (async () => {
+      let completed = false;
+      try {
+        const result = await captureSessionToMemory({
+          cfg,
+          sessionKey,
+          sessionId: dailyMemoryEntry.sessionId,
+          sessionFile: dailyMemoryEntry.sessionFile,
+          source: "daily-rollover",
+          timestamp: new Date(now),
+        });
+        completed = Boolean(result && result.status !== "skipped-missing-source");
+      } catch (err) {
+        log.warn(`failed to capture daily memory: ${String(err)}`);
+      } finally {
+        await finishDailyMemoryCapture({
+          storePath,
+          sessionKey,
+          sourceSessionId: dailyMemoryEntry.sessionId,
+          targetSessionId: effectiveSessionId,
+          completed,
+        });
+      }
+    })();
+  }
+
   // Run session plugin hooks (fire-and-forget)
   const hookRunner = getGlobalHookRunner();
   if (hookRunner && isNewSession) {
-    const effectiveSessionId = sessionId ?? "";
-
     // If replacing an existing session, fire session_end for the old one
-    if (previousSessionEntry?.sessionId && previousSessionEntry.sessionId !== effectiveSessionId) {
+    if (replacedSessionEntry) {
       if (hookRunner.hasHooks("session_end")) {
         void hookRunner
           .runSessionEnd(
             {
-              sessionId: previousSessionEntry.sessionId,
+              sessionId: replacedSessionEntry.sessionId,
+              sessionKey,
               messageCount: 0,
+              reason: endedSessionReason,
+              sessionFile: replacedSessionEntry.sessionFile,
+              transcriptArchived,
+              nextSessionId: effectiveSessionId,
             },
             {
-              sessionId: previousSessionEntry.sessionId,
-              agentId: resolveSessionAgentId({ sessionKey, config: cfg }),
+              sessionId: replacedSessionEntry.sessionId,
+              sessionKey,
+              agentId: effectiveAgentId,
             },
           )
           .catch(() => {});
@@ -785,11 +855,13 @@ export async function initSessionState(params: {
         .runSessionStart(
           {
             sessionId: effectiveSessionId,
-            resumedFrom: previousSessionEntry?.sessionId,
+            sessionKey,
+            resumedFrom: endedSessionEntry?.sessionId,
           },
           {
             sessionId: effectiveSessionId,
-            agentId: resolveSessionAgentId({ sessionKey, config: cfg }),
+            sessionKey,
+            agentId: effectiveAgentId,
           },
         )
         .catch(() => {});

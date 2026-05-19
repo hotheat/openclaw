@@ -30,6 +30,21 @@ OpenClaw 记忆是**智能体工作空间中的纯 Markdown 文件**。这些文
   - 精心整理的长期记忆。
   - **仅在主要的私人会话中加载**（绝不在群组上下文中加载）。
 
+在当前 builtin 流程里，daily rollover 和 `/reset` 可以同时更新这两层：
+
+- `memory/YYYY-MM-DD.md`
+  - 接收 grounded daily structured summary block。
+  - 更适合作为“任务态优先”的日级召回层：
+    - 当前主问题 / 当天主线
+    - 主要任务推进
+    - 负向反馈 / 失败信号
+    - 改进方向
+    - 正向进展 / 已验证有效
+    - 然后再补偏好、决策、风险等更稳定的记忆段落
+- `MEMORY.md`
+  - 接收从该 summary 提升出来的长期记忆更新。
+  - 模型内部会输出结构化 JSON patch，但磁盘上的最终文件仍保持 Markdown，便于阅读和稳定索引。
+
 这些文件位于工作空间下（`agents.defaults.workspace`，默认 `~/.openclaw/workspace`）。完整布局参见[智能体工作空间](/concepts/agent-workspace)。
 
 ## 何时写入记忆
@@ -39,6 +54,19 @@ OpenClaw 记忆是**智能体工作空间中的纯 Markdown 文件**。这些文
 - 如果有人说"记住这个"，就写下来（不要只保存在内存中）。
 - 这个领域仍在发展中。提醒模型存储记忆会有帮助；它会知道该怎么做。
 - 如果你想让某些内容持久保存，**请要求机器人将其写入**记忆。
+
+当前 builtin 的 daily rollover 和 `/reset` 也遵循同样的分层原则：
+
+- 先把 grounded structured summary 写入 `memory/YYYY-MM-DD.md`
+- 再只把可持久的 delta 提升到 `MEMORY.md`
+- 提升过程受类别和程序侧规则约束，不允许模型直接整份重写长期记忆
+
+实际使用时可以这样理解：
+
+- `memory/YYYY-MM-DD.md`
+  - 保留当天工作的推进轨迹和短周期反馈。
+- `MEMORY.md`
+  - 保守维护，只沉淀长期稳定事实，不承接当天过程性任务噪声。
 
 ## 自动记忆刷新（压缩前触发）
 

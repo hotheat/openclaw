@@ -16,12 +16,13 @@ metadata:
 
 # Session Memory Hook
 
-Automatically appends a structured memory summary to your workspace daily note when you issue `/reset`.
+Automatically appends a structured memory summary to your workspace daily note
+when you issue `/reset`, and then promotes durable facts into `MEMORY.md`.
 
-Builtin runtime 也会在旧会话因 daily reset 自动 rollover 时复用同一份 summary helper。
+Builtin runtime 也会在会话跨过 daily memory 边界时复用同一份 summary helper。
 这不是新的 hook event。
 它仍受 `session-memory.enabled` 控制。
-idle rollover 不会触发这条自动 summary。
+daily summary 不会自行 reset 或归档会话。
 
 ## What It Does
 
@@ -30,18 +31,17 @@ When you run `/reset` to start a fresh session:
 1. **Finds the previous session** - Uses the pre-reset session entry to locate the correct transcript
 2. **Extracts conversation** - Reads the last N user/assistant messages from the session (default: 15, configurable)
 3. **Generates structured summary** - Uses the configured model to create a grounded structured summary
-4. **Saves to memory** - Appends a new block to `<workspace>/memory/YYYY-MM-DD.md` only when the summary has reliable additions
-5. **Finishes silently** - The capture is internal housekeeping; it does not send a user-visible confirmation
+4. **Saves to memory** - Appends a new block to `<workspace>/memory/YYYY-MM-DD.md`
+5. **Updates long-term memory** - Generates a structured JSON patch and applies it to `<workspace>/MEMORY.md` as Markdown sections
+6. **Finishes silently** - The capture is internal housekeeping; it does not send a user-visible confirmation
 
-When builtin runtime rotates a stale session because of **daily reset**:
+When builtin runtime crosses the daily memory boundary:
 
 1. It reuses the same summary helper in the background
 2. It writes the same structured summary block shape
-3. It does not emit a separate hook event
-4. It skips empty summaries without writing a memory file
-5. It skips idle-triggered rollover
-
-If every structured section is `无可靠新增项。` and there is no researcher export handoff, no Markdown block is written. The daily rollover still marks the old session as processed so it is not retried.
+3. It can update `MEMORY.md` with durable long-term memory
+4. It does not emit a separate hook event
+5. It does not reset or archive the session by itself
 
 ## Output Format
 
@@ -54,10 +54,39 @@ Memory blocks are appended with the following format:
 - **Source**: reset
 - **Source Sessions**: abc123def456
 
+### 当前主问题 / 当天主线
+
+- ...
+
+### 主要任务推进
+
+- ...
+
+### 负向反馈 / 失败信号
+
+- ...
+
+### 改进方向
+
+- ...
+
+### 正向进展 / 已验证有效
+
+- ...
+
 ### 用户偏好
 
 - ...
 ```
+
+推荐把 daily note 视为“任务态优先”的日级工作记忆：
+
+- 先写当天主线、任务推进、正负反馈和改进方向
+- 再写偏好、决策、风险、未完成事项等更适合复用的记忆
+
+Long-term memory is stored in `MEMORY.md` as Markdown, not as raw JSON. The
+model emits a JSON patch internally, and the runtime applies it to stable
+sections such as user context, history, and durable facts.
 
 ## Requirements
 
@@ -69,9 +98,12 @@ The hook uses your configured model provider to generate summaries, so it works 
 
 The hook supports optional configuration:
 
-| Option     | Type   | Default | Description                                                                |
-| ---------- | ------ | ------- | -------------------------------------------------------------------------- |
-| `messages` | number | 15      | Number of recent user/assistant messages to consider for summary grounding |
+| Option      | Type   | Default | Description                                                                                                                        |
+| ----------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`  | number | 15      | Number of recent user/assistant messages to consider for summary grounding                                                         |
+| `provider`  | string | unset   | Optional provider override for session-memory LLM runs; when set alone, runtime tries to pick a registered model for that provider |
+| `model`     | string | unset   | Optional model override for session-memory LLM runs; accepts `provider/model` or an alias and is the most deterministic option     |
+| `timeoutMs` | number | 30000   | Timeout in milliseconds for each session-memory LLM run                                                                            |
 
 Example configuration:
 
@@ -82,7 +114,10 @@ Example configuration:
       "entries": {
         "session-memory": {
           "enabled": true,
-          "messages": 25
+          "messages": 25,
+          "provider": "openai",
+          "model": "gpt-4.1-mini",
+          "timeoutMs": 60000
         }
       }
     }
@@ -93,7 +128,9 @@ Example configuration:
 The hook automatically:
 
 - Uses your workspace directory (`~/.openclaw/workspace` by default)
-- Reuses the same helper for builtin daily rollover summaries
+- Reuses the same helper for builtin daily memory summaries without requiring a session reset
+- Applies long-term memory updates to `MEMORY.md` using a structured patch workflow
+- Uses the same hook-level provider/model override for summary generation, long-term patch generation, and same-category fact consolidation when configured
 - Falls back to a minimal empty-section block if summary generation fails
 
 ## Disabling

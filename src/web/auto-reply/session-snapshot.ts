@@ -64,6 +64,7 @@ export function getSessionSnapshot(
     resetPolicy,
     resetType,
     dailyResetAt: freshness.dailyResetAt,
+    weeklyResetAt: freshness.weeklyResetAt,
     idleExpiresAt: freshness.idleExpiresAt,
   };
 }

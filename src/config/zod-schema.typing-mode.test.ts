@@ -13,3 +13,17 @@ describe("typing mode schema reuse", () => {
     expect(() => AgentDefaultsSchema.parse({ typingMode: "soon" })).toThrow();
   });
 });
+
+describe("session reset schema", () => {
+  it("accepts weekly reset policy values", () => {
+    expect(() =>
+      SessionSchema.parse({
+        reset: {
+          mode: "weekly",
+          weekday: 1,
+          atHour: 4,
+        },
+      }),
+    ).not.toThrow();
+  });
+});

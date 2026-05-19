@@ -74,7 +74,7 @@ POSTGRES__ECHO=false
             database: "${POSTGRES__DATABASE}",
             user: "${POSTGRES__USERNAME}",
             password: "${POSTGRES__PASSWORD}",
-            schema: "openclaw_memory",
+            schema: "agent_memory",
             ssl: false,
             poolMax: 10,
             echo: "${POSTGRES__ECHO}",
@@ -119,12 +119,12 @@ POSTGRES__ECHO=false
 说明：
 
 - PostgreSQL 继续使用现有数据库 `agent_server`
-- memory 表统一落在 schema `openclaw_memory`
+- memory 表统一落在 schema `agent_memory`
 - 不新增独立 `memory` 数据库，先采用“共库分 schema”策略
 
 ## Schema Design
 
-使用单数据库 `agent_server`，单 schema `openclaw_memory`。不做“一 agent 一库”，而是共享表并用 `agent_id` 隔离。
+使用单数据库 `agent_server`，单 schema `agent_memory`。不做“一 agent 一库”，而是共享表并用 `agent_id` 隔离。
 
 选择该方案的原因：
 
@@ -142,7 +142,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 ### Tables
 
-#### `openclaw_memory.index_meta`
+#### `agent_memory.index_meta`
 
 - `agent_id text primary key`
 - `provider text not null`
@@ -154,7 +154,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 - `vector_dims integer`
 - `updated_at timestamptz not null default now()`
 
-#### `openclaw_memory.files`
+#### `agent_memory.files`
 
 - `agent_id text not null`
 - `path text not null`
@@ -164,7 +164,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 - `size bigint not null`
 - `primary key (agent_id, path)`
 
-#### `openclaw_memory.chunks`
+#### `agent_memory.chunks`
 
 - `agent_id text not null`
 - `id text not null`
@@ -186,7 +186,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 - 若后续要混用不同维度模型，再升级为按模型分表或按模型建部分索引。
 - `search_tokens` 是应用侧生成的检索 token 串，例如 `今天 讨论 中文 分词 中文分词`。
 
-#### `openclaw_memory.embedding_cache`
+#### `agent_memory.embedding_cache`
 
 - `provider text not null`
 - `model text not null`
@@ -205,20 +205,20 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 ```sql
 CREATE INDEX files_agent_source_idx
-  ON openclaw_memory.files (agent_id, source);
+  ON agent_memory.files (agent_id, source);
 
 CREATE INDEX chunks_agent_model_idx
-  ON openclaw_memory.chunks (agent_id, model);
+  ON agent_memory.chunks (agent_id, model);
 
 CREATE INDEX chunks_agent_path_idx
-  ON openclaw_memory.chunks (agent_id, path);
+  ON agent_memory.chunks (agent_id, path);
 
 CREATE INDEX chunks_tokens_trgm_idx
-  ON openclaw_memory.chunks
+  ON agent_memory.chunks
   USING gin (search_tokens gin_trgm_ops);
 
 CREATE INDEX chunks_embedding_hnsw_idx
-  ON openclaw_memory.chunks
+  ON agent_memory.chunks
   USING hnsw (embedding vector_cosine_ops);
 ```
 
@@ -503,7 +503,7 @@ Mitigation:
 
 - [ ] `memory.backend = builtin` 时，可通过 `memorySearch.store.driver` 在 SQLite 与 PostgreSQL 间切换
 - [ ] `~/.openclaw/.env` 中的 `POSTGRES__*` 可在 `openclaw.json` 里通过 `${VAR}` 正常引用
-- [ ] PostgreSQL 继续使用 `agent_server` 数据库，并通过 `openclaw_memory` schema 隔离
+- [ ] PostgreSQL 继续使用 `agent_server` 数据库，并通过 `agent_memory` schema 隔离
 - [ ] PostgreSQL 支持 memory 文件索引、embedding cache、混合检索
 - [ ] `openclaw memory init-store` 可幂等完成 PostgreSQL 初始化建表
 - [ ] `openclaw memory index --force` 可直接从 `memory/*.md` 写入 PostgreSQL

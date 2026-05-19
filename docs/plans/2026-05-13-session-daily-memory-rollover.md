@@ -26,6 +26,15 @@ OpenClaw 现有的 builtin `session-memory` 路径会在显式 `/new`、`/reset`
 - `memory/YYYY-MM-DD.md`：当天 structured summary + running notes
 - `MEMORY.md`：跨天稳定的长期事实
 
+后续如果把 transcript recall 降到次要层，`memory/YYYY-MM-DD.md` 还可以继续向“任务态优先”的 daily work memory 演化：
+
+- 当前主问题 / 当天主线
+- 主要任务推进
+- 负向反馈 / 失败信号
+- 改进方向
+- 正向进展 / 已验证有效
+- 再补偏好、决策、风险、未完成事项等记忆态 section
+
 ## Requirements
 
 - 仅当旧会话因 **daily reset** 失效并切换新会话时，自动生成一份 structured summary。
@@ -49,8 +58,7 @@ OpenClaw 现有的 builtin `session-memory` 路径会在显式 `/new`、`/reset`
   - `summary`；若缺失则退回 `export.title`
 - 自动 rollover 触发的 summary 必须是 **best-effort 异步执行**，不能阻塞新会话首条回复。
 - 同一个旧 `sessionId` 只能被自动 summary 一次，避免重复沉淀。
-- builtin memory 的 raw transcript recall 保持显式 opt-in；默认可以继续只使用 `sources: ["memory"]`。
-- 如需同时召回原始会话，需要显式设置 `experimental.sessionMemory: true` 和 `sources: ["memory", "sessions"]`。
+- builtin memory 在该方案中推荐默认使用 `sources: ["memory", "sessions"]`，但这是推荐默认，不是自动迁移承诺。
 
 ## Non-Goals
 
@@ -103,14 +111,21 @@ OpenClaw 现有的 builtin `session-memory` 路径会在显式 `/new`、`/reset`
    - `/new` 不再触发 memory 总结。
    - 显式人工总结入口只保留 `/reset`。
 
-3. **Keep `sessions` as an opt-in raw recall layer**
-   - builtin memory 默认可以继续只索引 `sources: ["memory"]`。
-   - raw transcript 由可选 `sessions` source 负责。
-   - 启用时必须显式设置 `experimental.sessionMemory: true` 和 `sources: ["memory", "sessions"]`。
+3. **Recommend `sessions` as the raw recall layer**
+   - builtin memory 推荐默认改为 `sources: ["memory", "sessions"]`。
+   - raw transcript 由 `sessions` source 负责。
 
 4. **Write summary into the new day’s daily note**
    - summary 追加到新一天的 `memory/YYYY-MM-DD.md`。
    - 不再生成 `memory/YYYY-MM-DD-slug.md`。
+
+4.5 **Promote durable memory into `MEMORY.md`**
+
+- daily rollover / `/reset` 在写完 daily structured summary 后，会进一步尝试更新 `MEMORY.md`。
+- 输入给 LLM 的是“当前结构化长期记忆 + 新 summary + 清洗 transcript”。
+- LLM 输出严格 JSON patch。
+- 程序侧负责校验、去重、删除旧 facts、阈值过滤、限制最大 facts 数量。
+- 最终仍渲染成 Markdown 的稳定 section，而不是把 JSON 直接写进 `MEMORY.md`。
 
 5. **Append-only independent blocks**
    - 每次 daily rollover 或 `/reset` 只追加一个新的 summary block。
@@ -152,6 +167,36 @@ daily structured summary 的职责：
 - `sessions` source 保证“不丢证据”
 - `memory/YYYY-MM-DD.md` 保证“提炼可用信息”
 - `MEMORY.md` 才承接“跨天长期稳定事实”
+
+### Daily rollover also promotes long-term memory
+
+在新方案里，daily rollover 不只写 daily note。
+
+它还会基于：
+
+- 当前 `MEMORY.md` 的结构化状态
+- 刚生成的 grounded daily structured summary
+- 必要时的清洗 transcript
+
+生成一份 **structured JSON patch**，再由程序侧 apply 到 `MEMORY.md`。
+
+这个 patch 只是一份更新协议，不直接作为 `MEMORY.md` 的存储格式。
+最终落盘仍然是 Markdown，以保持：
+
+- 与当前 builtin memory 的 `chunkMarkdown` / `memory_search` 兼容
+- 主会话 bootstrap 注入时的可读性
+- 人工直接查看和编辑的可维护性
+
+长期记忆提升只面向以下类别：
+
+- `preference`
+- `knowledge`
+- `context`
+- `behavior`
+- `goal`
+- `correction`
+
+其中 `correction` 要求更高置信度门槛，且应尽量带上触发该修正的错误摘要。
 
 ### Structured summary is still not Dreaming
 
@@ -209,6 +254,7 @@ flush 产生的 `memory/YYYY-MM-DD.md` 变更，继续依赖默认的文件监�
 
 - daily rollover
   - 当旧会话因 `staleReason === "daily"` 切到新 `sessionId` 时触发
+  - 实现上挂在 enriched `session_end(reason="daily")` 语义上
   - summary 异步执行
 
 - idle rollover
@@ -305,13 +351,16 @@ summary 只允许沉淀以下高信号类别：
 
 - `src/auto-reply/reply/session.ts`
   - daily rollover 仍是自动 summary 的接入点
-  - 但调用目标从 transcript capture helper 改为 structured summary helper
+  - `session_end` payload 需要补齐 `reason / sessionKey / sessionFile / nextSessionId`
+  - 自动 summary 与 `session_end(reason="daily")` 使用同一条结束语义
+  - 调用目标从 transcript capture helper 改为 structured summary helper
   - `/new` 路径不再触发 capture
 
 - `src/hooks/bundled/session-memory/handler.ts`
   - 从 transcript-style `captureSessionToMemory(...)` 重构为 structured summary helper
   - `/reset` 复用该 helper
   - `/new` 从主逻辑中移除
+  - 新增 `MEMORY.md` 的 structured patch apply 与 Markdown render
 
 - `src/config/sessions/types.ts`
   - 保留 daily summary 幂等字段，例如 `dailyMemoryCaptureAt` / `dailyMemoryCaptureSessionId`
@@ -363,6 +412,28 @@ summary 只允许沉淀以下高信号类别：
 9. **明确噪声过滤规则**
    - 文档中列出必须忽略的模板文本和 metadata 源。
 
+### Phase 3.5: Promote durable memory
+
+9.5 **定义长期记忆 patch schema**
+
+- `user.workContext / personalContext / topOfMind`
+- `history.recentMonths / earlierContext / longTermBackground`
+- `newFacts[]`
+- `factsToRemove[]`
+
+  9.6 **把 JSON patch 和 Markdown 存储分离**
+
+- JSON 只作为 LLM 输出契约。
+- `MEMORY.md` 仍写 Markdown。
+
+  9.7 **定义 facts 更新规则**
+
+- `confidence` 过滤
+- `correction >= 0.95`
+- 去重优先按 `category + normalized content`
+- 超过上限时程序侧裁剪
+- 删除只允许按现有 `fact_id`
+
 ### Phase 4: Keep runtime guarantees
 
 10. **保持 fire-and-forget**
@@ -393,6 +464,9 @@ summary 只允许沉淀以下高信号类别：
   - 输出为 append-only block
   - 不再生成 `YYYY-MM-DD-slug.md`
   - 不包含 raw transcript 副本
+  - `MEMORY.md` 被更新为 Markdown structured memory，而不是 JSON
+  - 现有人工内容不被 structured memory block 覆盖
+  - `factsToRemove`、生效阈值、去重、`correction` 门槛按规则工作
 
 - Filtering tests
   - 过滤 security policy / startup context / quoted memory / metadata JSON / handoff 原文
@@ -418,10 +492,16 @@ summary 只允许沉淀以下高信号类别：
   - **Mitigation**: 保留 `/reset` 作为显式人工总结入口。
 
 - **Risk**: 若不启用 `sessions` source，会削弱 raw transcript recall。
-  - **Mitigation**: 在文档中明确 sessions recall 是 opt-in，并给出启用配置。
+  - **Mitigation**: 在文档中把 `sources: ["memory", "sessions"]` 写成推荐默认。
 
 - **Risk**: structured summary 过度抽象，开始漂。
   - **Mitigation**: 明确要求 grounded extraction，每条结论必须能从 transcript 直接支持。
+
+- **Risk**: 长期记忆提升把短期噪声误写进 `MEMORY.md`。
+  - **Mitigation**: 采用结构化 patch + 程序侧阈值过滤，不允许模型直接改写整份 `MEMORY.md`。
+
+- **Risk**: 直接把 JSON 存进 `MEMORY.md` 会恶化 recall 与人工可读性。
+  - **Mitigation**: JSON 只作为更新协议，最终始终渲染为 Markdown。
 
 - **Risk**: researcher 产物总结泄露绝对路径或读取正文。
   - **Mitigation**: 只记录 workspace-relative `export.path` 和 `summary/title`，不读取文件正文。
@@ -437,8 +517,10 @@ summary 只允许沉淀以下高信号类别：
 - [ ] idle stale 自动切换时，不会追加 summary。
 - [ ] 同一旧 `sessionId` 不会被自动 summary 多次。
 - [ ] summary 不再写 raw transcript 副本，不再依赖 `YYYY-MM-DD-slug.md`。
-- [ ] 文档明确说明 raw transcript recall 需要显式启用 `experimental.sessionMemory: true` 和 `sources: ["memory", "sessions"]`。
+- [ ] builtin memory 的推荐默认明确改为 `sources: ["memory", "sessions"]`。
 - [ ] researcher `export-file` handoff 会被沉淀为“workspace-relative path + 简要描述”。
 - [ ] summary 会过滤安全策略、startup context、quoted memory、metadata JSON 和 handoff 原文等噪声。
 - [ ] 文档明确区分 `sessions` recall、daily structured summary 与 `MEMORY.md` 长期记忆三层职责。
+- [ ] daily rollover / `/reset` 在写 `memory/YYYY-MM-DD.md` 后，会按结构化 patch 更新 `MEMORY.md`。
+- [ ] `MEMORY.md` 的最终存储格式保持为 Markdown，而不是 LLM 输出的 JSON。
 - [ ] pre-compaction memory flush 保留，且 flush 写盘后的入库继续依赖 watcher / incremental sync，而不是新增 compaction-specific rebuild / reindex。

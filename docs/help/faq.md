@@ -1774,14 +1774,15 @@ Send `/new` or `/reset` as a standalone message. See [Session management](/conce
 
 ### Do sessions reset automatically if I never send new
 
-Yes. Sessions expire after `session.idleMinutes` (default **60**). The **next**
-message starts a fresh session id for that chat key. This does not delete
-transcripts - it just starts a new session.
+Only when you configure a reset policy. By default, OpenClaw keeps reusing the
+same session; the bundled session-memory hook may still do a daily memory
+capture without changing the session id. The **next** message starts a fresh
+session id only after an explicit `daily`, `weekly`, or `idle` policy expires.
 
 ```json5
 {
   session: {
-    idleMinutes: 240,
+    reset: { mode: "idle", idleMinutes: 240 },
   },
 }
 ```

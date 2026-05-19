@@ -1580,12 +1580,12 @@ Copilot 令牌从 `COPILOT_GITHUB_TOKEN` 读取（也支持 `GH_TOKEN` / `GITHUB
 
 ### 如果我从不发送 /new，会话会自动重置吗
 
-会。会话在 `session.idleMinutes`（默认 **60**）后过期。**下一条**消息会为该聊天键开始一个新的会话 ID。这不会删除记录——只是开始一个新会话。
+只有配置了重置策略时才会。默认情况下，OpenClaw 会持续复用同一个会话；内置 session-memory hook 仍可能执行每日记忆 capture，但不会更换会话 ID。只有显式配置的 `daily`、`weekly` 或 `idle` 策略过期后，**下一条**消息才会为该聊天键开始一个新的会话 ID。
 
 ```json5
 {
   session: {
-    idleMinutes: 240,
+    reset: { mode: "idle", idleMinutes: 240 },
   },
 }
 ```

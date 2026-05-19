@@ -68,12 +68,14 @@ export type SessionSendPolicyConfig = {
   rules?: SessionSendPolicyRule[];
 };
 
-export type SessionResetMode = "daily" | "idle";
+export type SessionResetMode = "daily" | "weekly" | "idle";
 export type SessionResetConfig = {
   mode?: SessionResetMode;
-  /** Local hour (0-23) for the daily reset boundary. */
+  /** Local weekday (0-6, Sunday-Saturday) for the weekly reset boundary. */
+  weekday?: number;
+  /** Local hour (0-23) for daily/weekly reset boundaries. */
   atHour?: number;
-  /** Sliding idle window (minutes). When set with daily mode, whichever expires first wins. */
+  /** Sliding idle window (minutes). When set with scheduled modes, whichever expires first wins. */
   idleMinutes?: number;
 };
 export type SessionResetByTypeConfig = {

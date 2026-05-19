@@ -48,7 +48,6 @@ const sqlTag = vi.hoisted(() => {
     chunk_tokens: number;
     chunk_overlap: number;
     vector_dims: number | null;
-    exclude_globs: string[];
   };
   type CacheRow = {
     provider: string;
@@ -70,18 +69,6 @@ const sqlTag = vi.hoisted(() => {
   const cache = new Map<string, CacheRow>();
   const beginCalls: string[] = [];
   const txCalls: string[] = [];
-
-  function projectMetaRow(query: string, row: MetaRow): Partial<MetaRow> {
-    const selectClause = query.match(/SELECT\s+([\s\S]*?)\s+FROM \?/i)?.[1];
-    if (!selectClause) {
-      return row;
-    }
-    const selectedColumns = selectClause
-      .split(",")
-      .map((column) => column.trim())
-      .filter((column): column is keyof MetaRow => column in row);
-    return Object.fromEntries(selectedColumns.map((column) => [column, row[column]]));
-  }
 
   const tag = Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -159,7 +146,6 @@ const sqlTag = vi.hoisted(() => {
           model,
           providerKey,
           sources,
-          excludeGlobs,
           chunkTokens,
           chunkOverlap,
           vectorDims,
@@ -174,9 +160,6 @@ const sqlTag = vi.hoisted(() => {
           chunk_tokens: Number(chunkTokens),
           chunk_overlap: Number(chunkOverlap),
           vector_dims: vectorDims == null ? null : Number(vectorDims),
-          exclude_globs: Array.isArray(excludeGlobs)
-            ? excludeGlobs.map((pattern) => String(pattern))
-            : [],
         });
         return Promise.resolve([]);
       }
@@ -242,7 +225,7 @@ const sqlTag = vi.hoisted(() => {
       if (query.includes("FROM ?") && firstArgText.includes("index_meta")) {
         const [, agentId] = values;
         const row = meta.get(String(agentId));
-        return Promise.resolve(row ? [projectMetaRow(query, row)] : []);
+        return Promise.resolve(row ? [row] : []);
       }
       if (query.includes("FROM ?") && firstArgText.includes("embedding_cache")) {
         if (query.includes("COUNT(*)::int AS count")) {
@@ -484,7 +467,7 @@ function createConfig(): OpenClawConfig {
               database: "agent_server",
               user: "postgres",
               password: "secret",
-              schema: "openclaw_memory",
+              schema: "agent_memory",
               ssl: false,
               poolMax: 10,
               echo: false,
@@ -543,7 +526,7 @@ describe("PostgresMemoryManager", () => {
     expect(ensurePostgresMemorySchema).toHaveBeenCalledTimes(1);
     expect(manager?.status().custom).toMatchObject({
       driver: "postgres",
-      schema: "openclaw_memory",
+      schema: "agent_memory",
     });
     expect(manager?.status().vector?.available).toBe(true);
     await manager?.close?.();
@@ -727,13 +710,6 @@ describe("PostgresMemoryManager", () => {
     expect(updatedManager?.status().files).toBe(1);
     expect(
       Array.from(sqlTag.files.values()).some((row) => row.path.endsWith("security-policy.md")),
-    ).toBe(false);
-
-    sqlTag.txCalls.length = 0;
-    await updatedManager?.sync?.({ reason: "test" });
-
-    expect(
-      sqlTag.txCalls.some((query) => query.startsWith("DELETE FROM ? WHERE agent_id = ?")),
     ).toBe(false);
     await updatedManager?.close?.();
   });

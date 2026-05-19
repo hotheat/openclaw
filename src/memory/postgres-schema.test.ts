@@ -77,7 +77,7 @@ describe("ensurePostgresMemorySchema", () => {
     database: "agent_server",
     user: "postgres",
     password: "secret",
-    schema: "openclaw_memory",
+    schema: "agent_memory",
     ssl: false,
     poolMax: 10,
     echo: false,
@@ -124,7 +124,7 @@ describe("ensurePostgresMemorySchema", () => {
 
     expect(
       sql.queries.some((query) =>
-        query.includes('CREATE TABLE IF NOT EXISTS "openclaw_memory"."chunks"'),
+        query.includes('CREATE TABLE IF NOT EXISTS "agent_memory"."chunks"'),
       ),
     ).toBe(true);
     expect(sql.queries.some((query) => query.includes("gin_trgm_ops"))).toBe(false);

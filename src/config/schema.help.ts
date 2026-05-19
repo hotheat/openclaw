@@ -711,7 +711,7 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.memorySearch.store.postgres.password":
     "Database password for PostgreSQL-backed builtin memory search. Use secret/env substitution and avoid storing real credentials directly in committed config files.",
   "agents.defaults.memorySearch.store.postgres.schema":
-    "Schema name used to isolate PostgreSQL memory tables from the rest of the database. Keep a dedicated schema such as `openclaw_memory` to simplify permissions and operational cleanup.",
+    "Schema name used to isolate PostgreSQL memory tables from the rest of the database. Keep a dedicated schema such as `agent_memory` to simplify permissions and operational cleanup.",
   "agents.defaults.memorySearch.store.postgres.ssl":
     "Enables or disables PostgreSQL TLS for the builtin memory store. Turn this on for managed or remote databases unless you have a trusted local-only deployment.",
   "agents.defaults.memorySearch.store.postgres.poolMax":
@@ -955,9 +955,11 @@ export const FIELD_HELP: Record<string, string> = {
   "session.reset":
     "Defines the default reset policy object used when no type-specific or channel-specific override applies. Set this first, then layer resetByType or resetByChannel only where behavior must differ.",
   "session.reset.mode":
-    'Selects reset strategy: "daily" resets at a configured hour and "idle" resets after inactivity windows. Keep one clear mode per policy to avoid surprising context turnover patterns.',
+    'Selects reset strategy: "daily" resets at a configured hour, "weekly" resets at a configured weekday and hour, and "idle" resets after inactivity windows. Keep one clear mode per policy to avoid surprising context turnover patterns.',
+  "session.reset.weekday":
+    "Sets local weekday (0-6, Sunday-Saturday) for weekly reset mode. Use with mode=weekly and atHour to align session turnover to an operator workweek.",
   "session.reset.atHour":
-    "Sets local-hour boundary (0-23) for daily reset mode so sessions roll over at predictable times. Use with mode=daily and align to operator timezone expectations for human-readable behavior.",
+    "Sets local-hour boundary (0-23) for daily or weekly reset mode so sessions roll over at predictable times. Use with scheduled modes and align to operator timezone expectations for human-readable behavior.",
   "session.reset.idleMinutes":
     "Sets inactivity window before reset for idle mode and can also act as secondary guard with daily mode. Use larger values to preserve continuity or smaller values for fresher short-lived threads.",
   "session.resetByType":
@@ -1155,6 +1157,12 @@ export const FIELD_HELP: Record<string, string> = {
     "Optional named export for the internal hook handler function when module default export is not used. Set this when one module ships multiple handler entrypoints.",
   "hooks.internal.entries":
     "Configured internal hook entry records used to register concrete runtime handlers and metadata. Keep entries explicit and versioned so production behavior is auditable.",
+  "hooks.internal.entries.session-memory.provider":
+    "Optional provider override for session-memory summary and long-term-memory consolidation runs. Set this when memory summarization should use a different LLM provider than the agent runtime default.",
+  "hooks.internal.entries.session-memory.model":
+    "Optional model override for session-memory LLM runs. Accepts either a provider/model ref or an alias, and is applied consistently to daily summary generation, long-term memory patch generation, and same-category fact consolidation.",
+  "hooks.internal.entries.session-memory.timeoutMs":
+    "Timeout in milliseconds for session-memory LLM runs. Applies consistently to daily summary generation, long-term memory patch generation, and same-category fact consolidation.",
   "hooks.internal.load":
     "Internal hook loader settings controlling where handler modules are discovered at startup. Use constrained load roots to reduce accidental module conflicts or shadowing.",
   "hooks.internal.load.extraDirs":

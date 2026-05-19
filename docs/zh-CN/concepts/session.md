@@ -71,9 +71,11 @@ OpenClaw 将**每个智能体的一个直接聊天会话**视为主会话。直�
 ## 生命周期
 
 - 重置策略：会话被重用直到过期，过期在下一条入站消息时评估。
-- 每日重置：默认为 **Gateway 网关主机本地时间凌晨 4:00**。当会话的最后更新早于最近的每日重置时间时，会话即为过期。
-- 空闲重置（可选）：`idleMinutes` 添加一个滑动空闲窗口。当同时配置每日和空闲重置时，**先过期者**强制新会话。
-- 旧版仅空闲模式：如果你设置了 `session.idleMinutes` 而没有任何 `session.reset`/`resetByType` 配置，OpenClaw 会保持仅空闲模式以保持向后兼容。
+- 默认生命周期：如果没有配置 `session.reset`、`resetByType`、`resetByChannel` 或旧版 `session.idleMinutes`，OpenClaw 会持续复用同一个会话。内置 session-memory hook 仍可能执行每日记忆 capture，但这个 capture 不会更换 `sessionId`。
+- 每日重置（显式开启）：设置 `session.reset.mode: "daily"` 后，会按 Gateway 网关主机本地时间的 `atHour` 边界滚动会话（默认 `4`）。当会话的最后更新早于最近的每日重置时间时，会话即为过期。
+- 每周重置（显式开启）：设置 `session.reset.mode: "weekly"`，并用 `weekday`（`0`-`6`，周日到周六）和 `atHour` 指定每周边界。
+- 空闲重置（显式开启）：`idleMinutes` 添加一个滑动空闲窗口。当同时配置定时重置和空闲重置时，**先过期者**强制新会话。
+- 旧版仅空闲模式：如果你设置了 `session.idleMinutes` 而没有任何 `session.reset`/`resetByType`/`resetByChannel` 配置，OpenClaw 会保持仅空闲模式以保持向后兼容。
 - 按类型覆盖（可选）：`resetByType` 允许你覆盖 `dm`、`group` 和 `thread` 会话的策略（thread = Slack/Discord 线程、Telegram 话题、连接器提供的 Matrix 线程）。
 - 按渠道覆盖（可选）：`resetByChannel` 覆盖渠道的重置策略（适用于该渠道的所有会话类型，优先于 `reset`/`resetByType`）。
 - 重置触发器：精确的 `/new` 或 `/reset`（加上 `resetTriggers` 中的任何额外项）启动新的会话 ID 并传递消息的其余部分。`/new <model>` 接受模型别名、`provider/model` 或提供商名称（模糊匹配）来设置新会话模型。如果单独发送 `/new` 或 `/reset`，OpenClaw 会运行一个简短的"问候"轮次来确认重置。
@@ -117,7 +119,7 @@ OpenClaw 将**每个智能体的一个直接聊天会话**视为主会话。直�
       alice: ["telegram:123456789", "discord:987654321012345678"],
     },
     reset: {
-      // Defaults: mode=daily, atHour=4 (gateway host local time).
+      // 显式重置策略。省略时会持续复用会话。
       // If you also set idleMinutes, whichever expires first wins.
       mode: "daily",
       atHour: 4,

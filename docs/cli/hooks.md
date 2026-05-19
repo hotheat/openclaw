@@ -38,7 +38,7 @@ Ready:
   🚀 boot-md ✓ - Run BOOT.md on gateway startup
   📎 bootstrap-extra-files ✓ - Inject extra workspace bootstrap files during agent bootstrap
   📝 command-logger ✓ - Log all command events to a centralized audit file
-  💾 session-memory ✓ - Append a structured memory summary when /reset is issued
+  💾 session-memory ✓ - Save structured reset summaries and daily rollover memory
 ```
 
 **Example (verbose):**
@@ -84,7 +84,7 @@ openclaw hooks info session-memory
 ```
 💾 session-memory ✓ Ready
 
-Append a structured memory summary when /reset is issued
+Save structured reset summaries and daily rollover memory
 
 Details:
   Source: openclaw-bundled
@@ -247,9 +247,8 @@ global `--yes` to bypass prompts in CI/non-interactive runs.
 
 ### session-memory
 
-Appends a structured session summary to memory when you issue `/reset`.
-The builtin runtime also reuses this hook during daily rollover. `/new` does
-not trigger session memory capture.
+Saves a structured summary when you issue `/reset`, and builtin runtime reuses
+the same helper for daily rollover.
 
 **Enable:**
 
@@ -257,7 +256,7 @@ not trigger session memory capture.
 openclaw hooks enable session-memory
 ```
 
-**Output:** `~/.openclaw/workspace/memory/YYYY-MM-DD.md`
+**Output:** `~/.openclaw/workspace/memory/YYYY-MM-DD.md` and optional `MEMORY.md`
 
 **See:** [session-memory documentation](/automation/hooks#session-memory)
 

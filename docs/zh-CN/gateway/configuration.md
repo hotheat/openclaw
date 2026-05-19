@@ -2685,7 +2685,8 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
       alice: ["telegram:123456789", "discord:987654321012345678"],
     },
     reset: {
-      mode: "daily",
+      mode: "daily", // daily | weekly | idle
+      weekday: 1, // 0-6，周日到周六；mode: "weekly" 时使用
       atHour: 4,
       idleMinutes: 60,
     },
@@ -2723,12 +2724,13 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
   - `per-account-channel-peer`：按账号 + 渠道 + 发送者隔离私聊（推荐用于多账号收件箱）。
 - `identityLinks`：将规范 id 映射到提供商前缀的对等方，以便在使用 `per-peer`、`per-channel-peer` 或 `per-account-channel-peer` 时同一人跨渠道共享私聊会话。
   - 示例：`alice: ["telegram:123456789", "discord:987654321012345678"]`。
-- `reset`：主重置策略。默认为 Gateway 网关主机上本地时间凌晨 4:00 每日重置。
-  - `mode`：`daily` 或 `idle`（当存在 `reset` 时默认：`daily`）。
-  - `atHour`：本地小时（0-23）作为每日重置边界。
-  - `idleMinutes`：滑动空闲窗口（分钟）。当 daily + idle 都配置时，先到期的获胜。
+- `reset`：主重置策略。省略时会持续复用会话；内置 session-memory hook 仍可能执行每日记忆 capture，但不会更换 `sessionId`。
+  - `mode`：`daily`、`weekly` 或 `idle`（当存在 `reset` 时默认：`daily`）。
+  - `weekday`：每周重置边界的本地星期（0-6，周日到周六），仅 `mode: "weekly"` 使用。
+  - `atHour`：本地小时（0-23）作为每日/每周重置边界。
+  - `idleMinutes`：滑动空闲窗口（分钟）。当定时重置 + idle 都配置时，先到期的获胜。
 - `resetByType`：`dm`、`group` 和 `thread` 的每会话覆盖。
-  - 如果你只设置了旧版 `session.idleMinutes` 而没有任何 `reset`/`resetByType`，OpenClaw 保持仅空闲模式以向后兼容。
+  - 如果你只设置了旧版 `session.idleMinutes` 而没有任何 `reset`/`resetByType`/`resetByChannel`，OpenClaw 保持仅空闲模式以向后兼容。
 - `heartbeatIdleMinutes`：可选的心跳检查空闲覆盖（启用时每日重置仍然适用）。
 - `agentToAgent.maxPingPongTurns`：请求者/目标之间的最大回复轮次（0–5，默认 5）。
 - `sendPolicy.default`：无规则匹配时的 `allow` 或 `deny` 回退。

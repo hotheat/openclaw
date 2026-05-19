@@ -188,6 +188,7 @@ When validation fails:
         },
         reset: {
           mode: "daily",
+          weekday: 1,
           atHour: 4,
           idleMinutes: 120,
         },

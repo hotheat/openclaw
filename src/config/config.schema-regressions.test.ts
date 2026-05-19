@@ -64,7 +64,7 @@ describe("config schema regressions", () => {
                 database: "${POSTGRES__DATABASE}",
                 user: "${POSTGRES__USERNAME}",
                 password: "${POSTGRES__PASSWORD}",
-                schema: "openclaw_memory",
+                schema: "agent_memory",
                 ssl: false,
                 poolMax: 10,
                 echo: false,

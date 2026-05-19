@@ -539,19 +539,39 @@ export type PluginHookBeforeMessageWriteResult = {
 export type PluginHookSessionContext = {
   agentId?: string;
   sessionId: string;
+  sessionKey?: string;
 };
 
 // session_start hook
 export type PluginHookSessionStartEvent = {
   sessionId: string;
+  sessionKey?: string;
   resumedFrom?: string;
 };
+
+export type PluginHookSessionEndReason =
+  | "new"
+  | "reset"
+  | "idle"
+  | "daily"
+  | "weekly"
+  | "compaction"
+  | "deleted"
+  | "shutdown"
+  | "restart"
+  | "unknown";
 
 // session_end hook
 export type PluginHookSessionEndEvent = {
   sessionId: string;
+  sessionKey?: string;
   messageCount: number;
   durationMs?: number;
+  reason?: PluginHookSessionEndReason;
+  sessionFile?: string;
+  transcriptArchived?: boolean;
+  nextSessionId?: string;
+  nextSessionKey?: string;
 };
 
 // Subagent context

@@ -104,9 +104,11 @@ the workspace is writable. See [Memory](/concepts/memory) and
 ## Lifecycle
 
 - Reset policy: sessions are reused until they expire, and expiry is evaluated on the next inbound message.
-- Daily reset: defaults to **4:00 AM local time on the gateway host**. A session is stale once its last update is earlier than the most recent daily reset time.
-- Idle reset (optional): `idleMinutes` adds a sliding idle window. When both daily and idle resets are configured, **whichever expires first** forces a new session.
-- Legacy idle-only: if you set `session.idleMinutes` without any `session.reset`/`resetByType` config, OpenClaw stays in idle-only mode for backward compatibility.
+- Default lifecycle: if you do not configure `session.reset`, `resetByType`, `resetByChannel`, or legacy `session.idleMinutes`, OpenClaw keeps reusing the same session. The bundled session-memory hook may still perform a daily memory capture, but that capture does not change the `sessionId`.
+- Daily reset (opt-in): set `session.reset.mode: "daily"` to roll over sessions at `atHour` local time on the gateway host (default `4`). A session is stale once its last update is earlier than the most recent daily reset time.
+- Weekly reset (opt-in): set `session.reset.mode: "weekly"` with `weekday` (`0`-`6`, Sunday-Saturday) and `atHour` to roll over on a weekly boundary.
+- Idle reset (opt-in): `idleMinutes` adds a sliding idle window. When a scheduled reset and idle reset are both configured, **whichever expires first** forces a new session.
+- Legacy idle-only: if you set `session.idleMinutes` without any `session.reset`/`resetByType`/`resetByChannel` config, OpenClaw stays in idle-only mode for backward compatibility.
 - Per-type overrides (optional): `resetByType` lets you override the policy for `direct`, `group`, and `thread` sessions (thread = Slack/Discord threads, Telegram topics, Matrix threads when provided by the connector).
 - Per-channel overrides (optional): `resetByChannel` overrides the reset policy for a channel (applies to all session types for that channel and takes precedence over `reset`/`resetByType`).
 - Reset triggers: exact `/new` or `/reset` (plus any extras in `resetTriggers`) start a fresh session id and pass the remainder of the message through. `/new <model>` accepts a model alias, `provider/model`, or provider name (fuzzy match) to set the new session model. If `/new` or `/reset` is sent alone, OpenClaw runs a short “hello” greeting turn to confirm the reset.
@@ -152,7 +154,7 @@ Runtime override (owner only):
       alice: ["telegram:123456789", "discord:987654321012345678"],
     },
     reset: {
-      // Defaults: mode=daily, atHour=4 (gateway host local time).
+      // Explicit reset policy. Omit this to keep reusing the session.
       // If you also set idleMinutes, whichever expires first wins.
       mode: "daily",
       atHour: 4,

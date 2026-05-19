@@ -15,7 +15,8 @@ import { sensitive } from "./zod-schema.sensitive.js";
 
 const SessionResetConfigSchema = z
   .object({
-    mode: z.union([z.literal("daily"), z.literal("idle")]).optional(),
+    mode: z.union([z.literal("daily"), z.literal("weekly"), z.literal("idle")]).optional(),
+    weekday: z.number().int().min(0).max(6).optional(),
     atHour: z.number().int().min(0).max(23).optional(),
     idleMinutes: z.number().int().positive().optional(),
   })

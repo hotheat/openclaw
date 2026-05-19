@@ -109,10 +109,10 @@ export type SessionEntry = {
   compactionCount?: number;
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
-  dailyMemoryCapturePendingAt?: number;
-  dailyMemoryCapturePendingSessionId?: string;
   dailyMemoryCaptureAt?: number;
   dailyMemoryCaptureSessionId?: string;
+  dailyMemoryCapturePendingAt?: number;
+  dailyMemoryCapturePendingSessionId?: string;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
   label?: string;

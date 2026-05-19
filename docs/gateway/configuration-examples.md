@@ -156,6 +156,7 @@ Save to `~/.openclaw/openclaw.json` and you can DM the bot from that number.
     scope: "per-sender",
     reset: {
       mode: "daily",
+      weekday: 1,
       atHour: 4,
       idleMinutes: 60,
     },

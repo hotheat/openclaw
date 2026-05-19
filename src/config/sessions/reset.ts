@@ -2,24 +2,28 @@ import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import type { SessionConfig, SessionResetConfig } from "../types.base.js";
 import { DEFAULT_IDLE_MINUTES } from "./types.js";
 
-export type SessionResetMode = "daily" | "idle";
+export type SessionResetMode = "daily" | "weekly" | "idle";
 export type SessionResetType = "direct" | "group" | "thread";
 
 export type SessionResetPolicy = {
   mode: SessionResetMode;
   atHour: number;
+  weekday: number;
   idleMinutes?: number;
+  explicit: boolean;
 };
 
 export type SessionFreshness = {
   fresh: boolean;
   dailyResetAt?: number;
+  weeklyResetAt?: number;
   idleExpiresAt?: number;
-  staleReason?: "daily" | "idle";
+  staleReason?: "daily" | "weekly" | "idle";
 };
 
 export const DEFAULT_RESET_MODE: SessionResetMode = "daily";
 export const DEFAULT_RESET_AT_HOUR = 4;
+export const DEFAULT_RESET_WEEKDAY = 1;
 
 const THREAD_SESSION_MARKERS = [":thread:", ":topic:"];
 const GROUP_SESSION_MARKERS = [":group:", ":channel:"];
@@ -82,6 +86,19 @@ export function resolveDailyResetAtMs(now: number, atHour: number): number {
   return resetAt.getTime();
 }
 
+export function resolveWeeklyResetAtMs(now: number, weekday: number, atHour: number): number {
+  const normalizedWeekday = normalizeResetWeekday(weekday);
+  const normalizedAtHour = normalizeResetAtHour(atHour);
+  const resetAt = new Date(now);
+  resetAt.setHours(normalizedAtHour, 0, 0, 0);
+  const daysSinceBoundary = (resetAt.getDay() - normalizedWeekday + 7) % 7;
+  resetAt.setDate(resetAt.getDate() - daysSinceBoundary);
+  if (now < resetAt.getTime()) {
+    resetAt.setDate(resetAt.getDate() - 7);
+  }
+  return resetAt.getTime();
+}
+
 export function resolveSessionResetPolicy(params: {
   sessionCfg?: SessionConfig;
   resetType: SessionResetType;
@@ -96,14 +113,15 @@ export function resolveSessionResetPolicy(params: {
       (params.resetType === "direct"
         ? (sessionCfg?.resetByType as { dm?: SessionResetConfig } | undefined)?.dm
         : undefined));
-  const hasExplicitReset = Boolean(baseReset || sessionCfg?.resetByType);
   const legacyIdleMinutes = params.resetOverride ? undefined : sessionCfg?.idleMinutes;
+  const explicit = Boolean(baseReset || typeReset || legacyIdleMinutes != null);
   const mode =
-    typeReset?.mode ??
-    baseReset?.mode ??
-    (!hasExplicitReset && legacyIdleMinutes != null ? "idle" : DEFAULT_RESET_MODE);
+    typeReset?.mode ?? baseReset?.mode ?? (legacyIdleMinutes != null ? "idle" : DEFAULT_RESET_MODE);
   const atHour = normalizeResetAtHour(
     typeReset?.atHour ?? baseReset?.atHour ?? DEFAULT_RESET_AT_HOUR,
+  );
+  const weekday = normalizeResetWeekday(
+    typeReset?.weekday ?? baseReset?.weekday ?? DEFAULT_RESET_WEEKDAY,
   );
   const idleMinutesRaw = typeReset?.idleMinutes ?? baseReset?.idleMinutes ?? legacyIdleMinutes;
 
@@ -117,7 +135,7 @@ export function resolveSessionResetPolicy(params: {
     idleMinutes = DEFAULT_IDLE_MINUTES;
   }
 
-  return { mode, atHour, idleMinutes };
+  return { mode, atHour, weekday, idleMinutes, explicit };
 }
 
 export function resolveChannelResetConfig(params: {
@@ -146,16 +164,28 @@ export function evaluateSessionFreshness(params: {
     params.policy.mode === "daily"
       ? resolveDailyResetAtMs(params.now, params.policy.atHour)
       : undefined;
+  const weeklyResetAt =
+    params.policy.mode === "weekly"
+      ? resolveWeeklyResetAtMs(params.now, params.policy.weekday, params.policy.atHour)
+      : undefined;
   const idleExpiresAt =
     params.policy.idleMinutes != null
       ? params.updatedAt + params.policy.idleMinutes * 60_000
       : undefined;
   const staleDaily = dailyResetAt != null && params.updatedAt < dailyResetAt;
+  const staleWeekly = weeklyResetAt != null && params.updatedAt < weeklyResetAt;
   const staleIdle = idleExpiresAt != null && params.now > idleExpiresAt;
-  const staleReason = staleIdle ? "idle" : staleDaily ? "daily" : undefined;
+  const staleReason = staleIdle
+    ? "idle"
+    : staleDaily
+      ? "daily"
+      : staleWeekly
+        ? "weekly"
+        : undefined;
   return {
-    fresh: !(staleDaily || staleIdle),
+    fresh: !(staleDaily || staleWeekly || staleIdle),
     dailyResetAt,
+    weeklyResetAt,
     idleExpiresAt,
     staleReason,
   };
@@ -174,6 +204,23 @@ function normalizeResetAtHour(value: number | undefined): number {
   }
   if (normalized > 23) {
     return 23;
+  }
+  return normalized;
+}
+
+function normalizeResetWeekday(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_RESET_WEEKDAY;
+  }
+  const normalized = Math.floor(value);
+  if (!Number.isFinite(normalized)) {
+    return DEFAULT_RESET_WEEKDAY;
+  }
+  if (normalized < 0) {
+    return 0;
+  }
+  if (normalized > 6) {
+    return 6;
   }
   return normalized;
 }

@@ -35,21 +35,8 @@ export async function startGatewayMemoryBackend(params: {
     const backendLabel = shouldArmQmd ? "qmd" : `builtin-${memorySearch.store.driver}`;
     params.log.info?.(`${backendLabel} memory startup initialization armed for agent "${agentId}"`);
     try {
-      const syncPromise = manager.sync?.({ reason: "startup" });
-      if (syncPromise) {
-        void syncPromise
-          .then(() => {
-            params.log.info?.(
-              `${backendLabel} memory startup sync completed for agent "${agentId}"`,
-            );
-          })
-          .catch((err) => {
-            const message = err instanceof Error ? err.message : String(err);
-            params.log.warn(
-              `${backendLabel} memory startup sync failed for agent "${agentId}": ${message}`,
-            );
-          });
-      }
+      await manager.sync?.({ reason: "startup" });
+      params.log.info?.(`${backendLabel} memory startup sync completed for agent "${agentId}"`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       params.log.warn(

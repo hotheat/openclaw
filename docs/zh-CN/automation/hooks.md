@@ -50,7 +50,7 @@ hooks 系统允许你：
 
 OpenClaw 附带四个自动发现的捆绑 hooks：
 
-- **💾 session-memory**：当你发出 `/reset` 时，将旧会话摘要追加到智能体工作区 daily note；builtin runtime 的 daily rollover 也会复用同一条 helper
+- **💾 session-memory**：当你发出 `/reset` 时，将旧会话摘要追加到智能体工作区 daily note；builtin runtime 会在 `session_end(reason="daily")` 时复用同一条 helper，`idle` rollover 不会触发
 - **📎 bootstrap-extra-files**：在 `agent:bootstrap` 时按配置注入额外工作区文件
 - **📝 command-logger**：将所有命令事件记录到 `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**：当 Gateway 网关启动时运行 `BOOT.md`（需要启用内部 hooks）
@@ -454,7 +454,7 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-当你发出 `/reset` 时，将旧会话沉淀为结构化记忆摘要。
+当你发出 `/reset` 时，将旧会话沉淀为结构化记忆摘要，并把可持久的事实提升到 `MEMORY.md`。
 
 builtin runtime 在旧会话因 daily reset 自动 rollover 时，也会复用同一份 capture helper。
 这不是新的 hook event。
@@ -464,7 +464,10 @@ idle rollover 不会触发它。
 
 **要求**：必须配置 `workspace.dir`
 
-**当前输出**：`<workspace>/memory/YYYY-MM-DD.md`（默认为 `~/.openclaw/workspace`）
+**当前输出**：
+
+- `<workspace>/memory/YYYY-MM-DD.md`
+- `<workspace>/MEMORY.md`（当长期记忆提升有内容可更新时）
 
 **当前功能**：
 
@@ -472,6 +475,8 @@ idle rollover 不会触发它。
 2. 提取最后 N 条 user / assistant 消息，默认 15 条
 3. 使用配置好的模型生成 grounded structured summary
 4. 将摘要以 append-only block 追加到当天 daily note
+5. 生成长期记忆用的结构化 JSON patch
+6. 将该 patch 程序化应用到 `MEMORY.md` 的 Markdown section 和 facts
 
 **示例输出**：
 
@@ -481,12 +486,34 @@ idle rollover 不会触发它。
 - **Generated At**: 2026-01-16 14:30:00 UTC
 - **Source**: reset
 - **Source Sessions**: abc123def456
+
+### 当前主问题 / 当天主线
+
+- 重构会话召回路径，让 daily note 成为主要的短周期记忆层。
+
+### 主要任务推进
+
+- 在默认 memory search source 中关闭 transcript recall。
+- 调整 daily summary 生成顺序，先输出任务态 section，再输出长期记忆相关 section。
+
+### 负向反馈 / 失败信号
+
+- 全量 transcript chunking 在 assistant 重复上下文时会引入噪声。
+
+### 改进方向
+
+- 当天任务推进写进 daily note，长期提升只保留稳定事实。
+
+### 正向进展 / 已验证有效
+
+- daily rollover 和 `/reset` 现在都会产出更适合召回的任务态摘要块。
 ```
 
 **说明**：
 
 - 当前实现里，`/new` 不再触发这条写盘链路。
 - builtin memory 的推荐方向是 `memory/*.md` 负责结构化摘要，`sessions` source 负责原始 transcript recall。
+- `MEMORY.md` 的最终落盘格式仍是 Markdown；JSON patch 只是内部更新协议。
 - pre-compaction memory flush 会继续保留，作为上下文压缩前的同日写盘兜底；它写入后的索引更新继续走默认 watcher / debounced sync，不会额外触发 compaction rebuild。
 
 **启用**：

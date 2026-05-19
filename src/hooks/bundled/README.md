@@ -9,7 +9,7 @@ This directory contains hooks that ship with OpenClaw. These hooks are automatic
 Automatically saves a structured memory summary when you issue `/reset`.
 
 **Events**: `command:reset`
-**What it does**: Appends a structured summary block into the daily memory note.
+**What it does**: Appends a task-first structured summary block into the daily memory note.
 **Output**: `<workspace>/memory/YYYY-MM-DD.md` (defaults to `~/.openclaw/workspace`)
 
 **Enable**:

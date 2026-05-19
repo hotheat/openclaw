@@ -43,7 +43,7 @@ The hooks system allows you to:
 
 OpenClaw ships with four bundled hooks that are automatically discovered:
 
-- **💾 session-memory**: Appends a structured summary to your agent workspace daily note when you issue `/reset`; builtin daily rollover reuses the same helper
+- **💾 session-memory**: Appends a structured summary to your agent workspace daily note when you issue `/reset`; builtin daily rollover reuses the same helper when a session ends with `reason="daily"` (idle rollover does not)
 - **📎 bootstrap-extra-files**: Injects additional workspace bootstrap files from configured glob/path patterns during `agent:bootstrap`
 - **📝 command-logger**: Logs all command events to `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**: Runs `BOOT.md` when the gateway starts (requires internal hooks enabled)
@@ -525,7 +525,8 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-Saves a structured memory summary when you issue `/reset`.
+Saves a structured memory summary when you issue `/reset`, then promotes durable
+facts into `MEMORY.md`.
 
 Builtin runtime also reuses the same summary helper when an old session rolls
 over because of a daily reset. That reuse is not a separate hook event. Idle
@@ -535,18 +536,19 @@ rollover does not trigger it.
 
 **Requirements**: `workspace.dir` must be configured
 
-**Output**: `<workspace>/memory/YYYY-MM-DD.md` (defaults to `~/.openclaw/workspace`)
+**Output**:
+
+- `<workspace>/memory/YYYY-MM-DD.md`
+- `<workspace>/MEMORY.md` (when long-term memory promotion has anything to update)
 
 **What it does**:
 
 1. Uses the pre-reset session entry to locate the correct transcript
 2. Extracts the last N user/assistant messages (default: 15)
 3. Uses the configured model to generate a grounded structured summary
-4. Appends that summary as a new block to the daily memory note only when it has reliable additions
-
-If every structured section is empty (`无可靠新增项。`) and there is no researcher
-export handoff, no Markdown block is written. Daily rollover still records the
-old session as processed to avoid retrying the same empty summary.
+4. Appends that summary as a new block to the daily memory note
+5. Generates a structured JSON patch for durable memory updates
+6. Applies that patch to `MEMORY.md` as Markdown sections and facts
 
 **Example output**:
 
@@ -556,7 +558,31 @@ old session as processed to avoid retrying the same empty summary.
 - **Generated At**: 2026-01-16 14:30:00 UTC
 - **Source**: reset
 - **Source Sessions**: abc123def456
+
+### Current main problem / daily theme
+
+- Refactor session recall so daily notes become the primary short-horizon memory layer.
+
+### Main task progress
+
+- Disabled transcript recall in the default memory search sources.
+- Updated daily summary generation to emit task-first sections before durable memory sections.
+
+### Negative feedback / failure signals
+
+- Full transcript chunking introduced noise when assistant responses restated prior context.
+
+### Improvement directions
+
+- Keep task progression in daily notes and reserve long-term promotion for stable facts only.
+
+### Positive progress / validated wins
+
+- Daily rollover and `/reset` now produce a more useful task-first summary block.
 ```
+
+`MEMORY.md` stays Markdown. The JSON patch is an internal update protocol used
+to decide which long-term sections and facts should change.
 
 **Enable**:
 

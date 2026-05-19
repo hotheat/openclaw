@@ -85,7 +85,7 @@ describe("startGatewayMemoryBackend", () => {
                 database: "openclaw",
                 user: "tester",
                 password: "secret",
-                schema: "openclaw_memory",
+                schema: "agent_memory",
               },
             },
           },
@@ -231,44 +231,11 @@ describe("startGatewayMemoryBackend", () => {
 
     await startGatewayMemoryBackend({ cfg, log });
 
-    await vi.waitFor(() => {
-      expect(log.warn).toHaveBeenCalledWith(
-        'builtin-sqlite memory startup sync failed for agent "main": boom',
-      );
-      expect(log.info).toHaveBeenCalledWith(
-        'builtin-sqlite memory startup sync completed for agent "ops"',
-      );
-    });
-  });
-
-  it("returns before a long-running startup sync completes", async () => {
-    const cfg = {
-      agents: {
-        defaults: {
-          memorySearch: {
-            enabled: true,
-            store: {
-              driver: "sqlite",
-            },
-          },
-        },
-        list: [{ id: "main", default: true }],
-      },
-      memory: { backend: "builtin" },
-    } as OpenClawConfig;
-    const log = { info: vi.fn(), warn: vi.fn() };
-    getMemorySearchManagerMock.mockResolvedValue({
-      manager: {
-        search: vi.fn(),
-        sync: vi.fn(() => new Promise<void>(() => {})),
-      },
-    });
-
-    const result = await Promise.race([
-      startGatewayMemoryBackend({ cfg, log }).then(() => "completed"),
-      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 25)),
-    ]);
-
-    expect(result).toBe("completed");
+    expect(log.warn).toHaveBeenCalledWith(
+      'builtin-sqlite memory startup sync failed for agent "main": boom',
+    );
+    expect(log.info).toHaveBeenCalledWith(
+      'builtin-sqlite memory startup sync completed for agent "ops"',
+    );
   });
 });

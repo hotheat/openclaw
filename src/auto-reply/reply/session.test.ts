@@ -9,14 +9,15 @@ import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import { enqueueSystemEvent, resetSystemEventsForTest } from "../../infra/system-events.js";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../../plugins/hook-runner-global.js";
+import { createMockPluginRegistry } from "../../plugins/hooks.test-helpers.js";
 import { applyResetModelOverride } from "./session-reset-model.js";
 import { prependSystemEvents } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { initSessionState, persistRecentMediaSnapshotEarly } from "./session.js";
-
-const { captureSessionToMemoryMock } = vi.hoisted(() => ({
-  captureSessionToMemoryMock: vi.fn(),
-}));
 
 // Perf: session-store locks are exercised elsewhere; most session tests don't need FS lock files.
 vi.mock("../../agents/session-write-lock.js", () => ({
@@ -31,48 +32,118 @@ vi.mock("../../agents/model-catalog.js", () => ({
 }));
 
 vi.mock("../../agents/pi-embedded.js", () => ({
-  runEmbeddedPiAgent: vi.fn(async () => ({
-    payloads: [
-      {
-        text: [
-          "## Daily Structured Summary",
-          "",
-          "- **Generated At**: 2026-01-18 05:00 UTC",
-          "- **Source**: daily-rollover",
-          "- **Source Sessions**: daily-session-id",
-          "",
-          "### 用户偏好",
-          "- 偏好官方资料。",
-          "",
-          "### 自定义需求",
-          "- 需要剂量可追溯。",
-          "",
-          "### 失败经验 / 反模式",
-          "- 不接受推断剂量。",
-          "",
-          "### 重要决策",
-          "- 用 daily structured summary 替代 transcript capture。",
-          "",
-          "### 未完成事项",
-          "- 继续核对剂量来源。",
-          "",
-          "### 风险 / 注意点",
-          "- 官方未披露时要标未披露。",
-        ].join("\n"),
-      },
-    ],
-  })),
+  runEmbeddedPiAgent: vi.fn(async ({ prompt }: { prompt?: string }) => {
+    if (typeof prompt === "string" && prompt.includes("Return strict JSON with this shape")) {
+      return {
+        payloads: [
+          {
+            text: JSON.stringify(
+              {
+                operations: [
+                  {
+                    op: "merge",
+                    targetFactId: "fact_behavior_pref",
+                    canonicalContent: "偏好基于官方文档和源码做判断",
+                    confidence: 0.9,
+                    reason: "新事实是对既有行为偏好的更完整重述，适合并入原事实。",
+                  },
+                ],
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+    if (typeof prompt === "string" && prompt.includes("Return strict JSON matching this shape")) {
+      return {
+        payloads: [
+          {
+            text: JSON.stringify(
+              {
+                user: {
+                  workContext: {
+                    summary: "长期负责 OpenClaw 记忆与 session reset 机制。",
+                    shouldUpdate: true,
+                  },
+                  personalContext: {
+                    summary: "",
+                    shouldUpdate: false,
+                  },
+                  topOfMind: {
+                    summary: "当前在收敛 daily rollover 与长期记忆同步方案。",
+                    shouldUpdate: true,
+                  },
+                },
+                history: {
+                  recentMonths: {
+                    summary: "最近持续维护 builtin memory、rollover 和 PG 存储。",
+                    shouldUpdate: true,
+                  },
+                  earlierContext: {
+                    summary: "",
+                    shouldUpdate: false,
+                  },
+                  longTermBackground: {
+                    summary: "长期本地部署并调试 OpenClaw gateway。",
+                    shouldUpdate: true,
+                  },
+                },
+                newFacts: [
+                  {
+                    content: "偏好基于官方文档和源码做判断。",
+                    category: "behavior",
+                    confidence: 0.86,
+                  },
+                  {
+                    content: "当前目标是让 daily rollover 自动更新长期记忆。",
+                    category: "goal",
+                    confidence: 0.9,
+                  },
+                ],
+                factsToRemove: [],
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    }
+    return {
+      payloads: [
+        {
+          text: [
+            "## Daily Structured Summary",
+            "",
+            "- **Generated At**: 2026-01-18 05:00 UTC",
+            "- **Source**: daily-rollover",
+            "- **Source Sessions**: daily-session-id",
+            "",
+            "### 用户偏好",
+            "- 偏好官方资料。",
+            "",
+            "### 自定义需求",
+            "- 需要剂量可追溯。",
+            "",
+            "### 失败经验 / 反模式",
+            "- 不接受推断剂量。",
+            "",
+            "### 重要决策",
+            "- 用 daily structured summary 替代 transcript capture。",
+            "",
+            "### 未完成事项",
+            "- 继续核对剂量来源。",
+            "",
+            "### 风险 / 注意点",
+            "- 官方未披露时要标未披露。",
+          ].join("\n"),
+        },
+      ],
+    };
+  }),
 }));
-
-vi.mock("../../hooks/bundled/session-memory/handler.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../../hooks/bundled/session-memory/handler.js")>();
-  captureSessionToMemoryMock.mockImplementation(actual.captureSessionToMemory);
-  return {
-    ...actual,
-    captureSessionToMemory: captureSessionToMemoryMock,
-  };
-});
 
 let suiteRoot = "";
 let suiteCase = 0;
@@ -85,10 +156,6 @@ afterAll(async () => {
   await fs.rm(suiteRoot, { recursive: true, force: true });
   suiteRoot = "";
   suiteCase = 0;
-});
-
-beforeEach(() => {
-  captureSessionToMemoryMock.mockClear();
 });
 
 async function makeCaseDir(prefix: string): Promise<string> {
@@ -545,39 +612,82 @@ describe("initSessionState RawBody", () => {
 describe("initSessionState reset policy", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    resetGlobalHookRunner();
   });
 
   afterEach(() => {
+    resetGlobalHookRunner();
     vi.useRealTimers();
   });
 
-  it("defaults to daily reset at 4am local time", async () => {
+  it("defaults to daily memory capture without resetting the session at 4am local time", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-daily-");
     const storePath = path.join(root, "sessions.json");
+    const sessionsDir = path.dirname(storePath);
     const sessionKey = "agent:main:whatsapp:dm:s1";
     const existingSessionId = "daily-session-id";
+    const existingSessionFile = path.join(sessionsDir, `${existingSessionId}.jsonl`);
+
+    await fs.writeFile(
+      existingSessionFile,
+      [
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: "Default daily memory source" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", content: "Summarize without reset" },
+        }),
+      ].join("\n"),
+      "utf-8",
+    );
 
     await saveSessionStore(storePath, {
       [sessionKey]: {
         sessionId: existingSessionId,
         updatedAt: new Date(2026, 0, 18, 3, 0, 0).getTime(),
+        sessionFile: existingSessionFile,
       },
     });
 
-    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    const cfg = {
+      session: { store: storePath },
+      agents: { defaults: { workspace: root } },
+    } as OpenClawConfig;
     const result = await initSessionState({
       ctx: { Body: "hello", SessionKey: sessionKey },
       cfg,
       commandAuthorized: true,
     });
 
-    expect(result.isNewSession).toBe(true);
-    expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionId).toBe(existingSessionId);
+    await expect(fs.access(existingSessionFile)).resolves.toBeUndefined();
+
+    vi.useRealTimers();
+
+    await vi.waitFor(
+      async () => {
+        const memoryContent = await fs.readFile(
+          path.join(root, "memory", "2026-01-18.md"),
+          "utf-8",
+        );
+        expect(memoryContent).toContain("**Source**: daily-rollover");
+      },
+      { timeout: 3000, interval: 50 },
+    );
+
+    const archivedFiles = await fs.readdir(sessionsDir);
+    expect(archivedFiles.some((name) => name.startsWith(`${existingSessionId}.jsonl.reset.`))).toBe(
+      false,
+    );
   });
 
   it("treats sessions as stale before the daily reset when updated before yesterday's boundary", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 3, 0, 0));
+    vi.mocked(runEmbeddedPiAgent).mockClear();
     const root = await makeCaseDir("openclaw-reset-daily-edge-");
     const storePath = path.join(root, "sessions.json");
     const sessionsDir = path.dirname(storePath);
@@ -608,10 +718,36 @@ describe("initSessionState reset policy", () => {
       },
     });
 
+    const sessionEndHandler = vi.fn(async () => {});
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "session_end", handler: sessionEndHandler }]),
+    );
+
     const cfg = {
-      session: { store: storePath },
+      session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       agents: { defaults: { workspace: root } },
     } as OpenClawConfig;
+    await fs.writeFile(
+      path.join(root, "MEMORY.md"),
+      [
+        "<!-- OPENCLAW_STRUCTURED_MEMORY_START -->",
+        "## OpenClaw Structured Memory",
+        "",
+        "### Facts",
+        "",
+        "#### fact_behavior_pref",
+        "- Category: behavior",
+        "- Confidence: 0.80",
+        "- Content: 偏好基于官方文档做判断",
+        "- Created At: 2026-01-17 22:00:00 CST",
+        "- Updated At: 2026-01-17 22:00:00 CST",
+        "- Source: legacy:daily-session-id",
+        "",
+        "<!-- OPENCLAW_STRUCTURED_MEMORY_END -->",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
     const result = await initSessionState({
       ctx: { Body: "hello", SessionKey: sessionKey },
       cfg,
@@ -620,6 +756,32 @@ describe("initSessionState reset policy", () => {
 
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
+
+    await vi.waitFor(() => {
+      expect(sessionEndHandler).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionEndHandler).toHaveBeenCalledWith(
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        messageCount: 0,
+        reason: "daily",
+        sessionFile: existingSessionFile,
+        transcriptArchived: true,
+        nextSessionId: result.sessionId,
+      },
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        agentId: "main",
+      },
+    );
+    await expect(fs.access(existingSessionFile)).rejects.toThrow();
+    expect(
+      (await fs.readdir(sessionsDir)).some((name) =>
+        name.startsWith(`${existingSessionId}.jsonl.reset.`),
+      ),
+    ).toBe(true);
 
     vi.useRealTimers();
 
@@ -636,9 +798,39 @@ describe("initSessionState reset policy", () => {
     const memoryContent = await fs.readFile(path.join(memoryDir, files[0]), "utf-8");
     expect(memoryContent).toContain("## Daily Structured Summary");
     expect(memoryContent).toContain("**Source**: daily-rollover");
+    expect(memoryContent).toContain("### 当前主问题 / 当天主线");
+    expect(memoryContent).toContain("### 主要任务推进");
+    expect(memoryContent).toContain("### 负向反馈 / 失败信号");
+    expect(memoryContent).toContain("### 改进方向");
+    expect(memoryContent).toContain("### 正向进展 / 已验证有效");
     expect(memoryContent).toContain("### 用户偏好");
     expect(memoryContent).not.toContain("Yesterday work item");
     expect(memoryContent).not.toContain("Captured before daily rollover");
+
+    const rootMemoryPath = path.join(root, "MEMORY.md");
+    await vi.waitFor(
+      async () => {
+        const content = await fs.readFile(rootMemoryPath, "utf-8");
+        expect(content).toContain("## OpenClaw Structured Memory");
+      },
+      { timeout: 3000, interval: 50 },
+    );
+    const rootMemoryContent = await fs.readFile(rootMemoryPath, "utf-8");
+    expect(rootMemoryContent).toContain("长期负责 OpenClaw 记忆与 session reset 机制。");
+    expect(rootMemoryContent).toContain("当前在收敛 daily rollover 与长期记忆同步方案。");
+    expect(rootMemoryContent).toContain("偏好基于官方文档和源码做判断");
+    expect(rootMemoryContent).toContain("当前目标是让 daily rollover 自动更新长期记忆。");
+    expect(rootMemoryContent).toContain("新事实是对既有行为偏好的更完整重述，适合并入原事实。");
+    expect(rootMemoryContent.match(/- Category: behavior/g)?.length).toBe(1);
+    expect(
+      vi
+        .mocked(runEmbeddedPiAgent)
+        .mock.calls.some(
+          ([call]) =>
+            typeof call.prompt === "string" &&
+            call.prompt.includes("Return strict JSON with this shape"),
+        ),
+    ).toBe(true);
 
     await vi.waitFor(
       async () => {
@@ -650,59 +842,6 @@ describe("initSessionState reset policy", () => {
     const updatedStore = loadSessionStore(storePath, { skipCache: true });
     expect(updatedStore[sessionKey]?.dailyMemoryCaptureSessionId).toBe(existingSessionId);
     expect(updatedStore[sessionKey]?.dailyMemoryCaptureAt).toBeTypeOf("number");
-  });
-
-  it("archives the old transcript after successful daily rollover capture", async () => {
-    vi.setSystemTime(new Date(2026, 0, 18, 3, 0, 0));
-    const root = await makeCaseDir("openclaw-reset-daily-archive-");
-    const storePath = path.join(root, "sessions.json");
-    const sessionsDir = path.dirname(storePath);
-    const sessionKey = "agent:main:whatsapp:dm:s-daily-archive";
-    const existingSessionId = "daily-archive-session";
-    const existingSessionFile = path.join(sessionsDir, `${existingSessionId}.jsonl`);
-
-    await fs.writeFile(
-      existingSessionFile,
-      [
-        JSON.stringify({
-          type: "message",
-          message: { role: "user", content: "Archive after daily rollover" },
-        }),
-      ].join("\n"),
-      "utf-8",
-    );
-
-    await saveSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: existingSessionId,
-        updatedAt: new Date(2026, 0, 17, 3, 30, 0).getTime(),
-        sessionFile: existingSessionFile,
-      },
-    });
-
-    const cfg = {
-      session: { store: storePath },
-      agents: { defaults: { workspace: root } },
-    } as OpenClawConfig;
-
-    await initSessionState({
-      ctx: { Body: "hello", SessionKey: sessionKey },
-      cfg,
-      commandAuthorized: true,
-    });
-
-    vi.useRealTimers();
-
-    await vi.waitFor(
-      async () => {
-        await expect(fs.access(existingSessionFile)).rejects.toThrow();
-        const entries = await fs.readdir(sessionsDir);
-        expect(entries.some((entry) => entry.startsWith(`${existingSessionId}.jsonl.reset.`))).toBe(
-          true,
-        );
-      },
-      { timeout: 3000, interval: 50 },
-    );
   });
 
   it("recovers daily rollover transcript from canonical agent sessions dir when sessionFile is missing", async () => {
@@ -740,7 +879,7 @@ describe("initSessionState reset policy", () => {
     });
 
     const cfg = {
-      session: { store: storePath },
+      session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       agents: { defaults: { workspace: workspaceDir } },
     } as OpenClawConfig;
 
@@ -779,67 +918,13 @@ describe("initSessionState reset policy", () => {
     }
   });
 
-  it("does not mark daily rollover complete when legacy sessionFile is missing and no transcript exists", async () => {
+  it("archives the stale transcript after successful daily rollover capture", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 3, 0, 0));
-    const root = await makeCaseDir("openclaw-reset-daily-missing-source-");
-    const workspaceDir = path.join(root, "workspace");
-    const stateDir = path.join(root, "state");
-    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
-    const storePath = path.join(sessionsDir, "sessions.json");
-    const sessionKey = "agent:main:whatsapp:dm:s-missing-source";
-    const existingSessionId = "missing-source-daily-session";
-
-    await fs.mkdir(sessionsDir, { recursive: true });
-    await saveSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: existingSessionId,
-        updatedAt: new Date(2026, 0, 17, 3, 30, 0).getTime(),
-      },
-    });
-
-    const cfg = {
-      session: { store: storePath },
-      agents: { defaults: { workspace: workspaceDir } },
-    } as OpenClawConfig;
-
-    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-    try {
-      const result = await initSessionState({
-        ctx: { Body: "hello", SessionKey: sessionKey },
-        cfg,
-        commandAuthorized: true,
-      });
-
-      expect(result.isNewSession).toBe(true);
-      expect(result.sessionId).not.toBe(existingSessionId);
-      vi.useRealTimers();
-
-      await vi.waitFor(
-        async () => {
-          const store = loadSessionStore(storePath, { skipCache: true });
-          expect(store[sessionKey]?.dailyMemoryCapturePendingSessionId).toBeUndefined();
-        },
-        { timeout: 3000, interval: 50 },
-      );
-
-      const files = await fs.readdir(path.join(workspaceDir, "memory")).catch(() => []);
-      expect(files).toEqual([]);
-      const updatedStore = loadSessionStore(storePath, { skipCache: true });
-      expect(updatedStore[sessionKey]?.dailyMemoryCaptureSessionId).toBeUndefined();
-      expect(updatedStore[sessionKey]?.dailyMemoryCaptureAt).toBeUndefined();
-    } finally {
-      vi.unstubAllEnvs();
-      vi.useRealTimers();
-    }
-  });
-
-  it("dedupes concurrent first messages after daily rollover before capture finishes", async () => {
-    vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
-    const root = await makeCaseDir("openclaw-reset-daily-concurrent-");
+    const root = await makeCaseDir("openclaw-reset-daily-archive-");
     const storePath = path.join(root, "sessions.json");
     const sessionsDir = path.dirname(storePath);
-    const sessionKey = "agent:main:whatsapp:dm:s-concurrent";
-    const existingSessionId = "daily-concurrent-session";
+    const sessionKey = "agent:main:whatsapp:dm:s-daily-archive";
+    const existingSessionId = "daily-archive-session";
     const existingSessionFile = path.join(sessionsDir, `${existingSessionId}.jsonl`);
 
     await fs.writeFile(
@@ -847,7 +932,11 @@ describe("initSessionState reset policy", () => {
       [
         JSON.stringify({
           type: "message",
-          message: { role: "user", content: "Concurrent rollover source" },
+          message: { role: "user", content: "Archive daily rollover source" },
+        }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "assistant", content: "Capture then archive" },
         }),
       ].join("\n"),
       "utf-8",
@@ -856,55 +945,25 @@ describe("initSessionState reset policy", () => {
     await saveSessionStore(storePath, {
       [sessionKey]: {
         sessionId: existingSessionId,
-        updatedAt: new Date(2026, 0, 18, 3, 0, 0).getTime(),
+        updatedAt: new Date(2026, 0, 17, 3, 30, 0).getTime(),
         sessionFile: existingSessionFile,
       },
     });
 
-    let releaseCapture!: () => void;
-    let markCaptureStarted!: () => void;
-    const captureGate = new Promise<void>((resolve) => {
-      releaseCapture = resolve;
-    });
-    const captureStarted = new Promise<void>((resolve) => {
-      markCaptureStarted = resolve;
-    });
-    const mockedRunEmbeddedPiAgent = vi.mocked(runEmbeddedPiAgent);
-    mockedRunEmbeddedPiAgent.mockClear();
-    const defaultRunEmbeddedPiAgent = mockedRunEmbeddedPiAgent.getMockImplementation();
-    mockedRunEmbeddedPiAgent.mockImplementation(async (...args) => {
-      markCaptureStarted();
-      await captureGate;
-      return await defaultRunEmbeddedPiAgent!(...args);
-    });
-
     const cfg = {
-      session: { store: storePath },
+      session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       agents: { defaults: { workspace: root } },
     } as OpenClawConfig;
 
-    try {
-      await Promise.all([
-        initSessionState({
-          ctx: { Body: "first", SessionKey: sessionKey },
-          cfg,
-          commandAuthorized: true,
-        }),
-        initSessionState({
-          ctx: { Body: "second", SessionKey: sessionKey },
-          cfg,
-          commandAuthorized: true,
-        }),
-      ]);
+    const result = await initSessionState({
+      ctx: { Body: "hello", SessionKey: sessionKey },
+      cfg,
+      commandAuthorized: true,
+    });
 
-      await captureStarted;
-      await Promise.resolve();
-      expect(mockedRunEmbeddedPiAgent).toHaveBeenCalledTimes(1);
-    } finally {
-      releaseCapture();
-      mockedRunEmbeddedPiAgent.mockImplementation(defaultRunEmbeddedPiAgent!);
-      vi.useRealTimers();
-    }
+    expect(result.isNewSession).toBe(true);
+    expect(result.sessionId).not.toBe(existingSessionId);
+    vi.useRealTimers();
 
     await vi.waitFor(
       async () => {
@@ -914,78 +973,32 @@ describe("initSessionState reset policy", () => {
       { timeout: 3000, interval: 50 },
     );
 
-    const memoryContent = await fs.readFile(path.join(root, "memory", "2026-01-18.md"), "utf-8");
-    expect(memoryContent.match(/## Daily Structured Summary/g)?.length).toBe(1);
+    await expect(fs.access(existingSessionFile)).rejects.toThrow();
+    const archivedFiles = await fs.readdir(sessionsDir);
+    expect(archivedFiles.some((name) => name.startsWith(`${existingSessionId}.jsonl.reset.`))).toBe(
+      true,
+    );
   });
 
-  it("marks daily rollover processed when summary is empty without writing memory file", async () => {
-    vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
-    vi.mocked(runEmbeddedPiAgent).mockResolvedValueOnce({
-      payloads: [
-        {
-          text: [
-            "## Daily Structured Summary",
-            "",
-            "- **Generated At**: 2026-01-18 05:00 UTC",
-            "- **Source**: daily-rollover",
-            "- **Source Sessions**: empty-daily-session",
-            "",
-            "### 用户偏好",
-            "- 无可靠新增项。",
-            "",
-            "### 自定义需求",
-            "- 无可靠新增项。",
-            "",
-            "### 失败经验 / 反模式",
-            "- 无可靠新增项。",
-            "",
-            "### 重要决策",
-            "- 无可靠新增项。",
-            "",
-            "### 未完成事项",
-            "- 无可靠新增项。",
-            "",
-            "### 风险 / 注意点",
-            "- 无可靠新增项。",
-          ].join("\n"),
-        },
-      ],
-    } as Awaited<ReturnType<typeof runEmbeddedPiAgent>>);
-
-    const root = await makeCaseDir("openclaw-reset-daily-empty-");
+  it("does not mark daily rollover complete when legacy sessionFile is missing and no transcript exists", async () => {
+    vi.setSystemTime(new Date(2026, 0, 18, 3, 0, 0));
+    const root = await makeCaseDir("openclaw-reset-daily-missing-source-");
     const storePath = path.join(root, "sessions.json");
-    const sessionsDir = path.dirname(storePath);
-    const sessionKey = "agent:main:whatsapp:dm:s-empty";
-    const existingSessionId = "empty-daily-session";
-    const existingSessionFile = path.join(sessionsDir, `${existingSessionId}.jsonl`);
-
-    await fs.writeFile(
-      existingSessionFile,
-      [
-        JSON.stringify({
-          type: "message",
-          message: { role: "user", content: "Casual ping" },
-        }),
-        JSON.stringify({
-          type: "message",
-          message: { role: "assistant", content: "Acknowledged" },
-        }),
-      ].join("\n"),
-      "utf-8",
-    );
+    const sessionKey = "agent:main:whatsapp:dm:s-missing-source";
+    const existingSessionId = "missing-source-daily-session";
 
     await saveSessionStore(storePath, {
       [sessionKey]: {
         sessionId: existingSessionId,
-        updatedAt: new Date(2026, 0, 18, 3, 0, 0).getTime(),
-        sessionFile: existingSessionFile,
+        updatedAt: new Date(2026, 0, 17, 3, 30, 0).getTime(),
       },
     });
 
     const cfg = {
-      session: { store: storePath },
+      session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       agents: { defaults: { workspace: root } },
     } as OpenClawConfig;
+
     const result = await initSessionState({
       ctx: { Body: "hello", SessionKey: sessionKey },
       cfg,
@@ -1000,14 +1013,16 @@ describe("initSessionState reset policy", () => {
     await vi.waitFor(
       async () => {
         const store = loadSessionStore(storePath, { skipCache: true });
-        expect(store[sessionKey]?.dailyMemoryCaptureSessionId).toBe(existingSessionId);
+        expect(store[sessionKey]?.dailyMemoryCapturePendingSessionId).toBeUndefined();
       },
       { timeout: 3000, interval: 50 },
     );
+
     const files = await fs.readdir(path.join(root, "memory")).catch(() => []);
     expect(files).toEqual([]);
     const updatedStore = loadSessionStore(storePath, { skipCache: true });
-    expect(updatedStore[sessionKey]?.dailyMemoryCaptureAt).toBeTypeOf("number");
+    expect(updatedStore[sessionKey]?.dailyMemoryCaptureSessionId).toBeUndefined();
+    expect(updatedStore[sessionKey]?.dailyMemoryCaptureAt).toBeUndefined();
   });
 
   it("expires sessions when idle timeout wins over daily reset", async () => {
@@ -1042,6 +1057,11 @@ describe("initSessionState reset policy", () => {
       },
     });
 
+    const sessionEndHandler = vi.fn(async () => {});
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "session_end", handler: sessionEndHandler }]),
+    );
+
     const cfg = {
       session: {
         store: storePath,
@@ -1058,6 +1078,32 @@ describe("initSessionState reset policy", () => {
     expect(result.isNewSession).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
 
+    await vi.waitFor(() => {
+      expect(sessionEndHandler).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionEndHandler).toHaveBeenCalledWith(
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        messageCount: 0,
+        reason: "idle",
+        sessionFile: existingSessionFile,
+        transcriptArchived: true,
+        nextSessionId: result.sessionId,
+      },
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        agentId: "main",
+      },
+    );
+    await expect(fs.access(existingSessionFile)).rejects.toThrow();
+    expect(
+      (await fs.readdir(sessionsDir)).some((name) =>
+        name.startsWith(`${existingSessionId}.jsonl.reset.`),
+      ),
+    ).toBe(true);
+
     vi.useRealTimers();
 
     await new Promise((resolve) => setTimeout(resolve, 150));
@@ -1065,64 +1111,6 @@ describe("initSessionState reset policy", () => {
     await expect(fs.access(memoryDir)).rejects.toThrow();
     const updatedStore = loadSessionStore(storePath, { skipCache: true });
     expect(updatedStore[sessionKey]?.dailyMemoryCaptureSessionId).toBeUndefined();
-  });
-
-  it("claims daily rollover capture before concurrent first turns can schedule duplicates", async () => {
-    vi.setSystemTime(new Date(2026, 0, 18, 5, 30, 0));
-    const root = await makeCaseDir("openclaw-reset-daily-concurrent-");
-    const storePath = path.join(root, "sessions.json");
-    const sessionsDir = path.dirname(storePath);
-    const sessionKey = "agent:main:whatsapp:dm:s-concurrent";
-    const existingSessionId = "daily-concurrent-session";
-    const existingSessionFile = path.join(sessionsDir, `${existingSessionId}.jsonl`);
-
-    await fs.writeFile(
-      existingSessionFile,
-      [
-        JSON.stringify({
-          type: "message",
-          message: { role: "user", content: "Concurrent daily rollover" },
-        }),
-        JSON.stringify({
-          type: "message",
-          message: { role: "assistant", content: "Only summarize once" },
-        }),
-      ].join("\n"),
-      "utf-8",
-    );
-
-    await saveSessionStore(storePath, {
-      [sessionKey]: {
-        sessionId: existingSessionId,
-        updatedAt: new Date(2026, 0, 17, 3, 30, 0).getTime(),
-        sessionFile: existingSessionFile,
-      },
-    });
-
-    const cfg = {
-      session: { store: storePath },
-      agents: { defaults: { workspace: root } },
-    } as OpenClawConfig;
-
-    await Promise.all([
-      initSessionState({
-        ctx: { Body: "hello", SessionKey: sessionKey },
-        cfg,
-        commandAuthorized: true,
-      }),
-      initSessionState({
-        ctx: { Body: "hello", SessionKey: sessionKey },
-        cfg,
-        commandAuthorized: true,
-      }),
-    ]);
-
-    await vi.waitFor(
-      () => {
-        expect(captureSessionToMemoryMock).toHaveBeenCalledTimes(1);
-      },
-      { timeout: 3000, interval: 50 },
-    );
   });
 
   it("skips daily rollover capture when session-memory hook is disabled", async () => {
@@ -1154,7 +1142,7 @@ describe("initSessionState reset policy", () => {
     });
 
     const cfg = {
-      session: { store: storePath },
+      session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       agents: { defaults: { workspace: root } },
       hooks: {
         internal: {
@@ -1246,7 +1234,7 @@ describe("initSessionState reset policy", () => {
     expect(result.sessionId).toBe(existingSessionId);
   });
 
-  it("defaults to daily resets when only resetByType is configured", async () => {
+  it("does not default to daily reset when only another resetByType is configured", async () => {
     vi.setSystemTime(new Date(2026, 0, 18, 5, 0, 0));
     const root = await makeCaseDir("openclaw-reset-type-default-");
     const storePath = path.join(root, "sessions.json");
@@ -1272,8 +1260,8 @@ describe("initSessionState reset policy", () => {
       commandAuthorized: true,
     });
 
-    expect(result.isNewSession).toBe(true);
-    expect(result.sessionId).not.toBe(existingSessionId);
+    expect(result.isNewSession).toBe(false);
+    expect(result.sessionId).toBe(existingSessionId);
   });
 
   it("keeps legacy idleMinutes behavior without reset config", async () => {
@@ -1841,6 +1829,130 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       }),
     );
     archiveSpy.mockRestore();
+  });
+
+  it("emits session_end with reason=new for /new", async () => {
+    const storePath = await createStorePath("openclaw-session-end-new-");
+    const sessionKey = "agent:main:telegram:dm:user-session-end-new";
+    const existingSessionId = "existing-session-end-new";
+    const existingSessionFile = path.join(path.dirname(storePath), `${existingSessionId}.jsonl`);
+
+    await seedSessionStoreWithOverrides({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      overrides: { sessionFile: existingSessionFile, verboseLevel: "on" },
+    });
+    await fs.writeFile(existingSessionFile, "", "utf-8");
+
+    const sessionEndHandler = vi.fn(async () => {});
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "session_end", handler: sessionEndHandler }]),
+    );
+
+    const cfg = {
+      session: { store: storePath, idleMinutes: 999 },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "/new",
+        RawBody: "/new",
+        CommandBody: "/new",
+        From: "user-session-end-new",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(sessionEndHandler).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionEndHandler).toHaveBeenCalledWith(
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        messageCount: 0,
+        reason: "new",
+        sessionFile: existingSessionId
+          ? expect.stringContaining(`${existingSessionId}.jsonl`)
+          : undefined,
+        transcriptArchived: true,
+        nextSessionId: result.sessionId,
+      },
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        agentId: "main",
+      },
+    );
+  });
+
+  it("emits session_end with reason=reset for /reset", async () => {
+    const storePath = await createStorePath("openclaw-session-end-reset-");
+    const sessionKey = "agent:main:telegram:dm:user-session-end-reset";
+    const existingSessionId = "existing-session-end-reset";
+    const existingSessionFile = path.join(path.dirname(storePath), `${existingSessionId}.jsonl`);
+
+    await seedSessionStoreWithOverrides({
+      storePath,
+      sessionKey,
+      sessionId: existingSessionId,
+      overrides: { sessionFile: existingSessionFile, verboseLevel: "on" },
+    });
+    await fs.writeFile(existingSessionFile, "", "utf-8");
+
+    const sessionEndHandler = vi.fn(async () => {});
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "session_end", handler: sessionEndHandler }]),
+    );
+
+    const cfg = {
+      session: { store: storePath, idleMinutes: 999 },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "/reset",
+        RawBody: "/reset",
+        CommandBody: "/reset",
+        From: "user-session-end-reset",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    await vi.waitFor(() => {
+      expect(sessionEndHandler).toHaveBeenCalledTimes(1);
+    });
+    expect(sessionEndHandler).toHaveBeenCalledWith(
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        messageCount: 0,
+        reason: "reset",
+        sessionFile: existingSessionId
+          ? expect.stringContaining(`${existingSessionId}.jsonl`)
+          : undefined,
+        transcriptArchived: true,
+        nextSessionId: result.sessionId,
+      },
+      {
+        sessionId: existingSessionId,
+        sessionKey,
+        agentId: "main",
+      },
+    );
   });
 
   it("idle-based new session does NOT preserve overrides (no entry to read)", async () => {

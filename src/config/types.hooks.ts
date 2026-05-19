@@ -43,6 +43,16 @@ export type HookMappingConfig = {
 
 export type HooksGmailTailscaleMode = "off" | "serve" | "funnel";
 
+export type SessionMemoryHookConfig = HookConfig & {
+  messages?: number;
+  /** Override provider for session-memory LLM runs. */
+  provider?: string;
+  /** Override model for session-memory LLM runs (provider/model or alias). */
+  model?: string;
+  /** Timeout in milliseconds for session-memory LLM runs. */
+  timeoutMs?: number;
+};
+
 export type HooksGmailConfig = {
   account?: string;
   label?: string;
@@ -97,7 +107,9 @@ export type InternalHooksConfig = {
   /** Legacy: List of internal hook handlers to register (still supported) */
   handlers?: InternalHookHandlerConfig[];
   /** Per-hook configuration overrides */
-  entries?: Record<string, HookConfig>;
+  entries?: Record<string, HookConfig> & {
+    "session-memory"?: SessionMemoryHookConfig;
+  };
   /** Load configuration */
   load?: {
     /** Additional hook directories to scan */

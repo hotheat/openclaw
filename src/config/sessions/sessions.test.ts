@@ -85,7 +85,23 @@ describe("resolveSessionResetPolicy", () => {
       });
 
       expect(groupPolicy.mode).toBe("daily");
+      expect(groupPolicy.explicit).toBe(false);
     });
+  });
+
+  it("resolves weekly reset weekday from config", () => {
+    const sessionCfg = {
+      reset: { mode: "weekly", weekday: 1, atHour: 4 },
+    } as unknown as SessionConfig;
+
+    const policy = resolveSessionResetPolicy({
+      sessionCfg,
+      resetType: "direct",
+    });
+
+    expect(policy.mode).toBe("weekly");
+    expect(policy.weekday).toBe(1);
+    expect(policy.atHour).toBe(4);
   });
 });
 
@@ -97,7 +113,7 @@ describe("evaluateSessionFreshness", () => {
     const result = evaluateSessionFreshness({
       updatedAt,
       now,
-      policy: { mode: "daily", atHour: 4 },
+      policy: { mode: "daily", weekday: 1, atHour: 4, explicit: true },
     });
 
     expect(result.fresh).toBe(false);
@@ -111,7 +127,7 @@ describe("evaluateSessionFreshness", () => {
     const result = evaluateSessionFreshness({
       updatedAt,
       now,
-      policy: { mode: "idle", atHour: 4, idleMinutes: 60 },
+      policy: { mode: "idle", weekday: 1, atHour: 4, idleMinutes: 60, explicit: true },
     });
 
     expect(result.fresh).toBe(false);
@@ -125,11 +141,40 @@ describe("evaluateSessionFreshness", () => {
     const result = evaluateSessionFreshness({
       updatedAt,
       now,
-      policy: { mode: "daily", atHour: 23, idleMinutes: 60 },
+      policy: { mode: "daily", weekday: 1, atHour: 23, idleMinutes: 60, explicit: true },
     });
 
     expect(result.fresh).toBe(false);
     expect(result.staleReason).toBe("idle");
+  });
+
+  it("reports staleReason=weekly after the configured weekly boundary", () => {
+    const now = new Date(2026, 0, 19, 5, 0, 0).getTime(); // Monday
+    const updatedAt = new Date(2026, 0, 18, 5, 0, 0).getTime(); // Sunday
+
+    const result = evaluateSessionFreshness({
+      updatedAt,
+      now,
+      policy: { mode: "weekly", weekday: 1, atHour: 4, explicit: true },
+    });
+
+    expect(result.fresh).toBe(false);
+    expect(result.staleReason).toBe("weekly");
+    expect(result.weeklyResetAt).toBe(new Date(2026, 0, 19, 4, 0, 0).getTime());
+  });
+
+  it("keeps weekly sessions fresh before the configured weekly boundary", () => {
+    const now = new Date(2026, 0, 19, 3, 59, 0).getTime(); // Monday before 04:00
+    const updatedAt = new Date(2026, 0, 18, 5, 0, 0).getTime(); // Sunday
+
+    const result = evaluateSessionFreshness({
+      updatedAt,
+      now,
+      policy: { mode: "weekly", weekday: 1, atHour: 4, explicit: true },
+    });
+
+    expect(result.fresh).toBe(true);
+    expect(result.weeklyResetAt).toBe(new Date(2026, 0, 12, 4, 0, 0).getTime());
   });
 });
 
