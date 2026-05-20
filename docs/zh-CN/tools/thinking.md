@@ -26,13 +26,16 @@ x-i18n:
   - `highest`、`max` 映射为 `high`。
 - 提供商说明：
   - Z.AI（`zai/*`）仅支持二元思考（`on`/`off`）。任何非 `off` 级别均视为 `on`（映射为 `low`）。
+  - DeepSeek（`deepseek/*` 或指向 `https://api.deepseek.com` 的自定义 provider）会将 `off` 映射为 `thinking.disabled`；非 `off` 映射为 `thinking.enabled` 和 `reasoning_effort: "high"`，其中 `xhigh` 映射为 `"max"`。
+  - `openai`、`micu`、`duckcoding` 等 OpenAI-compatible provider 可使用同一套 `thinkingDefault` 配置；实际请求字段仍取决于模型和 provider transport。
 
 ## 解析优先顺序
 
 1. 消息上的内联指令（仅适用于该条消息）。
 2. 会话覆盖（通过发送仅包含指令的消息设置）。
-3. 全局默认值（配置中的 `agents.defaults.thinkingDefault`）。
-4. 回退：具备推理能力的模型为 low；否则为 off。
+3. 按智能体默认值（配置中的 `agents.list[].thinkingDefault`）。
+4. 全局默认值（配置中的 `agents.defaults.thinkingDefault`）。
+5. 回退：具备推理能力的模型为 low；否则为 off。
 
 ## 设置会话默认值
 
@@ -59,10 +62,28 @@ x-i18n:
 
 - 级别：`on|off|stream`。
 - 仅包含指令的消息切换回复中是否显示思考块。
+- 解析顺序为指令、会话覆盖、`agents.list[].reasoningDefault`、`agents.defaults.reasoningDefault`，最后回退到 `off`。
 - 启用时，推理内容作为**独立消息**发送，以 `Reasoning:` 为前缀。
 - `stream`（仅 Telegram）：在回复生成期间将推理内容流式输出到 Telegram 草稿气泡中，然后发送不包含推理的最终回答。
 - 别名：`/reason`。
 - 不带参数发送 `/reasoning`（或 `/reasoning:`）可查看当前推理级别。
+
+示例：
+
+```json5
+{
+  agents: {
+    defaults: {
+      thinkingDefault: "off",
+      reasoningDefault: "off",
+    },
+    list: [
+      { id: "main", thinkingDefault: "off" },
+      { id: "researcher", thinkingDefault: "high", reasoningDefault: "off" },
+    ],
+  },
+}
+```
 
 ## 相关内容
 

@@ -53,6 +53,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "agents.list.*.skills": "Agent Skill Filter",
   agents: "Agents",
   "agents.defaults": "Agent Defaults",
+  "agents.defaults.reasoningDefault": "Agent Reasoning Visibility Default",
   "agents.list": "Agent List",
   gateway: "Gateway",
   "gateway.port": "Gateway Port",
@@ -705,6 +706,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "channels.imessage.cliPath": "iMessage CLI Path",
   "agents.list[].skills": "Agent Skill Filter",
   "agents.list[].thinkingDefault": "Agent Thinking Default",
+  "agents.list[].reasoningDefault": "Agent Reasoning Visibility Default",
   "agents.list[].identity.avatar": "Agent Avatar",
   "agents.list[].heartbeat.thinking": "Agent Heartbeat Thinking Override",
   "agents.list[].heartbeat.suppressToolErrorWarnings":

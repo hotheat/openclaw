@@ -147,11 +147,12 @@ describe("config schema regressions", () => {
     }
   });
 
-  it("accepts per-agent thinkingDefault and heartbeat.thinking overrides", () => {
+  it("accepts per-agent thinking/reasoning defaults and heartbeat.thinking overrides", () => {
     const res = validateConfigObject({
       agents: {
         defaults: {
           thinkingDefault: "off",
+          reasoningDefault: "off",
           heartbeat: {
             thinking: "low",
           },
@@ -159,7 +160,8 @@ describe("config schema regressions", () => {
         list: [
           {
             id: "researcher",
-            thinkingDefault: "medium",
+            thinkingDefault: "high",
+            reasoningDefault: "off",
             heartbeat: {
               every: "2h",
               thinking: "off",

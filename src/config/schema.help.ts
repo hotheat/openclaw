@@ -141,6 +141,10 @@ export const FIELD_HELP: Record<string, string> = {
     "Explicit list of configured agents with IDs and optional overrides for model, tools, identity, and workspace. Keep IDs stable over time so bindings, approvals, and session routing remain deterministic.",
   "agents.list[].thinkingDefault":
     "Per-agent default thinking level used when the session has no stored override and the message does not include an inline thinking directive.",
+  "agents.list[].reasoningDefault":
+    "Per-agent default reasoning visibility used when the session has no stored override and the message does not include a /reasoning directive. Defaults to off.",
+  "agents.defaults.reasoningDefault":
+    "Global default reasoning visibility used when no agent/session/message override is present. Defaults to off.",
   "agents.list[].identity.avatar":
     "Avatar image path (relative to the agent workspace only) or a remote URL/data URL.",
   "agents.defaults.heartbeat.thinking":

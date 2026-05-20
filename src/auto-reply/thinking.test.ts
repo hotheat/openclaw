@@ -46,6 +46,17 @@ describe("listThinkingLevels", () => {
     expect(listThinkingLevels("openai", "gpt-5.2")).toContain("xhigh");
   });
 
+  it("includes xhigh for gpt-5.4 compatible providers", () => {
+    expect(listThinkingLevels("openai", "gpt-5.4")).toContain("xhigh");
+    expect(listThinkingLevels("micu", "gpt-5.4")).toContain("xhigh");
+    expect(listThinkingLevels("duckcoding", "gpt-5.4")).toContain("xhigh");
+  });
+
+  it("includes xhigh for DeepSeek V4 models", () => {
+    expect(listThinkingLevels("deepseek", "deepseek-v4-pro")).toContain("xhigh");
+    expect(listThinkingLevels("deepseek", "deepseek-v4-flash")).toContain("xhigh");
+  });
+
   it("includes xhigh for github-copilot gpt-5.2 refs", () => {
     expect(listThinkingLevels("github-copilot", "gpt-5.2")).toContain("xhigh");
     expect(listThinkingLevels("github-copilot", "gpt-5.2-codex")).toContain("xhigh");

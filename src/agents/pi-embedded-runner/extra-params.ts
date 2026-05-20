@@ -373,6 +373,75 @@ function mapThinkingLevelToOpenRouterReasoningEffort(
   return thinkingLevel;
 }
 
+function isDeepseekBaseUrl(baseUrl: unknown): boolean {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) {
+    return false;
+  }
+  try {
+    return new URL(baseUrl).hostname.toLowerCase() === "api.deepseek.com";
+  } catch {
+    return baseUrl.toLowerCase().includes("api.deepseek.com");
+  }
+}
+
+function isDeepseekProviderOrBaseUrl(provider: unknown, baseUrl: unknown): boolean {
+  return (
+    (typeof provider === "string" && provider.trim().toLowerCase() === "deepseek") ||
+    isDeepseekBaseUrl(baseUrl)
+  );
+}
+
+function mapDeepseekThinkingPayload(thinkingLevel?: ThinkLevel):
+  | {
+      thinking: { type: "enabled" | "disabled" };
+      reasoning_effort?: "high" | "max";
+    }
+  | undefined {
+  if (!thinkingLevel) {
+    return undefined;
+  }
+  if (thinkingLevel === "off") {
+    return { thinking: { type: "disabled" } };
+  }
+  return {
+    thinking: { type: "enabled" },
+    reasoning_effort: thinkingLevel === "xhigh" ? "max" : "high",
+  };
+}
+
+function createDeepseekThinkingWrapper(
+  baseStreamFn: StreamFn | undefined,
+  provider: string,
+  configuredBaseUrl: unknown,
+  thinkingLevel?: ThinkLevel,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
+        const shouldInject = isDeepseekProviderOrBaseUrl(
+          payloadModel?.provider ?? model.provider ?? provider,
+          payloadModel?.baseUrl ?? model.baseUrl ?? configuredBaseUrl,
+        );
+        const mapped = shouldInject ? mapDeepseekThinkingPayload(thinkingLevel) : undefined;
+        if (mapped && payload && typeof payload === "object") {
+          const payloadObj = payload as Record<string, unknown>;
+          payloadObj.thinking = mapped.thinking;
+          if (mapped.reasoning_effort) {
+            payloadObj.reasoning_effort = mapped.reasoning_effort;
+          } else {
+            delete payloadObj.reasoning_effort;
+          }
+        }
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
+      },
+    });
+  };
+}
+
 /**
  * Create a streamFn wrapper that adds OpenRouter app attribution headers
  * and injects reasoning.effort based on the configured thinking level.
@@ -481,6 +550,7 @@ export function applyExtraParamsToAgent(
       : undefined;
   const merged = Object.assign({}, extraParams, override);
   const wrappedStreamFn = createStreamFnWithExtraParams(agent.streamFn, merged, provider);
+  const providerBaseUrl = cfg?.models?.providers?.[provider]?.baseUrl;
 
   if (wrappedStreamFn) {
     log.debug(`applying extraParams to agent streamFn for ${provider}/${modelId}`);
@@ -499,6 +569,16 @@ export function applyExtraParamsToAgent(
     log.debug(`applying OpenRouter app attribution headers for ${provider}/${modelId}`);
     agent.streamFn = createOpenRouterWrapper(agent.streamFn, thinkingLevel);
     agent.streamFn = createOpenRouterSystemCacheWrapper(agent.streamFn);
+  }
+
+  if (thinkingLevel && isDeepseekProviderOrBaseUrl(provider, providerBaseUrl)) {
+    log.debug(`applying DeepSeek thinking params for ${provider}/${modelId}`);
+    agent.streamFn = createDeepseekThinkingWrapper(
+      agent.streamFn,
+      provider,
+      providerBaseUrl,
+      thinkingLevel,
+    );
   }
 
   // Enable Z.AI tool_stream for real-time tool call streaming.

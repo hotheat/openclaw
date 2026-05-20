@@ -15,7 +15,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { type SessionEntry, updateSessionStore } from "../../config/sessions.js";
 import { applyModelOverrideToSessionEntry } from "../../sessions/model-overrides.js";
 import { resolveThreadParentSessionKey } from "../../sessions/session-key-utils.js";
-import type { ThinkLevel } from "./directives.js";
+import type { ReasoningLevel, ThinkLevel } from "./directives.js";
 
 export type ModelDirectiveSelection = {
   provider: string;
@@ -33,8 +33,8 @@ type ModelSelectionState = {
   allowedModelCatalog: ModelCatalog;
   resetModelOverride: boolean;
   resolveDefaultThinkingLevel: () => Promise<ThinkLevel>;
-  /** Default reasoning level from model capability: "on" if model has reasoning, else "off". */
-  resolveDefaultReasoningLevel: () => Promise<"on" | "off">;
+  /** Default reasoning visibility when no directive or session override is present. */
+  resolveDefaultReasoningLevel: () => Promise<ReasoningLevel>;
   needsModelCatalog: boolean;
 };
 
@@ -403,16 +403,10 @@ export async function createModelSelectionState(params: {
     return defaultThinkingLevel;
   };
 
-  const resolveDefaultReasoningLevel = async (): Promise<"on" | "off"> => {
-    let catalogForReasoning = modelCatalog ?? allowedModelCatalog;
-    if (!catalogForReasoning || catalogForReasoning.length === 0) {
-      modelCatalog = await loadModelCatalog({ config: cfg });
-      catalogForReasoning = modelCatalog;
-    }
+  const resolveDefaultReasoningLevel = async (): Promise<ReasoningLevel> => {
     return resolveReasoningDefault({
-      provider,
-      model,
-      catalog: catalogForReasoning,
+      cfg,
+      agentId,
     });
   };
 

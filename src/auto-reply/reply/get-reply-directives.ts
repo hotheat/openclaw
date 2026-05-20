@@ -391,7 +391,7 @@ export async function resolveReplyDirectives(params: {
   provider = modelState.provider;
   model = modelState.model;
 
-  // When neither directive nor session set reasoning, default to model capability (e.g. OpenRouter with reasoning: true).
+  // When neither directive nor session set reasoning, use configured visibility default.
   const reasoningExplicitlySet =
     directives.reasoningLevel !== undefined ||
     (sessionEntry?.reasoningLevel !== undefined && sessionEntry?.reasoningLevel !== null);

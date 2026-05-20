@@ -97,7 +97,7 @@ Details:
   Path: /path/to/openclaw/hooks/bundled/session-memory/HOOK.md
   Handler: /path/to/openclaw/hooks/bundled/session-memory/handler.ts
   Homepage: https://docs.openclaw.ai/automation/hooks#session-memory
-  Events: command:reset
+  Events: command:new
 
 Requirements:
   Config: ✓ workspace.dir

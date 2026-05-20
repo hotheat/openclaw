@@ -155,6 +155,17 @@ const OPENROUTER_DEFAULT_COST = {
   cacheWrite: 0,
 };
 
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+export const DEEPSEEK_DEFAULT_MODEL_ID = "deepseek-v4-pro";
+const DEEPSEEK_DEFAULT_CONTEXT_WINDOW = 1_000_000;
+const DEEPSEEK_DEFAULT_MAX_TOKENS = 384_000;
+const DEEPSEEK_DEFAULT_COST = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+};
+
 const VLLM_BASE_URL = "http://127.0.0.1:8000/v1";
 const VLLM_DEFAULT_CONTEXT_WINDOW = 128000;
 const VLLM_DEFAULT_MAX_TOKENS = 8192;
@@ -688,6 +699,33 @@ function buildOpenrouterProvider(): ProviderConfig {
   };
 }
 
+export function buildDeepseekProvider(): ProviderConfig {
+  return {
+    baseUrl: DEEPSEEK_BASE_URL,
+    api: "openai-completions",
+    models: [
+      {
+        id: "deepseek-v4-flash",
+        name: "DeepSeek V4 Flash",
+        reasoning: true,
+        input: ["text"],
+        cost: DEEPSEEK_DEFAULT_COST,
+        contextWindow: DEEPSEEK_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: DEEPSEEK_DEFAULT_MAX_TOKENS,
+      },
+      {
+        id: DEEPSEEK_DEFAULT_MODEL_ID,
+        name: "DeepSeek V4 Pro",
+        reasoning: true,
+        input: ["text"],
+        cost: DEEPSEEK_DEFAULT_COST,
+        contextWindow: DEEPSEEK_DEFAULT_CONTEXT_WINDOW,
+        maxTokens: DEEPSEEK_DEFAULT_MAX_TOKENS,
+      },
+    ],
+  };
+}
+
 async function buildVllmProvider(params?: {
   baseUrl?: string;
   apiKey?: string;
@@ -935,6 +973,13 @@ export async function resolveImplicitProviders(params: {
     resolveApiKeyFromProfiles({ provider: "qianfan", store: authStore });
   if (qianfanKey) {
     providers.qianfan = { ...buildQianfanProvider(), apiKey: qianfanKey };
+  }
+
+  const deepseekKey =
+    resolveEnvApiKeyVarName("deepseek") ??
+    resolveApiKeyFromProfiles({ provider: "deepseek", store: authStore });
+  if (deepseekKey) {
+    providers.deepseek = { ...buildDeepseekProvider(), apiKey: deepseekKey };
   }
 
   const openrouterKey =

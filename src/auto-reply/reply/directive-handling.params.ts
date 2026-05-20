@@ -46,6 +46,7 @@ export type ApplyInlineDirectivesFastLaneParams = HandleDirectiveOnlyCoreParams 
   agentCfg?: NonNullable<OpenClawConfig["agents"]>["defaults"];
   modelState: {
     resolveDefaultThinkingLevel: () => Promise<ThinkLevel | undefined>;
+    resolveDefaultReasoningLevel: () => Promise<ReasoningLevel>;
     allowedModelKeys: Set<string>;
     allowedModelCatalog: Awaited<
       ReturnType<typeof import("../../agents/model-catalog.js").loadModelCatalog>

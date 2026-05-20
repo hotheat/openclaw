@@ -20,13 +20,16 @@ title: "Thinking Levels"
   - `highest`, `max` map to `high`.
 - Provider notes:
   - Z.AI (`zai/*`) only supports binary thinking (`on`/`off`). Any non-`off` level is treated as `on` (mapped to `low`).
+  - DeepSeek (`deepseek/*` or custom providers pointed at `https://api.deepseek.com`) maps `off` to `thinking.disabled`; non-`off` levels map to `thinking.enabled` with `reasoning_effort: "high"` except `xhigh`, which maps to `"max"`.
+  - OpenAI-compatible providers such as `openai`, `micu`, and `duckcoding` can use the same `thinkingDefault` config. The exact request payload still depends on each model/provider transport.
 
 ## Resolution order
 
 1. Inline directive on the message (applies only to that message).
 2. Session override (set by sending a directive-only message).
-3. Global default (`agents.defaults.thinkingDefault` in config).
-4. Fallback: low for reasoning-capable models; off otherwise.
+3. Per-agent default (`agents.list[].thinkingDefault` in config).
+4. Global default (`agents.defaults.thinkingDefault` in config).
+5. Fallback: low for reasoning-capable models; off otherwise.
 
 ## Setting a session default
 
@@ -54,10 +57,28 @@ title: "Thinking Levels"
 
 - Levels: `on|off|stream`.
 - Directive-only message toggles whether thinking blocks are shown in replies.
+- Resolution order is directive, session override, `agents.list[].reasoningDefault`, `agents.defaults.reasoningDefault`, then `off`.
 - When enabled, reasoning is sent as a **separate message** prefixed with `Reasoning:`.
 - `stream` (Telegram only): streams reasoning into the Telegram draft bubble while the reply is generating, then sends the final answer without reasoning.
 - Alias: `/reason`.
 - Send `/reasoning` (or `/reasoning:`) with no argument to see the current reasoning level.
+
+Example:
+
+```json5
+{
+  agents: {
+    defaults: {
+      thinkingDefault: "off",
+      reasoningDefault: "off",
+    },
+    list: [
+      { id: "main", thinkingDefault: "off" },
+      { id: "researcher", thinkingDefault: "high", reasoningDefault: "off" },
+    ],
+  },
+}
+```
 
 ## Related
 

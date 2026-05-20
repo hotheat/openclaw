@@ -718,6 +718,7 @@ Time format in system prompt. Default: `auto` (OS preference).
         fallbacks: ["openrouter/google/gemini-2.0-flash-vision:free"],
       },
       thinkingDefault: "low",
+      reasoningDefault: "off",
       verboseDefault: "off",
       elevatedDefault: "on",
       timeoutSeconds: 600,
@@ -732,7 +733,34 @@ Time format in system prompt. Default: `auto` (OS preference).
 - `model.primary`: format `provider/model` (e.g. `anthropic/claude-opus-4-6`). If you omit the provider, OpenClaw assumes `anthropic` (deprecated).
 - `models`: the configured model catalog and allowlist for `/model`. Each entry can include `alias` (shortcut) and `params` (provider-specific: `temperature`, `maxTokens`).
 - `imageModel`: only used if the primary model lacks image input.
+- `thinkingDefault`: default `/think` level when the session has no stored override. Use `off` for the main agent and a higher level such as `high` for a research agent when you want deeper default reasoning.
+- `reasoningDefault`: default `/reasoning` visibility when the session has no stored override. Default is `off`, so model reasoning is hidden unless the user or config explicitly enables it.
 - `maxConcurrent`: max parallel agent runs across sessions (each session still serialized). Default: 1.
+
+Per-agent overrides use the same fields:
+
+```json5
+{
+  agents: {
+    defaults: {
+      thinkingDefault: "off",
+      reasoningDefault: "off",
+    },
+    list: [
+      {
+        id: "main",
+        thinkingDefault: "off",
+        reasoningDefault: "off",
+      },
+      {
+        id: "researcher",
+        thinkingDefault: "high",
+        reasoningDefault: "off",
+      },
+    ],
+  },
+}
+```
 
 **Built-in alias shorthands** (only apply when the model is in `agents.defaults.models`):
 

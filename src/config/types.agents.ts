@@ -19,6 +19,8 @@ export type AgentConfig = {
   humanDelay?: HumanDelayConfig;
   /** Per-agent default thinking level when no session or inline override is present. */
   thinkingDefault?: AgentDefaultsConfig["thinkingDefault"];
+  /** Per-agent default reasoning visibility when no session or inline override is present. */
+  reasoningDefault?: AgentDefaultsConfig["reasoningDefault"];
   /** Optional per-agent heartbeat overrides. */
   heartbeat?: AgentDefaultsConfig["heartbeat"];
   identity?: IdentityConfig;

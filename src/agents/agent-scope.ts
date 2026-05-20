@@ -22,6 +22,7 @@ type ResolvedAgentConfig = {
   agentDir?: string;
   model?: AgentEntry["model"];
   thinkingDefault?: AgentEntry["thinkingDefault"];
+  reasoningDefault?: AgentEntry["reasoningDefault"];
   skills?: AgentEntry["skills"];
   memorySearch?: AgentEntry["memorySearch"];
   humanDelay?: AgentEntry["humanDelay"];
@@ -125,6 +126,8 @@ export function resolveAgentConfig(
         ? entry.model
         : undefined,
     thinkingDefault: typeof entry.thinkingDefault === "string" ? entry.thinkingDefault : undefined,
+    reasoningDefault:
+      typeof entry.reasoningDefault === "string" ? entry.reasoningDefault : undefined,
     skills: Array.isArray(entry.skills) ? entry.skills : undefined,
     memorySearch: entry.memorySearch,
     humanDelay: entry.humanDelay,

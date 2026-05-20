@@ -157,6 +157,7 @@ export async function applyInlineDirectiveOverrides(params: {
       sessionEntry,
       agentCfg,
       resolveDefaultThinkingLevel: () => modelState.resolveDefaultThinkingLevel(),
+      resolveDefaultReasoningLevel: () => modelState.resolveDefaultReasoningLevel(),
     });
     const currentThinkLevel = resolvedDefaultThinkLevel;
     const directiveReply = await handleDirectiveOnly({
@@ -236,6 +237,7 @@ export async function applyInlineDirectiveOverrides(params: {
       agentCfg,
       modelState: {
         resolveDefaultThinkingLevel: modelState.resolveDefaultThinkingLevel,
+        resolveDefaultReasoningLevel: modelState.resolveDefaultReasoningLevel,
         ...directiveModelState,
       },
     });

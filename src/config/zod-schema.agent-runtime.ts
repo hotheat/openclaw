@@ -674,6 +674,7 @@ export const AgentEntrySchema = z
         z.literal("xhigh"),
       ])
       .optional(),
+    reasoningDefault: z.union([z.literal("off"), z.literal("on"), z.literal("stream")]).optional(),
     heartbeat: HeartbeatSchema,
     identity: IdentitySchema,
     groupChat: GroupChatSchema,
