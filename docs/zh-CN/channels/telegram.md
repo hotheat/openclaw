@@ -136,7 +136,7 @@ OpenClaw 可以在 Telegram 私信中使用 `sendMessageDraft` 流式传输部�
 
 ## 命令（原生 + 自定义）
 
-OpenClaw 在启动时向 Telegram 的机器人菜单注册原生命令（如 `/status`、`/reset`、`/model`）。
+OpenClaw 在启动时向 Telegram 的机器人菜单注册原生命令（如 `/status`、`/new`、`/model`）。
 你可以通过配置向菜单添加自定义命令：
 
 ```json5

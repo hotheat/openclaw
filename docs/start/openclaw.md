@@ -138,7 +138,7 @@ Example:
   },
   session: {
     scope: "per-sender",
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     reset: {
       mode: "daily",
       atHour: 4,
@@ -152,7 +152,7 @@ Example:
 
 - Session files: `~/.openclaw/agents/<agentId>/sessions/{{SessionId}}.jsonl`
 - Session metadata (token usage, last route, etc): `~/.openclaw/agents/<agentId>/sessions/sessions.json` (legacy: `~/.openclaw/sessions/sessions.json`)
-- `/new` or `/reset` starts a fresh session for that chat (configurable via `resetTriggers`). If sent alone, the agent replies with a short hello to confirm the reset.
+- `/new` starts a fresh session for that chat (configurable via `resetTriggers`). If sent alone, the agent replies with a short hello to confirm the reset.
 - `/compact [instructions]` compacts the session context and reports the remaining context budget.
 
 ## Heartbeats (proactive mode)

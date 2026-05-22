@@ -43,6 +43,32 @@ x-i18n:
     bashForegroundMs: 2000,
     config: false,
     debug: false,
+    help: {
+      title: "Help",
+      sections: [
+        {
+          title: "Options",
+          items: [
+            {
+              command: "/think:<level>",
+              description: "修改当前思考级别。",
+            },
+          ],
+        },
+        {
+          title: "Skills",
+          items: [
+            {
+              command: "/skill report-builder <topic>",
+              description: "为指定主题生成报告。",
+            },
+          ],
+        },
+      ],
+      footer: "More: /commands",
+    },
+    newSessionAck: true,
+    newSessionHelpHint: "输入 /help 命令可以查看详细命令。",
     restart: false,
     useAccessGroups: true,
   },
@@ -62,6 +88,10 @@ x-i18n:
 - `commands.bashForegroundMs`（默认 `2000`）控制 bash 切换到后台模式之前等待多长时间（`0` 立即后台运行）。
 - `commands.config`（默认 `false`）启用 `/config`（读写 `openclaw.json`）。
 - `commands.debug`（默认 `false`）启用 `/debug`（仅运行时覆盖）。
+- `commands.help`（可选）用结构化分组替换内置 `/help` 回复，优先级高于 `commands.helpText`。
+- `commands.helpText`（可选，旧格式）用单个字符串替换内置 `/help` 回复。`commands.help` 和 `commands.helpText` 均未设置或为空白时使用默认摘要。
+- `commands.newSessionAck`（默认 `true`）为 `/new` 发送单独的“新会话已开始”确认消息。设为 `false` 时，用户首先看到的是智能体的新会话问候。
+- `commands.newSessionHelpHint`（默认 `Type /help to see detailed commands.`）追加到裸 `/new` 的问候后。使用字符串可自定义提示，例如 `输入 /help 命令可以查看详细命令。`；设为 `false` 可关闭。
 - `commands.useAccessGroups`（默认 `true`）对命令强制执行白名单/策略。
 
 ## 命令列表
@@ -89,7 +119,7 @@ x-i18n:
 - `/dock-slack`（别名：`/dock_slack`）（将回复切换到 Slack）
 - `/activation mention|always`（仅限群组）
 - `/send on|off|inherit`（仅所有者）
-- `/reset` 或 `/new [model]`（可选模型提示；其余部分传递）
+- `/new [model]`（可选模型提示；其余部分传递）
 - `/think <off|minimal|low|medium|high|xhigh>`（按模型/提供商动态选择；别名：`/thinking`、`/t`）
 - `/verbose on|full|off`（别名：`/v`）
 - `/reasoning on|off|stream`（别名：`/reason`；启用时，发送带有 `Reasoning:` 前缀的单独消息；`stream` = 仅 Telegram 草稿）

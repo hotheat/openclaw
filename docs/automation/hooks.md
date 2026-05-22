@@ -1,7 +1,7 @@
 ---
 summary: "Hooks: event-driven automation for commands and lifecycle events"
 read_when:
-  - You want event-driven automation for /new, /reset, /stop, and agent lifecycle events
+  - You want event-driven automation for /new, /stop, and agent lifecycle events
   - You want to build, install, or debug hooks
 title: "Hooks"
 ---
@@ -14,14 +14,14 @@ Hooks provide an extensible event-driven system for automating actions in respon
 
 Hooks are small scripts that run when something happens. There are two kinds:
 
-- **Hooks** (this page): run inside the Gateway when agent events fire, like `/new`, `/reset`, `/stop`, or lifecycle events.
+- **Hooks** (this page): run inside the Gateway when agent events fire, like `/new`, `/stop`, or lifecycle events.
 - **Webhooks**: external HTTP webhooks that let other systems trigger work in OpenClaw. See [Webhook Hooks](/automation/webhook) or use `openclaw webhooks` for Gmail helper commands.
 
 Hooks can also be bundled inside plugins; see [Plugins](/tools/plugin#plugin-hooks).
 
 Common uses:
 
-- Save a memory snapshot when you reset a session
+- Save a memory snapshot when daily rollover ends a session
 - Keep an audit trail of commands for troubleshooting or compliance
 - Trigger follow-up automation when a session starts or ends
 - Write files into the agent workspace or call external APIs when events fire
@@ -32,7 +32,7 @@ If you can write a small TypeScript function, you can write a hook. Hooks are di
 
 The hooks system allows you to:
 
-- Save structured reset summaries into workspace memory
+- Save structured daily rollover summaries into workspace memory
 - Log all commands for auditing
 - Trigger custom automations on agent lifecycle events
 - Extend OpenClaw's behavior without modifying core code
@@ -43,7 +43,7 @@ The hooks system allows you to:
 
 OpenClaw ships with four bundled hooks that are automatically discovered:
 
-- **💾 session-memory**: Appends a structured summary to your agent workspace daily note when you issue `/reset`; builtin daily rollover reuses the same helper when a session ends with `reason="daily"` (idle rollover does not)
+- **💾 session-memory**: Appends a structured summary to your agent workspace daily note during builtin daily rollover when a session ends with `reason="daily"` (idle rollover does not)
 - **📎 bootstrap-extra-files**: Injects additional workspace bootstrap files from configured glob/path patterns during `agent:bootstrap`
 - **📝 command-logger**: Logs all command events to `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**: Runs `BOOT.md` when the gateway starts (requires internal hooks enabled)
@@ -165,7 +165,7 @@ No configuration needed.
 The `metadata.openclaw` object supports:
 
 - **`emoji`**: Display emoji for CLI (e.g., `"💾"`)
-- **`events`**: Array of events to listen for (e.g., `["command:new", "command:reset"]`)
+- **`events`**: Array of events to listen for (e.g., `["command:new"]`)
 - **`export`**: Named export to use (defaults to `"default"`)
 - **`homepage`**: Documentation URL
 - **`requires`**: Optional requirements
@@ -240,7 +240,6 @@ Triggered when agent commands are issued:
 
 - **`command`**: All command events (general listener)
 - **`command:new`**: When `/new` command is issued
-- **`command:reset`**: When `/reset` command is issued
 - **`command:stop`**: When `/stop` command is issued
 
 ### Agent Events
@@ -525,14 +524,14 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-Saves a structured memory summary when you issue `/reset`, then promotes durable
+Builtin daily rollover saves a structured memory summary, then promotes durable
 facts into `MEMORY.md`.
 
 Builtin runtime also reuses the same summary helper when an old session rolls
 over because of a daily reset. That reuse is not a separate hook event. Idle
 rollover does not trigger it.
 
-**Events**: `command:reset`
+**Events**: none; builtin daily rollover reuses the helper directly
 
 **Requirements**: `workspace.dir` must be configured
 
@@ -543,7 +542,7 @@ rollover does not trigger it.
 
 **What it does**:
 
-1. Uses the pre-reset session entry to locate the correct transcript
+1. Uses the ended session entry to locate the correct transcript
 2. Extracts the last N user/assistant messages (default: 15)
 3. Uses the configured model to generate a grounded structured summary
 4. Appends that summary as a new block to the daily memory note
@@ -556,7 +555,7 @@ rollover does not trigger it.
 ## Daily Structured Summary
 
 - **Generated At**: 2026-01-16 14:30:00 UTC
-- **Source**: reset
+- **Source**: daily-rollover
 - **Source Sessions**: abc123def456
 
 ### Current main problem / daily theme
@@ -578,7 +577,7 @@ rollover does not trigger it.
 
 ### Positive progress / validated wins
 
-- Daily rollover and `/reset` now produce a more useful task-first summary block.
+- Daily rollover now produces a more useful task-first summary block.
 ```
 
 `MEMORY.md` stays Markdown. The JSON patch is an internal update protocol used
@@ -764,7 +763,6 @@ metadata: { "openclaw": { "events": ["command"] } } # General - more overhead
 The gateway logs hook loading at startup:
 
 ```
-Registered hook: session-memory -> command:reset
 Registered hook: bootstrap-extra-files -> agent:bootstrap
 Registered hook: command-logger -> command
 Registered hook: boot-md -> gateway:startup

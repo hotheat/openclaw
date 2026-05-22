@@ -337,7 +337,7 @@ export async function expectInlineCommandHandledAndStripped(params: {
 
 export async function runGreetingPromptForBareNewOrReset(params: {
   home: string;
-  body: "/new" | "/reset";
+  body: "/new";
   getReplyFromConfig: typeof import("./reply.js").getReplyFromConfig;
 }) {
   getRunEmbeddedPiAgentMock().mockResolvedValue({
@@ -359,10 +359,10 @@ export async function runGreetingPromptForBareNewOrReset(params: {
     makeCfg(params.home),
   );
   const text = Array.isArray(res) ? res[0]?.text : res?.text;
-  expect(text).toBe("hello");
+  expect(text).toBe("hello\n\nType /help to see detailed commands.");
   expect(getRunEmbeddedPiAgentMock()).toHaveBeenCalledOnce();
   const prompt = getRunEmbeddedPiAgentMock().mock.calls[0]?.[0]?.prompt ?? "";
-  expect(prompt).toContain("A new session was started via /new or /reset");
+  expect(prompt).toContain("A new session was started via /new");
   expect(prompt).toContain("Execute your Session Startup sequence now");
 }
 

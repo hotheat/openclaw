@@ -15,7 +15,7 @@ metadata:
 
 # Command Logger Hook
 
-Logs all command events (`/new`, `/reset`, `/stop`, etc.) to a centralized audit log file for debugging and monitoring purposes.
+Logs all command events (`/new`, `/stop`, etc.) to a centralized audit log file for debugging and monitoring purposes.
 
 ## What It Does
 

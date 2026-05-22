@@ -37,6 +37,32 @@ They run immediately, are stripped before the model sees the message, and the re
     bashForegroundMs: 2000,
     config: false,
     debug: false,
+    help: {
+      title: "Team Help",
+      sections: [
+        {
+          title: "Options",
+          items: [
+            {
+              command: "/think:<level>",
+              description: "Set the current thinking level.",
+            },
+          ],
+        },
+        {
+          title: "Skills",
+          items: [
+            {
+              command: "/skill report-builder <topic>",
+              description: "Build a report for a specific topic.",
+            },
+          ],
+        },
+      ],
+      footer: "More: /commands",
+    },
+    newSessionAck: true,
+    newSessionHelpHint: "Type /help to see detailed commands.",
     restart: false,
     allowFrom: {
       "*": ["user1"],
@@ -60,6 +86,10 @@ They run immediately, are stripped before the model sees the message, and the re
 - `commands.bashForegroundMs` (default `2000`) controls how long bash waits before switching to background mode (`0` backgrounds immediately).
 - `commands.config` (default `false`) enables `/config` (reads/writes `openclaw.json`).
 - `commands.debug` (default `false`) enables `/debug` (runtime-only overrides).
+- `commands.help` (optional) replaces the built-in `/help` reply with structured sections. It takes precedence over `commands.helpText`.
+- `commands.helpText` (optional, legacy) replaces the built-in `/help` reply with a single string. Leave `commands.help` and `commands.helpText` unset or blank to use the default summary.
+- `commands.newSessionAck` (default `true`) sends a separate “New session started” acknowledgement for `/new`. Set it to `false` when you want the agent's fresh-session greeting to be the first visible reply.
+- `commands.newSessionHelpHint` (default `Type /help to see detailed commands.`) is appended to bare `/new` greetings. Use a string to customize it or `false` to disable it.
 - `commands.allowFrom` (optional) sets a per-provider allowlist for command authorization. When configured, it is the
   only authorization source for commands and directives (channel allowlists/pairing and `commands.useAccessGroups`
   are ignored). Use `"*"` for a global default; provider-specific keys override it.
@@ -98,7 +128,7 @@ Text + native (when enabled):
 - `/dock-slack` (alias: `/dock_slack`) (switch replies to Slack)
 - `/activation mention|always` (groups only)
 - `/send on|off|inherit` (owner-only)
-- `/reset` or `/new [model]` (optional model hint; remainder is passed through)
+- `/new [model]` (optional model hint; remainder is passed through)
 - `/think <off|minimal|low|medium|high|xhigh>` (dynamic choices by model/provider; aliases: `/thinking`, `/t`)
 - `/verbose on|full|off` (alias: `/v`)
 - `/reasoning on|off|stream` (alias: `/reason`; when on, sends a separate message prefixed `Reasoning:`; `stream` = Telegram draft only)

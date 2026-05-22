@@ -30,7 +30,7 @@ OpenClaw 记忆是**智能体工作空间中的纯 Markdown 文件**。这些文
   - 精心整理的长期记忆。
   - **仅在主要的私人会话中加载**（绝不在群组上下文中加载）。
 
-在当前 builtin 流程里，daily rollover 和 `/reset` 可以同时更新这两层：
+在当前 builtin 流程里，daily rollover 可以同时更新这两层：
 
 - `memory/YYYY-MM-DD.md`
   - 接收 grounded daily structured summary block。
@@ -55,7 +55,7 @@ OpenClaw 记忆是**智能体工作空间中的纯 Markdown 文件**。这些文
 - 这个领域仍在发展中。提醒模型存储记忆会有帮助；它会知道该怎么做。
 - 如果你想让某些内容持久保存，**请要求机器人将其写入**记忆。
 
-当前 builtin 的 daily rollover 和 `/reset` 也遵循同样的分层原则：
+当前 builtin 的 daily rollover 也遵循同样的分层原则：
 
 - 先把 grounded structured summary 写入 `memory/YYYY-MM-DD.md`
 - 再只把可持久的 delta 提升到 `MEMORY.md`

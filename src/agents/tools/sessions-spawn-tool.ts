@@ -6,17 +6,60 @@ import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
 const SessionsSpawnToolSchema = Type.Object({
-  task: Type.String(),
-  label: Type.Optional(Type.String()),
-  agentId: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
-  thinking: Type.Optional(Type.String()),
-  runTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+  task: Type.String({
+    description:
+      "Full task prompt for the sub-agent. Include deliverables, constraints, output paths, and what it should report back on completion.",
+  }),
+  label: Type.Optional(
+    Type.String({
+      description: "Short human-readable label for logs and status displays.",
+    }),
+  ),
+  agentId: Type.Optional(
+    Type.String({
+      description:
+        'Target agent id. Defaults to the current agent. Other agent ids require allowlist permission; prefer agentId="researcher" for research-heavy tasks when allowed.',
+    }),
+  ),
+  model: Type.Optional(
+    Type.String({
+      description: "Optional model override for this subagent run.",
+    }),
+  ),
+  thinking: Type.Optional(
+    Type.String({
+      description: "Optional thinking level override for this sub-agent run.",
+    }),
+  ),
+  runTimeoutSeconds: Type.Optional(
+    Type.Number({
+      minimum: 0,
+      description:
+        "Timeout for the sub-agent run in seconds. Use 0 only when an unlimited background run is explicitly needed.",
+    }),
+  ),
   // Back-compat: older callers used timeoutSeconds for this tool.
-  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
-  thread: Type.Optional(Type.Boolean()),
-  mode: optionalStringEnum(SUBAGENT_SPAWN_MODES),
-  cleanup: optionalStringEnum(["delete", "keep"] as const),
+  timeoutSeconds: Type.Optional(
+    Type.Number({
+      minimum: 0,
+      description:
+        "Deprecated alias for runTimeoutSeconds. Prefer runTimeoutSeconds for new calls.",
+    }),
+  ),
+  thread: Type.Optional(
+    Type.Boolean({
+      description:
+        "Bind the sub-agent to a requester thread. Only use when the channel supports sub-agent thread binding.",
+    }),
+  ),
+  mode: optionalStringEnum(SUBAGENT_SPAWN_MODES, {
+    description:
+      "run = one-shot background sub-agent that reports back on completion. session = persistent thread-bound sub-agent for follow-up interaction; requires thread=true and channel support.",
+  }),
+  cleanup: optionalStringEnum(["delete", "keep"] as const, {
+    description:
+      'keep preserves the sub-agent session and artifacts for review. delete removes the session after completion/announce. Default is "keep".',
+  }),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -36,7 +79,7 @@ export function createSessionsSpawnTool(opts?: {
     label: "Sessions",
     name: "sessions_spawn",
     description:
-      'Spawn a sub-agent in an isolated session (mode="run" one-shot or mode="session" persistent) and route results back to the requester chat/thread.',
+      "Spawn a sub-agent in its own isolated session for complex, long-running, parallelizable, or multi-step work. Use it for tasks with multiple deliverables, long runtimes, or delegated background execution.",
     parameters: SessionsSpawnToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;

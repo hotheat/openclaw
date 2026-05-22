@@ -67,7 +67,7 @@ Only the owner number (from `channels.whatsapp.allowFrom`, or the bot’s own E.
 1. Add your WhatsApp account (the one running OpenClaw) to the group.
 2. Say `@openclaw …` (or include the number). Only allowlisted senders can trigger it unless you set `groupPolicy: "open"`.
 3. The agent prompt will include recent group context plus the trailing `[from: …]` marker so it can address the right person.
-4. Session-level directives (`/verbose on`, `/think high`, `/new` or `/reset`, `/compact`) apply only to that group’s session; send them as standalone messages so they register. Your personal DM session remains independent.
+4. Session-level directives (`/verbose on`, `/think high`, `/new`, `/compact`) apply only to that group’s session; send them as standalone messages so they register. Your personal DM session remains independent.
 
 ## Testing / verification
 

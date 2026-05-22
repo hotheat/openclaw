@@ -26,4 +26,12 @@ describe("session reset schema", () => {
       }),
     ).not.toThrow();
   });
+
+  it("rejects /reset as a session reset trigger", () => {
+    expect(() =>
+      SessionSchema.parse({
+        resetTriggers: ["/new", "/reset"],
+      }),
+    ).toThrow(/\/reset/);
+  });
 });

@@ -871,6 +871,21 @@ describe("handleCommands hooks", () => {
     expect(spy).toHaveBeenCalledWith(expect.objectContaining({ type: "command", action: "new" }));
     spy.mockRestore();
   });
+
+  it("does not treat /reset as a session command", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/reset take notes", cfg);
+    const spy = vi.spyOn(internalHooks, "triggerInternalHook").mockResolvedValue();
+
+    const result = await handleCommands(params);
+
+    expect(result.shouldContinue).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
 });
 
 describe("handleCommands context", () => {

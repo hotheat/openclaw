@@ -8,7 +8,7 @@ title: "hooks"
 
 # `openclaw hooks`
 
-Manage agent hooks (event-driven automations for commands like `/new`, `/reset`, and gateway startup).
+Manage agent hooks (event-driven automations for commands like `/new` and gateway startup).
 
 Related:
 
@@ -247,8 +247,8 @@ global `--yes` to bypass prompts in CI/non-interactive runs.
 
 ### session-memory
 
-Saves a structured summary when you issue `/reset`, and builtin runtime reuses
-the same helper for daily rollover.
+Builtin runtime saves a structured summary during daily rollover by reusing the
+same helper.
 
 **Enable:**
 

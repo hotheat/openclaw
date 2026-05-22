@@ -15,7 +15,7 @@ x-i18n:
 
 # `openclaw hooks`
 
-管理智能体钩子（针对 `/new`、`/reset` 等命令以及 Gateway 网关启动的事件驱动自动化）。
+管理智能体钩子（针对 `/new` 等命令以及 Gateway 网关启动的事件驱动自动化）。
 
 相关内容：
 
@@ -244,8 +244,7 @@ openclaw hooks update --all
 
 ### session-memory
 
-在你执行 `/reset` 时保存结构化摘要，builtin runtime 也会在 daily
-rollover 时复用同一条 helper。
+builtin runtime 会在 daily rollover 时复用同一条 helper 来保存结构化摘要。
 
 **启用：**
 

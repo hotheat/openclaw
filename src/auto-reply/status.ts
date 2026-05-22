@@ -20,6 +20,7 @@ import {
   type SessionEntry,
   type SessionScope,
 } from "../config/sessions.js";
+import type { CommandsHelpConfig } from "../config/types.messages.js";
 import { formatTimeAgo } from "../infra/format-time/format-relative.ts";
 import { resolveCommitHash } from "../infra/git-commit.js";
 import type { MediaUnderstandingDecision } from "../media-understanding/types.js";
@@ -468,7 +469,11 @@ export function buildStatusMessage(args: StatusArgs): string {
     }
   }
 
-  const thinkLevel = args.resolvedThink ?? args.agent?.thinkingDefault ?? "off";
+  const thinkLevel =
+    args.resolvedThink ??
+    (entry?.thinkingLevel as ThinkLevel | undefined) ??
+    args.agent?.thinkingDefault ??
+    "off";
   const verboseLevel = args.resolvedVerbose ?? args.agent?.verboseDefault ?? "off";
   const reasoningLevel = args.resolvedReasoning ?? "off";
   const elevatedLevel =
@@ -682,10 +687,20 @@ function groupCommandsByCategory(
 }
 
 export function buildHelpMessage(cfg?: OpenClawConfig): string {
-  const lines = ["ℹ️ Help", ""];
+  const structuredHelpText = formatStructuredHelpMessage(cfg?.commands?.help);
+  if (structuredHelpText) {
+    return structuredHelpText;
+  }
 
-  lines.push("Session");
-  lines.push("  /new  |  /reset  |  /compact [instructions]  |  /stop");
+  const customHelpText = cfg?.commands?.helpText?.trim();
+  if (customHelpText) {
+    return customHelpText;
+  }
+
+  const lines: string[] = [];
+
+  lines.push("【Session】");
+  lines.push("  /new  |  /compact [instructions]  |  /stop");
   lines.push("");
 
   const optionParts = ["/think <level>", "/model <id>", "/verbose on|off"];
@@ -695,21 +710,68 @@ export function buildHelpMessage(cfg?: OpenClawConfig): string {
   if (isCommandFlagEnabled(cfg, "debug")) {
     optionParts.push("/debug");
   }
-  lines.push("Options");
+  lines.push("【Options】");
   lines.push(`  ${optionParts.join("  |  ")}`);
   lines.push("");
 
-  lines.push("Status");
+  lines.push("【Status】");
   lines.push("  /status  |  /whoami  |  /context");
   lines.push("");
 
-  lines.push("Skills");
+  lines.push("【Skills】");
   lines.push("  /skill <name> [input]");
 
   lines.push("");
   lines.push("More: /commands for full list");
 
   return lines.join("\n");
+}
+
+function formatStructuredHelpMessage(help?: CommandsHelpConfig): string | undefined {
+  if (!help) {
+    return undefined;
+  }
+
+  const lines: string[] = [];
+  const title = help.title?.trim();
+  if (title && title.toLowerCase() !== "help") {
+    lines.push(title);
+  }
+
+  for (const section of help.sections ?? []) {
+    const sectionLines: string[] = [];
+    const sectionTitle = section.title?.trim();
+    if (sectionTitle) {
+      sectionLines.push(`【${sectionTitle}】`);
+    }
+
+    for (const item of section.items ?? []) {
+      const command = item.command.trim();
+      if (!command) {
+        continue;
+      }
+      const description = item.description?.trim();
+      sectionLines.push(description ? `  ${command} ${description}` : `  ${command}`);
+    }
+
+    if (sectionLines.length === 0) {
+      continue;
+    }
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(...sectionLines);
+  }
+
+  const footer = help.footer?.trim();
+  if (footer) {
+    if (lines.length > 0 && lines.at(-1) !== "") {
+      lines.push("");
+    }
+    lines.push(footer);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : undefined;
 }
 
 const COMMANDS_PER_PAGE = 8;

@@ -58,7 +58,7 @@ If no explicit order is configured, OpenClaw uses a round‑robin order:
 OpenClaw **pins the chosen auth profile per session** to keep provider caches warm.
 It does **not** rotate on every request. The pinned profile is reused until:
 
-- the session is reset (`/new` / `/reset`)
+- the session is reset (`/new`)
 - a compaction completes (compaction count increments)
 - the profile is in cooldown/disabled
 

@@ -78,7 +78,7 @@ OpenClaw 将**每个智能体的一个直接聊天会话**视为主会话。直�
 - 旧版仅空闲模式：如果你设置了 `session.idleMinutes` 而没有任何 `session.reset`/`resetByType`/`resetByChannel` 配置，OpenClaw 会保持仅空闲模式以保持向后兼容。
 - 按类型覆盖（可选）：`resetByType` 允许你覆盖 `dm`、`group` 和 `thread` 会话的策略（thread = Slack/Discord 线程、Telegram 话题、连接器提供的 Matrix 线程）。
 - 按渠道覆盖（可选）：`resetByChannel` 覆盖渠道的重置策略（适用于该渠道的所有会话类型，优先于 `reset`/`resetByType`）。
-- 重置触发器：精确的 `/new` 或 `/reset`（加上 `resetTriggers` 中的任何额外项）启动新的会话 ID 并传递消息的其余部分。`/new <model>` 接受模型别名、`provider/model` 或提供商名称（模糊匹配）来设置新会话模型。如果单独发送 `/new` 或 `/reset`，OpenClaw 会运行一个简短的"问候"轮次来确认重置。
+- 重置触发器：精确的 `/new`（加上 `resetTriggers` 中的任何额外项）启动新的会话 ID 并传递消息的其余部分。`/new <model>` 接受模型别名、`provider/model` 或提供商名称（模糊匹配）来设置新会话模型。如果单独发送 `/new`，OpenClaw 会运行一个简短的"问候"轮次来确认重置。
 - 手动重置：从存储中删除特定键或删除 JSONL 对话记录；下一条消息会重新创建它们。
 - 隔离的定时任务总是每次运行生成新的 `sessionId`（没有空闲重用）。
 
@@ -133,7 +133,7 @@ OpenClaw 将**每个智能体的一个直接聊天会话**视为主会话。直�
     resetByChannel: {
       discord: { mode: "idle", idleMinutes: 10080 },
     },
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     store: "~/.openclaw/agents/{agentId}/sessions/sessions.json",
     mainKey: "main",
   },

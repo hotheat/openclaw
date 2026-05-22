@@ -115,6 +115,10 @@ const DEFAULT_POSTGRES_PORT = 5432;
 const DEFAULT_POSTGRES_SCHEMA = "agent_memory";
 const DEFAULT_POSTGRES_POOL_MAX = 10;
 
+function resolveDefaultPostgresSchema(): string {
+  return process.env.POSTGRES__MEMORY_SCHEMA?.trim() || DEFAULT_POSTGRES_SCHEMA;
+}
+
 function parseConfigNumber(
   value: number | string | undefined,
   fallback: number,
@@ -282,7 +286,7 @@ function mergeConfig(
           schema:
             postgresOverrides?.schema?.trim() ||
             postgresDefaults?.schema?.trim() ||
-            DEFAULT_POSTGRES_SCHEMA,
+            resolveDefaultPostgresSchema(),
           ssl: parseConfigBoolean(postgresOverrides?.ssl ?? postgresDefaults?.ssl, false),
           poolMax: parseConfigNumber(
             postgresOverrides?.poolMax ?? postgresDefaults?.poolMax,

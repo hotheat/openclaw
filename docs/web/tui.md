@@ -101,7 +101,7 @@ Session controls:
 
 Session lifecycle:
 
-- `/new` or `/reset` (reset the session)
+- `/new` (start a new session)
 - `/abort` (abort the active run)
 - `/settings`
 - `/exit`

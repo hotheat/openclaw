@@ -361,7 +361,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
 
   /**
    * Run before_reset hook.
-   * Fired when /new or /reset clears a session, before messages are lost.
+   * Fired when /new clears a session, before messages are lost.
    * Runs in parallel (fire-and-forget).
    */
   async function runBeforeReset(

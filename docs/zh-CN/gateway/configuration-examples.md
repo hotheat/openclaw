@@ -165,7 +165,7 @@ x-i18n:
     resetByChannel: {
       discord: { mode: "idle", idleMinutes: 10080 },
     },
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     store: "~/.openclaw/agents/default/sessions/sessions.json",
     typingIntervalSeconds: 5,
     sendPolicy: {

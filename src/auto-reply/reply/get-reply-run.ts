@@ -1,7 +1,6 @@
 import crypto from "node:crypto";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
-import { resolveModelAuthLabel } from "../../agents/model-auth-label.js";
 import {
   abortEmbeddedPiRun,
   isEmbeddedPiRunActive,
@@ -51,6 +50,8 @@ import { appendUntrustedContext } from "./untrusted-context.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
+
+const DEFAULT_NEW_SESSION_HELP_HINT = "Type /help to see detailed commands.";
 
 type RunPreparedReplyParams = {
   ctx: MsgContext;
@@ -106,6 +107,48 @@ type RunPreparedReplyParams = {
   workspaceDir: string;
   abortedLastRun: boolean;
 };
+
+function resolveNewSessionHelpHint(cfg: OpenClawConfig): string | undefined {
+  const setting = cfg.commands?.newSessionHelpHint;
+  if (setting === false) {
+    return undefined;
+  }
+  if (typeof setting === "string") {
+    const trimmed = setting.trim();
+    return trimmed || undefined;
+  }
+  return DEFAULT_NEW_SESSION_HELP_HINT;
+}
+
+function appendNewSessionHelpHint(
+  reply: ReplyPayload | ReplyPayload[] | undefined,
+  hint: string | undefined,
+): ReplyPayload | ReplyPayload[] | undefined {
+  if (!reply || !hint) {
+    return reply;
+  }
+  const appendHint = (payload: ReplyPayload): ReplyPayload | undefined => {
+    if (payload.isError || typeof payload.text !== "string" || !payload.text.trim()) {
+      return undefined;
+    }
+    return { ...payload, text: `${payload.text.trimEnd()}\n\n${hint}` };
+  };
+
+  if (!Array.isArray(reply)) {
+    return appendHint(reply) ?? reply;
+  }
+
+  for (let index = reply.length - 1; index >= 0; index -= 1) {
+    const updated = appendHint(reply[index]);
+    if (!updated) {
+      continue;
+    }
+    const next = reply.slice();
+    next[index] = updated;
+    return next;
+  }
+  return reply;
+}
 
 function collectInboundMediaPaths(sessionCtx: TemplateContext): string[] | undefined {
   const mediaPaths = Array.isArray(sessionCtx.MediaPaths)
@@ -203,7 +246,7 @@ export async function runPreparedReply(
     .filter(Boolean)
     .join("\n\n");
   const baseBody = sessionCtx.BodyStripped ?? sessionCtx.Body ?? "";
-  // Use CommandBody/RawBody for bare reset detection (clean message without structural context).
+  // Use CommandBody/RawBody for bare /new detection (clean message without structural context).
   const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
   const baseBodyTrimmedRaw = baseBody.trim();
   if (
@@ -215,10 +258,9 @@ export async function runPreparedReply(
     typing.cleanup();
     return undefined;
   }
-  const isBareNewOrReset = rawBodyTrimmed === "/new" || rawBodyTrimmed === "/reset";
+  const isBareNew = rawBodyTrimmed === "/new";
   const isBareSessionReset =
-    isNewSession &&
-    ((baseBodyTrimmedRaw.length === 0 && rawBodyTrimmed.length > 0) || isBareNewOrReset);
+    isNewSession && ((baseBodyTrimmedRaw.length === 0 && rawBodyTrimmed.length > 0) || isBareNew);
   const baseBodyFinal = isBareSessionReset ? BARE_SESSION_RESET_PROMPT : baseBody;
   const inboundUserContext = buildInboundUserContextPrefix(
     isNewSession
@@ -329,25 +371,17 @@ export async function runPreparedReply(
       }
     }
   }
-  if (resetTriggered && command.isAuthorizedSender) {
+  if (resetTriggered && command.isAuthorizedSender && cfg.commands?.newSessionAck !== false) {
     // oxlint-disable-next-line typescript/no-explicit-any
     const channel = ctx.OriginatingChannel || (command.channel as any);
     const to = ctx.OriginatingTo || command.from || command.to;
     if (channel && to) {
       const modelLabel = `${provider}/${model}`;
       const defaultLabel = `${defaultProvider}/${defaultModel}`;
-      const modelAuthLabel = resolveModelAuthLabel({
-        provider,
-        cfg,
-        sessionEntry,
-        agentDir,
-      });
-      const authSuffix =
-        modelAuthLabel && modelAuthLabel !== "unknown" ? ` · 🔑 ${modelAuthLabel}` : "";
       const text =
         modelLabel === defaultLabel
-          ? `✅ New session started · model: ${modelLabel}${authSuffix}`
-          : `✅ New session started · model: ${modelLabel} (default: ${defaultLabel})${authSuffix}`;
+          ? `✅ New session started · model: ${modelLabel}`
+          : `✅ New session started · model: ${modelLabel} (default: ${defaultLabel})`;
       await routeReply({
         payload: { text },
         channel,
@@ -455,7 +489,7 @@ export async function runPreparedReply(
     },
   };
 
-  return runReplyAgent({
+  const reply = await runReplyAgent({
     commandBody: prefixedCommandBody,
     followupRun,
     queueKey,
@@ -481,4 +515,7 @@ export async function runPreparedReply(
     shouldInjectGroupIntro,
     typingMode,
   });
+  return isBareSessionReset
+    ? appendNewSessionHelpHint(reply, resolveNewSessionHelpHint(cfg))
+    : reply;
 }

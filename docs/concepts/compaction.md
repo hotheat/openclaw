@@ -58,4 +58,4 @@ See [/concepts/session-pruning](/concepts/session-pruning) for pruning details.
 
 - Use `/compact` when sessions feel stale or context is bloated.
 - Large tool outputs are already truncated; pruning can further reduce tool-result buildup.
-- If you need a fresh slate, `/new` or `/reset` starts a new session id.
+- If you need a fresh slate, `/new` starts a new session id.

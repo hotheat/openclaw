@@ -29,17 +29,8 @@ export const feishuOutbound: ChannelOutboundAdapter = {
         });
         return { channel: "feishu", ...result };
       } catch (err) {
-        // Log the error for debugging
         console.error(`[feishu] sendMediaFeishu failed:`, err);
-        // Fallback to URL link if upload fails
-        const fallbackText = `📎 ${mediaUrl}`;
-        const result = await sendMessageFeishu({
-          cfg,
-          to,
-          text: fallbackText,
-          accountId: accountId ?? undefined,
-        });
-        return { channel: "feishu", ...result };
+        throw new Error("Feishu media send failed", { cause: err });
       }
     }
 

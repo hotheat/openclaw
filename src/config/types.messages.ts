@@ -134,6 +134,22 @@ export type CommandOwnerDisplay = "raw" | "hash";
  */
 export type CommandAllowFrom = Record<string, Array<string | number>>;
 
+export type CommandsHelpItem = {
+  command: string;
+  description?: string;
+};
+
+export type CommandsHelpSection = {
+  title?: string;
+  items?: CommandsHelpItem[];
+};
+
+export type CommandsHelpConfig = {
+  title?: string;
+  sections?: CommandsHelpSection[];
+  footer?: string;
+};
+
 export type CommandsConfig = {
   /** Enable native command registration when supported (default: "auto"). */
   native?: NativeCommandsSetting;
@@ -149,6 +165,14 @@ export type CommandsConfig = {
   config?: boolean;
   /** Allow /debug command (default: false). */
   debug?: boolean;
+  /** Custom text returned by /help instead of the built-in summary. */
+  helpText?: string;
+  /** Structured custom content returned by /help; takes precedence over helpText. */
+  help?: CommandsHelpConfig;
+  /** Send a separate "new session started" acknowledgement for /new (default: true). */
+  newSessionAck?: boolean;
+  /** Hint appended to bare /new greetings; false disables it. */
+  newSessionHelpHint?: string | boolean;
   /** Allow restart commands/tools (default: true). */
   restart?: boolean;
   /** Enforce access-group allowlists/policies for commands (default: true). */

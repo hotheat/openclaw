@@ -25,8 +25,7 @@ The default workspace layout uses two memory layers:
   - Curated long-term memory.
   - **Only load in the main, private session** (never in group contexts).
 
-In the current builtin flow, daily rollover and `/reset` can update **both**
-layers:
+In the current builtin flow, daily rollover can update **both** layers:
 
 - `memory/YYYY-MM-DD.md`
   - Receives the grounded daily structured summary block.
@@ -90,7 +89,7 @@ tool call in try/catch logic.
 - This area is still evolving. It helps to remind the model to store memories; it will know what to do.
 - If you want something to stick, **ask the bot to write it** into memory.
 
-Builtin daily rollover and `/reset` now follow the same principle automatically:
+Builtin daily rollover follows the same principle automatically:
 
 - First, generate a grounded structured session summary into the daily note.
 - Then, promote only durable deltas into `MEMORY.md`.

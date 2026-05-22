@@ -1270,7 +1270,7 @@ See [Multi-Agent Sandbox & Tools](/tools/multi-agent-sandbox-tools) for preceden
       direct: { mode: "idle", idleMinutes: 240 },
       group: { mode: "idle", idleMinutes: 120 },
     },
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     store: "~/.openclaw/agents/{agentId}/sessions/sessions.json",
     maintenance: {
       mode: "warn", // warn | enforce

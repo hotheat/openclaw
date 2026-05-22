@@ -122,7 +122,7 @@ describe("trigger handling", () => {
         getReplyFromConfig,
         body: "please /help now",
         stripToken: "/help",
-        blockReplyContains: "Help",
+        blockReplyContains: "**Session**",
       });
     });
   });

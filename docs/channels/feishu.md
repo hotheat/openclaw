@@ -366,11 +366,11 @@ openclaw pairing list feishu
 
 ## Common commands
 
-| Command   | Description       |
-| --------- | ----------------- |
-| `/status` | Show bot status   |
-| `/reset`  | Reset the session |
-| `/model`  | Show/switch model |
+| Command   | Description         |
+| --------- | ------------------- |
+| `/status` | Show bot status     |
+| `/new`    | Start a new session |
+| `/model`  | Show/switch model   |
 
 > Note: Feishu does not support native command menus yet, so commands must be sent as text.
 

@@ -108,7 +108,7 @@ openclaw tui --url ws://<host>:<port> --token <gateway-token>
 
 会话生命周期：
 
-- `/new` 或 `/reset`（重置会话）
+- `/new`（启动新会话）
 - `/abort`（中止活动运行）
 - `/settings`
 - `/exit`

@@ -1,13 +1,12 @@
 ---
 name: session-memory
-description: "Append a structured memory summary when /reset is issued"
+description: "Append a structured memory summary during builtin daily rollover"
 homepage: https://docs.openclaw.ai/automation/hooks#session-memory
 metadata:
   {
     "openclaw":
       {
         "emoji": "💾",
-        "events": ["command:reset"],
         "requires": { "config": ["workspace.dir"] },
         "install": [{ "id": "bundled", "kind": "bundled", "label": "Bundled with OpenClaw" }],
       },
@@ -17,7 +16,7 @@ metadata:
 # Session Memory Hook
 
 Automatically appends a structured memory summary to your workspace daily note
-when you issue `/reset`, and then promotes durable facts into `MEMORY.md`.
+during builtin daily rollover, and then promotes durable facts into `MEMORY.md`.
 
 Builtin runtime 也会在会话跨过 daily memory 边界时复用同一份 summary helper。
 这不是新的 hook event。
@@ -26,22 +25,14 @@ daily summary 不会自行 reset 或归档会话。
 
 ## What It Does
 
-When you run `/reset` to start a fresh session:
+When builtin runtime crosses the daily memory boundary:
 
-1. **Finds the previous session** - Uses the pre-reset session entry to locate the correct transcript
+1. **Finds the ended session** - Uses the ended session entry to locate the correct transcript
 2. **Extracts conversation** - Reads the last N user/assistant messages from the session (default: 15, configurable)
 3. **Generates structured summary** - Uses the configured model to create a grounded structured summary
 4. **Saves to memory** - Appends a new block to `<workspace>/memory/YYYY-MM-DD.md`
 5. **Updates long-term memory** - Generates a structured JSON patch and applies it to `<workspace>/MEMORY.md` as Markdown sections
-6. **Finishes silently** - The capture is internal housekeeping; it does not send a user-visible confirmation
-
-When builtin runtime crosses the daily memory boundary:
-
-1. It reuses the same summary helper in the background
-2. It writes the same structured summary block shape
-3. It can update `MEMORY.md` with durable long-term memory
-4. It does not emit a separate hook event
-5. It does not reset or archive the session by itself
+6. **Finishes silently** - The capture runs in the background and does not send a user-visible confirmation
 
 ## Output Format
 
@@ -51,7 +42,7 @@ Memory blocks are appended with the following format:
 ## Daily Structured Summary
 
 - **Generated At**: 2026-01-16 14:30:00 UTC
-- **Source**: reset
+- **Source**: new
 - **Source Sessions**: abc123def456
 
 ### 当前主问题 / 当天主线

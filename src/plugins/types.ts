@@ -417,7 +417,7 @@ export type PluginHookBeforeCompactionEvent = {
   sessionFile?: string;
 };
 
-// before_reset hook — fired when /new or /reset clears a session
+// before_reset hook — fired when /new clears a session
 export type PluginHookBeforeResetEvent = {
   sessionFile?: string;
   messages?: unknown[];

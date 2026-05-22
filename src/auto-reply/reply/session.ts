@@ -55,11 +55,6 @@ import {
 const log = createSubsystemLogger("session-init");
 const DAILY_MEMORY_CAPTURE_PENDING_TTL_MS = 10 * 60 * 1000;
 
-function resolveExplicitSessionEndReason(triggerBodyNormalized: string): "new" | "reset" {
-  const firstToken = triggerBodyNormalized.trim().split(/\s+/, 1)[0]?.toLowerCase();
-  return firstToken === "/reset" ? "reset" : "new";
-}
-
 type ResolvedSessionStoreTarget = {
   sessionCtxForState: MsgContext;
   sessionScope: SessionScope;
@@ -361,9 +356,14 @@ export async function initSessionState(params: {
   const sessionCfg = cfg.session;
   const { sessionCtxForState, sessionScope, agentId, groupResolution, storePath, sessionKey } =
     resolveSessionStoreTarget({ ctx, cfg });
-  const resetTriggers = sessionCfg?.resetTriggers?.length
+  const configuredResetTriggers = sessionCfg?.resetTriggers?.length
     ? sessionCfg.resetTriggers
     : DEFAULT_RESET_TRIGGERS;
+  const supportedResetTriggers = configuredResetTriggers.filter(
+    (trigger) => trigger.trim().toLowerCase() !== "/reset",
+  );
+  const resetTriggers =
+    supportedResetTriggers.length > 0 ? supportedResetTriggers : DEFAULT_RESET_TRIGGERS;
 
   // CRITICAL: Skip cache to ensure fresh data when resolving session identity.
   // Stale cache (especially with multiple gateway processes or on Windows where
@@ -494,9 +494,7 @@ export async function initSessionState(params: {
       ? { ...freshness, fresh: true, staleReason: undefined }
       : freshness;
   const freshEntry = resetFreshness?.fresh ?? false;
-  const endedSessionReason = resetTriggered
-    ? resolveExplicitSessionEndReason(triggerBodyNormalized)
-    : resetFreshness?.staleReason;
+  const endedSessionReason = resetTriggered ? "new" : resetFreshness?.staleReason;
 
   if (!isNewSession && freshEntry && existingSessionEntry) {
     sessionId = existingSessionEntry.sessionId;
@@ -515,7 +513,7 @@ export async function initSessionState(params: {
     isNewSession = true;
     systemSent = false;
     abortedLastRun = false;
-    // When a reset trigger (/new, /reset) starts a new session, carry over
+    // When an explicit reset trigger starts a new session, carry over
     // user-set behavior overrides (verbose, thinking, reasoning, ttsAuto)
     // so the user doesn't have to re-enable them every time.
     if (resetTriggered && existingSessionEntry) {
@@ -651,7 +649,7 @@ export async function initSessionState(params: {
     sessionEntry.memoryFlushAt = undefined;
     sessionEntry.recentMediaSnapshot = undefined;
     // Clear stale token metrics from previous session so /status doesn't
-    // display the old session's context usage after /new or /reset.
+    // display the old session's context usage after /new.
     sessionEntry.totalTokens = undefined;
     sessionEntry.inputTokens = undefined;
     sessionEntry.outputTokens = undefined;

@@ -90,6 +90,45 @@ describe("buildStatusMessage", () => {
     expect(normalized).toContain("Queue: collect");
   });
 
+  it("uses session thinking level when resolved level is not provided", () => {
+    const text = buildStatusMessage({
+      agent: {
+        model: "anthropic/claude-opus-4-5",
+        thinkingDefault: "off",
+      },
+      sessionEntry: {
+        sessionId: "abc",
+        updatedAt: 0,
+        thinkingLevel: "high",
+      },
+      sessionKey: "agent:main:main",
+      sessionScope: "per-sender",
+      queue: { mode: "collect", depth: 0 },
+    });
+
+    expect(normalizeTestText(text)).toContain("Think: high");
+  });
+
+  it("uses resolved thinking level before session thinking level", () => {
+    const text = buildStatusMessage({
+      agent: {
+        model: "anthropic/claude-opus-4-5",
+        thinkingDefault: "off",
+      },
+      sessionEntry: {
+        sessionId: "abc",
+        updatedAt: 0,
+        thinkingLevel: "high",
+      },
+      sessionKey: "agent:main:main",
+      sessionScope: "per-sender",
+      resolvedThink: "medium",
+      queue: { mode: "collect", depth: 0 },
+    });
+
+    expect(normalizeTestText(text)).toContain("Think: medium");
+  });
+
   it("notes channel model overrides in status output", () => {
     const text = buildStatusMessage({
       config: {
@@ -617,10 +656,125 @@ describe("buildHelpMessage", () => {
     const text = buildHelpMessage({
       commands: { config: false, debug: false },
     } as unknown as OpenClawConfig);
-    expect(text).toContain("Skills");
+    expect(text).toContain("【Skills】");
     expect(text).toContain("/skill <name> [input]");
     expect(text).not.toContain("/config");
     expect(text).not.toContain("/debug");
+  });
+
+  it("uses configured custom help text", () => {
+    const text = buildHelpMessage({
+      commands: {
+        helpText: "Team help\nUse /deploy-status for deploys.",
+        config: true,
+        debug: true,
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(text).toBe("Team help\nUse /deploy-status for deploys.");
+    expect(text).not.toContain("/config");
+    expect(text).not.toContain("/debug");
+  });
+
+  it("formats structured custom help before legacy help text", () => {
+    const text = buildHelpMessage({
+      commands: {
+        helpText: "Legacy help",
+        help: {
+          title: "Team Help",
+          sections: [
+            {
+              title: "Options",
+              items: [
+                {
+                  command: "/think:<level>",
+                  description: "修改当前思考级别",
+                },
+                {
+                  command: "/research <topic>",
+                  description: "启动 researcher 深度研究任务",
+                },
+              ],
+            },
+            {
+              title: "Skills",
+              items: [
+                {
+                  command: "/skill aacr-2026-query <query>",
+                  description: "查询 AACR 2026 摘要",
+                },
+              ],
+            },
+          ],
+          footer: "More: /commands",
+        },
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(text).toBe(
+      [
+        "Team Help",
+        "",
+        "【Options】",
+        "  /think:<level> 修改当前思考级别",
+        "  /research <topic> 启动 researcher 深度研究任务",
+        "",
+        "【Skills】",
+        "  /skill aacr-2026-query <query> 查询 AACR 2026 摘要",
+        "",
+        "More: /commands",
+      ].join("\n"),
+    );
+  });
+
+  it("omits generic Help title and keeps blank lines between sections", () => {
+    const text = buildHelpMessage({
+      commands: {
+        help: {
+          title: "Help",
+          sections: [
+            {
+              title: "Session",
+              items: [
+                {
+                  command: "/new",
+                  description: "清空当前会话上下文并开启新会话",
+                },
+              ],
+            },
+            {
+              title: "Options",
+              items: [
+                {
+                  command: "/think:<level>",
+                  description: "修改当前思考级别",
+                },
+              ],
+            },
+          ],
+        },
+      },
+    } as unknown as OpenClawConfig);
+
+    expect(text).toBe(
+      [
+        "【Session】",
+        "  /new 清空当前会话上下文并开启新会话",
+        "",
+        "【Options】",
+        "  /think:<level> 修改当前思考级别",
+      ].join("\n"),
+    );
+    expect(text).not.toContain("Help");
+  });
+
+  it("falls back to built-in help when custom help text is blank", () => {
+    const text = buildHelpMessage({
+      commands: { helpText: "   ", config: false, debug: false },
+    } as unknown as OpenClawConfig);
+
+    expect(text).toContain("【Session】");
+    expect(text).toContain("/skill <name> [input]");
   });
 });
 

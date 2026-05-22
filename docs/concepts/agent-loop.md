@@ -73,7 +73,7 @@ OpenClaw has two hook systems:
 
 - **`agent:bootstrap`**: runs while building bootstrap files before the system prompt is finalized.
   Use this to add/remove bootstrap context files.
-- **Command hooks**: `/new`, `/reset`, `/stop`, and other command events (see Hooks doc).
+- **Command hooks**: `/new`, `/stop`, and other command events (see Hooks doc).
 
 See [Hooks](/automation/hooks) for setup and examples.
 

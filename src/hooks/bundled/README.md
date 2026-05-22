@@ -6,9 +6,9 @@ This directory contains hooks that ship with OpenClaw. These hooks are automatic
 
 ### 💾 session-memory
 
-Automatically saves a structured memory summary when you issue `/reset`.
+Automatically saves a structured memory summary during builtin daily rollover.
 
-**Events**: `command:reset`
+**Events**: none; builtin daily rollover reuses the helper directly
 **What it does**: Appends a task-first structured summary block into the daily memory note.
 **Output**: `<workspace>/memory/YYYY-MM-DD.md` (defaults to `~/.openclaw/workspace`)
 
@@ -166,7 +166,6 @@ Currently supported events:
 
 - **command**: All command events
 - **command:new**: `/new` command specifically
-- **command:reset**: `/reset` command
 - **command:stop**: `/stop` command
 - **agent:bootstrap**: Before workspace bootstrap files are injected
 - **gateway:startup**: Gateway startup (after channels start)

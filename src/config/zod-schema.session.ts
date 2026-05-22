@@ -36,7 +36,13 @@ export const SessionSchema = z
       ])
       .optional(),
     identityLinks: z.record(z.string(), z.array(z.string())).optional(),
-    resetTriggers: z.array(z.string()).optional(),
+    resetTriggers: z
+      .array(
+        z.string().refine((trigger) => trigger.trim().toLowerCase() !== "/reset", {
+          message: "/reset is no longer supported as a session reset trigger; use /new",
+        }),
+      )
+      .optional(),
     idleMinutes: z.number().int().positive().optional(),
     reset: SessionResetConfigSchema.optional(),
     resetByType: z
@@ -161,6 +167,35 @@ export const CommandsSchema = z
     bashForegroundMs: z.number().int().min(0).max(30_000).optional(),
     config: z.boolean().optional(),
     debug: z.boolean().optional(),
+    helpText: z.string().optional(),
+    help: z
+      .object({
+        title: z.string().optional(),
+        sections: z
+          .array(
+            z
+              .object({
+                title: z.string().optional(),
+                items: z
+                  .array(
+                    z
+                      .object({
+                        command: z.string(),
+                        description: z.string().optional(),
+                      })
+                      .strict(),
+                  )
+                  .optional(),
+              })
+              .strict(),
+          )
+          .optional(),
+        footer: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    newSessionAck: z.boolean().optional(),
+    newSessionHelpHint: z.union([z.string(), z.boolean()]).optional(),
     restart: z.boolean().optional().default(true),
     useAccessGroups: z.boolean().optional(),
     ownerAllowFrom: z.array(z.union([z.string(), z.number()])).optional(),

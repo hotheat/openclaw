@@ -17,7 +17,11 @@ import {
   resolveSessionMemoryLlmOverrides,
   resolveSessionMemoryLlmTimeoutMs,
 } from "./llm-config.js";
-import { buildLongTermMemoryPrompt, buildSummaryPrompt } from "./prompts.js";
+import {
+  buildLongTermMemoryPrompt,
+  buildSummaryPrompt,
+  buildSummaryWriteDecisionPrompt,
+} from "./prompts.js";
 import {
   applyStructuredMemoryPatch,
   extractStructuredMemoryPatchJson,
@@ -99,6 +103,53 @@ function extractTextPayload(payloads: unknown): string | null {
   return text || null;
 }
 
+type SummaryWriteDecision = {
+  shouldWriteDailyNote: boolean;
+  containsDurableMemory?: boolean;
+  containsOnlyOperationalNoise?: boolean;
+  reason?: string;
+};
+
+function extractJsonObjectText(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) {
+    return fenced[1].trim();
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return trimmed.slice(start, end + 1);
+  }
+  return trimmed;
+}
+
+function parseSummaryWriteDecision(raw: string | null): SummaryWriteDecision | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(extractJsonObjectText(raw)) as Partial<SummaryWriteDecision>;
+    if (typeof parsed.shouldWriteDailyNote !== "boolean") {
+      return null;
+    }
+    return {
+      shouldWriteDailyNote: parsed.shouldWriteDailyNote,
+      containsDurableMemory:
+        typeof parsed.containsDurableMemory === "boolean"
+          ? parsed.containsDurableMemory
+          : undefined,
+      containsOnlyOperationalNoise:
+        typeof parsed.containsOnlyOperationalNoise === "boolean"
+          ? parsed.containsOnlyOperationalNoise
+          : undefined,
+      reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function generateStructuredSummary(params: {
   cfg?: OpenClawConfig;
   agentId: string;
@@ -151,6 +202,65 @@ async function generateStructuredSummary(params: {
     const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
     log.warn(`failed to generate structured memory summary: ${message}`);
     return buildFallbackSummaryBody();
+  } finally {
+    if (tempSessionFile) {
+      try {
+        await fs.rm(path.dirname(tempSessionFile), { recursive: true, force: true });
+      } catch {
+        // Ignore cleanup errors.
+      }
+    }
+  }
+}
+
+async function generateSummaryWriteDecision(params: {
+  cfg?: OpenClawConfig;
+  agentId: string;
+  workspaceDir: string;
+  llmOverrides?: SessionMemoryLlmOverrides;
+  llmTimeoutMs: number;
+  transcript: string | null;
+  summaryBlock: string;
+  source: string;
+  sessionId?: string;
+  generatedAt: string;
+}): Promise<SummaryWriteDecision | null> {
+  if (!params.cfg) {
+    return null;
+  }
+
+  let tempSessionFile: string | null = null;
+  try {
+    const agentDir = resolveAgentDir(params.cfg, params.agentId);
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-memory-write-decision-"));
+    tempSessionFile = path.join(tempDir, "session.jsonl");
+
+    const result = await runEmbeddedPiAgent({
+      sessionId: `memory-write-decision-${Date.now()}`,
+      sessionKey: "temp:memory-write-decision",
+      agentId: params.agentId,
+      sessionFile: tempSessionFile,
+      workspaceDir: params.workspaceDir,
+      agentDir,
+      config: params.cfg,
+      provider: params.llmOverrides?.provider,
+      model: params.llmOverrides?.model,
+      prompt: buildSummaryWriteDecisionPrompt({
+        summaryBlock: params.summaryBlock,
+        transcript: params.transcript,
+        generatedAt: params.generatedAt,
+        source: params.source,
+        sessionId: params.sessionId,
+      }),
+      timeoutMs: params.llmTimeoutMs,
+      runId: `memory-write-decision-${Date.now()}`,
+    });
+
+    return parseSummaryWriteDecision(extractTextPayload(result.payloads));
+  } catch (err) {
+    const message = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    log.warn(`failed to judge structured memory summary: ${message}`);
+    return null;
   } finally {
     if (tempSessionFile) {
       try {
@@ -411,7 +521,25 @@ export async function captureSessionToMemory(
       researcherExports,
     });
 
-    if (researcherExports.length === 0 && !hasReliableSummaryAdditions(summaryBlock)) {
+    const writeDecision =
+      researcherExports.length > 0
+        ? ({ shouldWriteDailyNote: true } satisfies SummaryWriteDecision)
+        : await generateSummaryWriteDecision({
+            cfg,
+            agentId,
+            workspaceDir,
+            llmOverrides,
+            llmTimeoutMs,
+            transcript,
+            summaryBlock,
+            source,
+            sessionId: params.sessionId,
+            generatedAt,
+          });
+    const shouldWriteDailyNote =
+      writeDecision?.shouldWriteDailyNote ?? hasReliableSummaryAdditions(summaryBlock);
+
+    if (!shouldWriteDailyNote) {
       log.info(`Skipped empty structured session summary for ${params.sessionId ?? "unknown"}`);
       return { memoryFilePath, sessionContent: transcript, status: "skipped-empty" };
     }
@@ -455,7 +583,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     return;
   }
 
-  log.debug("Hook triggered for reset command");
+  log.debug(`Hook triggered for ${event.action} command`);
 
   const context = event.context || {};
   const sessionEntry = (context.previousSessionEntry || context.sessionEntry || {}) as Record<
@@ -468,7 +596,7 @@ const saveSessionToMemory: HookHandler = async (event) => {
     sessionKey: event.sessionKey,
     sessionId: sessionEntry.sessionId as string | undefined,
     sessionFile: sessionEntry.sessionFile as string | undefined,
-    source: (context.commandSource as string) || event.action,
+    source: event.action,
     timestamp: new Date(event.timestamp),
   });
 };

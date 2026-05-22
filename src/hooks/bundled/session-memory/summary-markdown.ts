@@ -85,6 +85,27 @@ function isEmptySummaryContentLine(line: string): boolean {
   );
 }
 
+function isOperationalNoiseSummaryContentLine(line: string): boolean {
+  const normalized = line
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .replace(/[。.!！]+$/g, "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+  if (/heartbeat|heart_?beat_ok|心跳/.test(normalized)) {
+    return true;
+  }
+  if (/无主动用户请求|例行检查|定期轮询|daily-rollover/.test(normalized)) {
+    return true;
+  }
+  return /connection error|连接错误|连接异常|连接失败|连接不稳定|上游连接|(?:基础设施|网关|网络|服务).*(?:不稳定|异常|错误|失败)/.test(
+    normalized,
+  );
+}
+
 export function hasReliableSummaryAdditions(summaryBlock: string): boolean {
   const contentLines = summaryBlock
     .split(/\r?\n/)
@@ -94,7 +115,9 @@ export function hasReliableSummaryAdditions(summaryBlock: string): boolean {
     .filter((line) => !line.startsWith("### "))
     .filter((line) => !/^- \*\*(Generated At|Source|Source Sessions)\*\*:/i.test(line));
 
-  return contentLines.some((line) => !isEmptySummaryContentLine(line));
+  return contentLines.some(
+    (line) => !isEmptySummaryContentLine(line) && !isOperationalNoiseSummaryContentLine(line),
+  );
 }
 
 export { buildFallbackSummaryBody };

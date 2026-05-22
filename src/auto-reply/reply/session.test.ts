@@ -498,16 +498,16 @@ describe("initSessionState RawBody", () => {
     expect(result.triggerBodyNormalized).toBe("/status");
   });
 
-  it("Reset triggers (/new, /reset) work with RawBody", async () => {
+  it("Reset trigger /new works with RawBody", async () => {
     const root = await makeCaseDir("openclaw-rawbody-reset-");
     const storePath = path.join(root, "sessions.json");
     const cfg = { session: { store: storePath } } as OpenClawConfig;
 
     const groupMessageCtx = {
-      Body: `[Context]\nJake: /new\n[from: Jake]`,
+      Body: "[Context]\nJake: /new\n[from: Jake]",
       RawBody: "/new",
       ChatType: "group",
-      SessionKey: "agent:main:whatsapp:group:g1",
+      SessionKey: "agent:main:whatsapp:group:g1:new",
     };
 
     const result = await initSessionState({
@@ -517,6 +517,54 @@ describe("initSessionState RawBody", () => {
     });
 
     expect(result.isNewSession).toBe(true);
+    expect(result.bodyStripped).toBe("");
+  });
+
+  it("ignores /reset even when legacy config lists it as a reset trigger", async () => {
+    const root = await makeCaseDir("openclaw-rawbody-reset-legacy-");
+    const storePath = path.join(root, "sessions.json");
+    const cfg = {
+      session: {
+        store: storePath,
+        resetTriggers: ["/new", "/reset"],
+      },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        RawBody: "/reset",
+        ChatType: "direct",
+        SessionKey: "agent:main:whatsapp:dm:s1",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.resetTriggered).toBe(false);
+    expect(result.bodyStripped).toBeUndefined();
+  });
+
+  it("falls back to /new when legacy config only listed /reset", async () => {
+    const root = await makeCaseDir("openclaw-rawbody-reset-legacy-new-");
+    const storePath = path.join(root, "sessions.json");
+    const cfg = {
+      session: {
+        store: storePath,
+        resetTriggers: ["/reset"],
+      },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        RawBody: "/new",
+        ChatType: "direct",
+        SessionKey: "agent:main:whatsapp:dm:s1",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.resetTriggered).toBe(true);
     expect(result.bodyStripped).toBe("");
   });
 
@@ -1473,20 +1521,13 @@ describe("initSessionState reset triggers in Slack channels", () => {
     });
   }
 
-  it("supports mention-prefixed Slack reset commands and preserves args", async () => {
+  it("supports mention-prefixed Slack /new commands and preserves args", async () => {
     const existingSessionId = "existing-session-123";
     const cases = [
       {
-        name: "reset command",
-        storePrefix: "openclaw-slack-channel-reset-",
-        sessionKey: "agent:main:slack:channel:c1",
-        body: "<@U123> /reset",
-        expectedBodyStripped: "",
-      },
-      {
         name: "new command with args",
         storePrefix: "openclaw-slack-channel-new-",
-        sessionKey: "agent:main:slack:channel:c2",
+        sessionKey: "agent:main:slack:channel:c1",
         body: "<@U123> /new take notes",
         expectedBodyStripped: "take notes",
       },
@@ -1624,7 +1665,7 @@ describe("applyResetModelOverride", () => {
   });
 });
 
-describe("initSessionState preserves behavior overrides across /new and /reset", () => {
+describe("initSessionState preserves behavior overrides across /new", () => {
   async function seedSessionStoreWithOverrides(params: {
     storePath: string;
     sessionKey: string;
@@ -1682,7 +1723,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     expect(result.sessionEntry.verboseLevel).toBe("on");
   });
 
-  it("/reset preserves thinkingLevel and reasoningLevel from previous session", async () => {
+  it("/new preserves thinkingLevel and reasoningLevel from previous session", async () => {
     const storePath = await createStorePath("openclaw-reset-thinking-");
     const sessionKey = "agent:main:telegram:dm:user2";
     const existingSessionId = "existing-session-thinking";
@@ -1699,9 +1740,9 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
 
     const result = await initSessionState({
       ctx: {
-        Body: "/reset",
-        RawBody: "/reset",
-        CommandBody: "/reset",
+        Body: "/new",
+        RawBody: "/new",
+        CommandBody: "/new",
         From: "user2",
         To: "bot",
         ChatType: "direct",
@@ -1879,68 +1920,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         sessionKey,
         messageCount: 0,
         reason: "new",
-        sessionFile: existingSessionId
-          ? expect.stringContaining(`${existingSessionId}.jsonl`)
-          : undefined,
-        transcriptArchived: true,
-        nextSessionId: result.sessionId,
-      },
-      {
-        sessionId: existingSessionId,
-        sessionKey,
-        agentId: "main",
-      },
-    );
-  });
-
-  it("emits session_end with reason=reset for /reset", async () => {
-    const storePath = await createStorePath("openclaw-session-end-reset-");
-    const sessionKey = "agent:main:telegram:dm:user-session-end-reset";
-    const existingSessionId = "existing-session-end-reset";
-    const existingSessionFile = path.join(path.dirname(storePath), `${existingSessionId}.jsonl`);
-
-    await seedSessionStoreWithOverrides({
-      storePath,
-      sessionKey,
-      sessionId: existingSessionId,
-      overrides: { sessionFile: existingSessionFile, verboseLevel: "on" },
-    });
-    await fs.writeFile(existingSessionFile, "", "utf-8");
-
-    const sessionEndHandler = vi.fn(async () => {});
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([{ hookName: "session_end", handler: sessionEndHandler }]),
-    );
-
-    const cfg = {
-      session: { store: storePath, idleMinutes: 999 },
-    } as OpenClawConfig;
-
-    const result = await initSessionState({
-      ctx: {
-        Body: "/reset",
-        RawBody: "/reset",
-        CommandBody: "/reset",
-        From: "user-session-end-reset",
-        To: "bot",
-        ChatType: "direct",
-        SessionKey: sessionKey,
-        Provider: "telegram",
-        Surface: "telegram",
-      },
-      cfg,
-      commandAuthorized: true,
-    });
-
-    await vi.waitFor(() => {
-      expect(sessionEndHandler).toHaveBeenCalledTimes(1);
-    });
-    expect(sessionEndHandler).toHaveBeenCalledWith(
-      {
-        sessionId: existingSessionId,
-        sessionKey,
-        messageCount: 0,
-        reason: "reset",
         sessionFile: existingSessionId
           ? expect.stringContaining(`${existingSessionId}.jsonl`)
           : undefined,

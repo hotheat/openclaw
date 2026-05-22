@@ -116,6 +116,7 @@ describe("commands registry", () => {
     expect(detection.exact.has("/compact")).toBe(true);
     expect(detection.exact.has("/whoami")).toBe(true);
     expect(detection.exact.has("/id")).toBe(true);
+    expect(detection.exact.has("/reset")).toBe(false);
     for (const command of listChatCommands()) {
       for (const alias of command.textAliases) {
         expect(detection.exact.has(alias.toLowerCase())).toBe(true);

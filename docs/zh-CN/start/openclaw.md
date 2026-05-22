@@ -171,7 +171,7 @@ OpenClaw 默认为良好的助手设置，但你通常需要调整：
   },
   session: {
     scope: "per-sender",
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     reset: {
       mode: "daily",
       atHour: 4,
@@ -185,7 +185,7 @@ OpenClaw 默认为良好的助手设置，但你通常需要调整：
 
 - 会话文件：`~/.openclaw/agents/<agentId>/sessions/{{SessionId}}.jsonl`
 - 会话元数据（token 使用量、最后路由等）：`~/.openclaw/agents/<agentId>/sessions/sessions.json`（旧版：`~/.openclaw/sessions/sessions.json`）
-- `/new` 或 `/reset` 为该聊天启动新会话（可通过 `resetTriggers` 配置）。如果单独发送，智能体会回复一个简短的问候来确认重置。
+- `/new` 为该聊天启动新会话（可通过 `resetTriggers` 配置）。如果单独发送，智能体会回复一个简短的问候来确认重置。
 - `/compact [instructions]` 压缩会话上下文并报告剩余的上下文预算。
 
 ## 心跳（主动模式）

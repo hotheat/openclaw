@@ -5,6 +5,10 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthProfileOverride: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../agents/model-auth-label.js", () => ({
+  resolveModelAuthLabel: vi.fn().mockReturnValue(undefined),
+}));
+
 vi.mock("../../agents/pi-embedded.js", () => ({
   abortEmbeddedPiRun: vi.fn().mockReturnValue(false),
   isEmbeddedPiRunActive: vi.fn().mockReturnValue(false),
@@ -79,7 +83,9 @@ vi.mock("./typing-mode.js", () => ({
   resolveTypingMode: vi.fn().mockReturnValue("off"),
 }));
 
+import { resolveModelAuthLabel } from "../../agents/model-auth-label.js";
 import { runReplyAgent } from "./agent-runner.js";
+import { routeReply } from "./route-reply.js";
 
 function baseParams(
   overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {},
@@ -204,5 +210,78 @@ describe("runPreparedReply media-only handling", () => {
       text: "I didn't receive any text in your message. Please resend or add a caption.",
     });
     expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+  });
+});
+
+describe("runPreparedReply session reset acknowledgement", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends the new session acknowledgement by default", async () => {
+    vi.mocked(resolveModelAuthLabel).mockReturnValue("api-key abcdef…uvwxyz (ANTHROPIC_API_KEY)");
+
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "/new",
+          RawBody: "/new",
+          CommandBody: "/new",
+          OriginatingChannel: "slack",
+          OriginatingTo: "C123",
+        },
+        sessionCtx: {
+          Body: "/new",
+          BodyStripped: "",
+          Provider: "slack",
+        },
+        resetTriggered: true,
+      }),
+    );
+
+    expect(routeReply).toHaveBeenCalledOnce();
+    const ackText = vi.mocked(routeReply).mock.calls[0]?.[0]?.payload.text;
+    expect(ackText).toContain("New session started");
+    expect(ackText).toContain("model: anthropic/claude-opus-4-1");
+    expect(ackText).not.toContain("api-key");
+    expect(ackText).not.toContain("abcdef");
+    expect(ackText).not.toContain("uvwxyz");
+    expect(ackText).not.toContain("ANTHROPIC_API_KEY");
+    expect(resolveModelAuthLabel).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: "ok\n\nType /help to see detailed commands." });
+    expect(runReplyAgent).toHaveBeenCalledOnce();
+  });
+
+  it("skips the acknowledgement when commands.newSessionAck is false", async () => {
+    const result = await runPreparedReply(
+      baseParams({
+        ctx: {
+          Body: "/new",
+          RawBody: "/new",
+          CommandBody: "/new",
+          OriginatingChannel: "slack",
+          OriginatingTo: "C123",
+        },
+        sessionCtx: {
+          Body: "/new",
+          BodyStripped: "",
+          Provider: "slack",
+        },
+        cfg: {
+          commands: {
+            newSessionAck: false,
+            newSessionHelpHint: "输入 /help 命令可以查看详细命令。",
+          },
+          session: {},
+          channels: {},
+          agents: { defaults: {} },
+        },
+        resetTriggered: true,
+      }),
+    );
+
+    expect(routeReply).not.toHaveBeenCalled();
+    expect(result).toEqual({ text: "ok\n\n输入 /help 命令可以查看详细命令。" });
+    expect(runReplyAgent).toHaveBeenCalledOnce();
   });
 });

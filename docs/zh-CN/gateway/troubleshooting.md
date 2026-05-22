@@ -384,7 +384,7 @@ ls -la ~/.openclaw/agents/<agentId>/sessions/
 }
 ```
 
-**检查 3：** 是否有人发送了 `/new`、`/reset` 或重置触发器？
+**检查 3：** 是否有人发送了 `/new` 或重置触发器？
 
 ### 智能体超时
 

@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveMemorySearchConfig } from "./memory-search.js";
 
 const asConfig = (cfg: OpenClawConfig): OpenClawConfig => cfg;
 
 describe("memory search config", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   function configWithDefaultProvider(
     provider: "openai" | "local" | "gemini" | "mistral",
   ): OpenClawConfig {
@@ -63,7 +67,36 @@ describe("memory search config", () => {
     expect(resolved?.fallback).toBe("none");
   });
 
-  it("defaults postgres schema to agent_memory when omitted", () => {
+  it("defaults postgres schema to POSTGRES__MEMORY_SCHEMA when omitted", () => {
+    vi.stubEnv("POSTGRES__MEMORY_SCHEMA", "custom_memory");
+
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "postgres",
+              postgres: {
+                host: "${POSTGRES__HOST}",
+                port: 5432,
+                database: "${POSTGRES__DATABASE}",
+                user: "${POSTGRES__USERNAME}",
+                password: "${POSTGRES__PASSWORD}",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.store.postgres?.schema).toBe("custom_memory");
+  });
+
+  it("defaults postgres schema to agent_memory when omitted without env override", () => {
+    vi.stubEnv("POSTGRES__MEMORY_SCHEMA", undefined);
+
     const cfg = asConfig({
       agents: {
         defaults: {

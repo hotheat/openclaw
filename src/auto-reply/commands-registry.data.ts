@@ -494,14 +494,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
       argsMenu: "auto",
     }),
     defineChatCommand({
-      key: "reset",
-      nativeName: "reset",
-      description: "Reset the current session.",
-      textAlias: "/reset",
-      acceptsArgs: true,
-      category: "session",
-    }),
-    defineChatCommand({
       key: "new",
       nativeName: "new",
       description: "Start a new session.",

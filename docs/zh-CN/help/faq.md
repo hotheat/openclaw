@@ -1576,7 +1576,7 @@ Copilot 令牌从 `COPILOT_GITHUB_TOKEN` 读取（也支持 `GH_TOKEN` / `GITHUB
 
 ### 如何开始一个新对话
 
-发送 `/new` 或 `/reset` 作为独立消息。参阅[会话管理](/concepts/session)。
+发送 `/new` 作为独立消息。参阅[会话管理](/concepts/session)。
 
 ### 如果我从不发送 /new，会话会自动重置吗
 
@@ -1651,7 +1651,6 @@ openclaw onboard --install-daemon
 - **重置**（为同一聊天键开始新的会话 ID）：
   ```
   /new
-  /reset
   ```
 
 如果持续出现：

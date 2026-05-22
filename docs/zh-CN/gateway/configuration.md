@@ -2696,7 +2696,7 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
       dm: { mode: "idle", idleMinutes: 240 },
       group: { mode: "idle", idleMinutes: 120 },
     },
-    resetTriggers: ["/new", "/reset"],
+    resetTriggers: ["/new"],
     // 默认已按智能体存储在 ~/.openclaw/agents/<agentId>/sessions/sessions.json
     // 你可以使用 {agentId} 模板进行覆盖：
     store: "~/.openclaw/agents/{agentId}/sessions/sessions.json",

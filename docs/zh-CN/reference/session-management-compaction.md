@@ -94,7 +94,7 @@ OpenClaw 通过 `src/config/sessions.ts` 解析这些位置。
 
 经验法则：
 
-- **重置**（`/new`、`/reset`）为该 `sessionKey` 创建一个新的 `sessionId`。
+- **重置**（`/new`）为该 `sessionKey` 创建一个新的 `sessionId`。
 - **每日重置**（默认 Gateway 网关主机本地时间凌晨 4:00）在重置边界后的下一条消息时创建一个新的 `sessionId`。
 - **空闲过期**（`session.reset.idleMinutes` 或旧版 `session.idleMinutes`）当消息在空闲窗口后到达时创建一个新的 `sessionId`。当同时配置了每日和空闲时，以先过期者为准。
 

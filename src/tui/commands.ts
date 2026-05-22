@@ -148,7 +148,7 @@ export function helpText(options: SlashCommandOptions = {}): string {
     "/elevated <on|off|ask|full>",
     "/elev <on|off|ask|full>",
     "/activation <mention|always>",
-    "/new or /reset",
+    "/new",
     "/abort",
     "/settings",
     "/exit",

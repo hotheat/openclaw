@@ -934,6 +934,14 @@ export const FIELD_HELP: Record<string, string> = {
     "How long bash waits before backgrounding (default: 2000; 0 backgrounds immediately).",
   "commands.config": "Allow /config chat command to read/write config on disk (default: false).",
   "commands.debug": "Allow /debug chat command for runtime-only overrides (default: false).",
+  "commands.helpText":
+    "Legacy custom text returned by the /help chat command. Use commands.help for maintainable structured help when possible.",
+  "commands.help":
+    "Structured custom content returned by the /help chat command. It takes precedence over commands.helpText and falls back to the built-in command summary when unset or empty.",
+  "commands.newSessionAck":
+    "Controls whether /new sends a separate confirmation before the agent greeting. Set false when you want the fresh-session greeting to be the first visible reply.",
+  "commands.newSessionHelpHint":
+    "Hint appended to bare /new greetings. Use a string to customize it, false to disable it, or leave unset for the default /help hint.",
   "commands.restart": "Allow /restart and gateway restart tool actions (default: true).",
   "commands.useAccessGroups": "Enforce access-group allowlists/policies for commands.",
   "commands.ownerAllowFrom":

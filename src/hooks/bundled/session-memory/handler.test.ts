@@ -64,6 +64,40 @@ const EMPTY_STRUCTURED_SUMMARY = [
   "- 无可靠新增项。",
 ].join("\n");
 
+const HEARTBEAT_NOISE_STRUCTURED_SUMMARY = [
+  "## Daily Structured Summary",
+  "",
+  "- **Generated At**: 2026-05-15 04:00 CST",
+  "- **Source**: daily-rollover",
+  "- **Source Sessions**: test-123",
+  "",
+  "### 当前主问题 / 当天主线",
+  "- 周一清晨例行心跳检查，无主动用户请求。",
+  "",
+  "### 主要任务推进",
+  "- 无可靠新增项。",
+  "",
+  "### 负向反馈 / 失败信号",
+  "- 心跳检查期间出现 Connection error，连续重试后无法正常响应。",
+  "",
+  "### 风险 / 注意点",
+  "- 上游连接不稳定，可能影响后续心跳轮询。",
+].join("\n");
+
+const OPERATIONAL_DEBUG_STRUCTURED_SUMMARY = [
+  "## Daily Structured Summary",
+  "",
+  "- **Generated At**: 2026-05-15 04:00 CST",
+  "- **Source**: reset",
+  "- **Source Sessions**: test-123",
+  "",
+  "### 当前主问题 / 当天主线",
+  "- 用户明确要求排查 Connection error。",
+  "",
+  "### 重要决策",
+  "- 将网关连接错误排查作为当前任务。",
+].join("\n");
+
 const DEFAULT_LONG_TERM_MEMORY_UPDATE = {
   user: {
     workContext: {
@@ -206,6 +240,30 @@ const SEMANTIC_CONSOLIDATION_NOOP = {
 
 vi.mock("../../../agents/pi-embedded.js", () => ({
   runEmbeddedPiAgent: vi.fn(async ({ prompt }: { prompt?: string }) => {
+    if (
+      typeof prompt === "string" &&
+      prompt.includes("Decide whether to write the daily structured memory summary")
+    ) {
+      const shouldWrite =
+        prompt.includes("USER_DEBUG_OPERATIONAL_TEST") ||
+        (!prompt.includes("HEARTBEAT_NOISE_TEST") &&
+          !prompt.includes("无新增记忆测试") &&
+          prompt.includes("偏好精确结论"));
+      return {
+        payloads: [
+          {
+            text: JSON.stringify({
+              shouldWriteDailyNote: shouldWrite,
+              containsDurableMemory: shouldWrite,
+              containsOnlyOperationalNoise: !shouldWrite,
+              reason: shouldWrite
+                ? "user explicitly asked to debug the operational issue"
+                : "only heartbeat polling and transport errors",
+            }),
+          },
+        ],
+      };
+    }
     if (typeof prompt === "string" && prompt.includes("Return strict JSON with this shape")) {
       if (prompt.includes("语义合并测试")) {
         return {
@@ -285,7 +343,11 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
           text:
             typeof prompt === "string" && prompt.includes("无新增记忆测试")
               ? EMPTY_STRUCTURED_SUMMARY
-              : DEFAULT_STRUCTURED_SUMMARY,
+              : typeof prompt === "string" && prompt.includes("HEARTBEAT_NOISE_TEST")
+                ? HEARTBEAT_NOISE_STRUCTURED_SUMMARY
+                : typeof prompt === "string" && prompt.includes("USER_DEBUG_OPERATIONAL_TEST")
+                  ? OPERATIONAL_DEBUG_STRUCTURED_SUMMARY
+                  : DEFAULT_STRUCTURED_SUMMARY,
         },
       ],
     };
@@ -327,6 +389,7 @@ async function runNewWithPreviousSessionEntry(params: {
   previousSessionEntry: { sessionId: string; sessionFile?: string };
   cfg?: OpenClawConfig;
   action?: "new" | "reset";
+  commandSource?: string;
   timestamp?: Date;
 }): Promise<{
   files: string[];
@@ -342,6 +405,7 @@ async function runNewWithPreviousSessionEntry(params: {
         agents: { defaults: { workspace: params.tempDir } },
       } satisfies OpenClawConfig),
     previousSessionEntry: params.previousSessionEntry,
+    ...(params.commandSource ? { commandSource: params.commandSource } : {}),
   });
   event.timestamp = params.timestamp ?? new Date("2026-05-15T04:00:00.000Z");
 
@@ -371,6 +435,7 @@ async function runNewWithPreviousSession(params: {
   sessionContent: string;
   cfg?: (tempDir: string) => OpenClawConfig;
   action?: "new" | "reset";
+  commandSource?: string;
 }): Promise<{
   tempDir: string;
   files: string[];
@@ -400,6 +465,7 @@ async function runNewWithPreviousSession(params: {
       tempDir,
       cfg,
       action: params.action,
+      commandSource: params.commandSource,
       previousSessionEntry: {
         sessionId: "test-123",
         sessionFile,
@@ -527,7 +593,7 @@ describe("session-memory hook", () => {
     await expect(fs.access(memoryDir)).rejects.toThrow();
   });
 
-  it("does not create memory file on /new command", async () => {
+  it("skips structured summary capture on /new command", async () => {
     // Create a mock session file with user/assistant messages
     const sessionContent = createMockSessionContent([
       { role: "user", content: "Hello there" },
@@ -535,12 +601,15 @@ describe("session-memory hook", () => {
       { role: "user", content: "What is 2+2?" },
       { role: "assistant", content: "2+2 equals 4" },
     ]);
-    const { files, memoryDir } = await runNewWithPreviousSession({ sessionContent });
-    expect(files.length).toBe(0);
+    const { files, memoryDir } = await runNewWithPreviousSession({
+      sessionContent,
+      commandSource: "whatsapp",
+    });
+    expect(files).toEqual([]);
     await expect(fs.access(memoryDir)).rejects.toThrow();
   });
 
-  it("creates structured summary in daily note on /reset command", async () => {
+  it("creates structured summary in daily note on reset events", async () => {
     const sessionContent = createMockSessionContent([
       { role: "user", content: "Please reset and keep notes" },
       { role: "assistant", content: "Captured before reset" },
@@ -811,7 +880,7 @@ describe("session-memory hook", () => {
       } satisfies OpenClawConfig,
     });
 
-    expect(embeddedRunMock).toHaveBeenCalledTimes(3);
+    expect(embeddedRunMock).toHaveBeenCalledTimes(4);
     for (const [call] of embeddedRunMock.mock.calls) {
       expect(call.provider).toBe("openai");
       expect(call.model).toBe("gpt-4.1-mini");
@@ -832,7 +901,7 @@ describe("session-memory hook", () => {
       action: "reset",
     });
 
-    expect(embeddedRunMock).toHaveBeenCalledTimes(2);
+    expect(embeddedRunMock).toHaveBeenCalledTimes(3);
     for (const [call] of embeddedRunMock.mock.calls) {
       expect(call.timeoutMs).toBe(30_000);
     }
@@ -898,7 +967,7 @@ describe("session-memory hook", () => {
       } satisfies OpenClawConfig,
     });
 
-    expect(embeddedRunMock).toHaveBeenCalledTimes(3);
+    expect(embeddedRunMock).toHaveBeenCalledTimes(4);
     for (const [call] of embeddedRunMock.mock.calls) {
       expect(call.timeoutMs).toBe(60_000);
     }
@@ -965,7 +1034,7 @@ describe("session-memory hook", () => {
       } satisfies OpenClawConfig,
     });
 
-    expect(embeddedRunMock).toHaveBeenCalledTimes(3);
+    expect(embeddedRunMock).toHaveBeenCalledTimes(4);
     for (const [call] of embeddedRunMock.mock.calls) {
       expect(call.provider).toBe("deepseek");
       expect(call.model).toBe("deepseek-v4-pro");
@@ -1335,6 +1404,56 @@ describe("session-memory hook", () => {
 
     expect(files).toEqual([]);
     expect(rootMemoryContent).toBe("");
+  });
+
+  it("does not write a daily note for heartbeat-only transport noise", async () => {
+    vi.mocked(runEmbeddedPiAgent).mockClear();
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "HEARTBEAT_NOISE_TEST 例行心跳检查。" },
+      { role: "assistant", content: "Connection error after retries." },
+    ]);
+
+    const { files, rootMemoryContent } = await runNewWithPreviousSession({
+      sessionContent,
+      action: "reset",
+    });
+
+    expect(files).toEqual([]);
+    expect(rootMemoryContent).toBe("");
+    expect(
+      vi
+        .mocked(runEmbeddedPiAgent)
+        .mock.calls.some(([arg]) =>
+          String((arg as { prompt?: string }).prompt).includes(
+            "Decide whether to write the daily structured memory summary",
+          ),
+        ),
+    ).toBe(true);
+  });
+
+  it("writes a daily note when the judge model accepts explicit operational debugging", async () => {
+    vi.mocked(runEmbeddedPiAgent).mockClear();
+    const sessionContent = createMockSessionContent([
+      { role: "user", content: "USER_DEBUG_OPERATIONAL_TEST 请排查 Connection error。" },
+      { role: "assistant", content: "将连接错误排查作为当前任务。" },
+    ]);
+
+    const { files, memoryContent } = await runNewWithPreviousSession({
+      sessionContent,
+      action: "reset",
+    });
+
+    expect(files).toEqual(["2026-05-15.md"]);
+    expect(memoryContent).toContain("用户明确要求排查 Connection error");
+    expect(
+      vi
+        .mocked(runEmbeddedPiAgent)
+        .mock.calls.some(([arg]) =>
+          String((arg as { prompt?: string }).prompt).includes(
+            "Decide whether to write the daily structured memory summary",
+          ),
+        ),
+    ).toBe(true);
   });
 
   it("appends a new summary block instead of overwriting daily note", async () => {

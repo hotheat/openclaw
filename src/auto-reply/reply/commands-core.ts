@@ -68,18 +68,16 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
       handleAbortTrigger,
     ];
   }
-  const resetMatch = params.command.commandBodyNormalized.match(/^\/(new|reset)(?:\s|$)/);
+  const resetMatch = params.command.commandBodyNormalized.match(/^\/new(?:\s|$)/);
   const resetRequested = Boolean(resetMatch);
   if (resetRequested && !params.command.isAuthorizedSender) {
-    logVerbose(
-      `Ignoring /reset from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
-    );
+    logVerbose(`Ignoring /new from unauthorized sender: ${params.command.senderId || "<unknown>"}`);
     return { shouldContinue: false };
   }
 
-  // Trigger internal hook for reset/new commands
+  // Trigger internal hook for new-session commands.
   if (resetRequested && params.command.isAuthorizedSender) {
-    const commandAction = resetMatch?.[1] ?? "new";
+    const commandAction = "new";
     const hookEvent = createInternalHookEvent("command", commandAction, params.sessionKey ?? "", {
       sessionEntry: params.sessionEntry,
       previousSessionEntry: params.previousSessionEntry,
@@ -111,7 +109,7 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
       }
     }
 
-    // Fire before_reset plugin hook — extract memories before session history is lost
+    // Fire before_reset plugin hook to extract memories before session history is lost.
     const hookRunner = getGlobalHookRunner();
     if (hookRunner?.hasHooks("before_reset")) {
       const prevEntry = params.previousSessionEntry;

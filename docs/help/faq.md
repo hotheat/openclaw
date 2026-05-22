@@ -1770,7 +1770,7 @@ See [/concepts/model-providers](/concepts/model-providers) and [/environment](/h
 
 ### How do I start a fresh conversation
 
-Send `/new` or `/reset` as a standalone message. See [Session management](/concepts/session).
+Send `/new` as a standalone message. See [Session management](/concepts/session).
 
 ### Do sessions reset automatically if I never send new
 
@@ -1854,7 +1854,6 @@ Use one of these:
 
   ```
   /new
-  /reset
   ```
 
 If it keeps happening:

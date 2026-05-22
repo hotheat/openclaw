@@ -1,6 +1,6 @@
 ---
 read_when:
-  - 你想为 /new、/reset、/stop 和智能体生命周期事件实现事件驱动自动化
+  - 你想为 /new、/stop 和智能体生命周期事件实现事件驱动自动化
   - 你想构建、安装或调试 hooks
 summary: Hooks：用于命令和生命周期事件的事件驱动自动化
 title: Hooks
@@ -21,14 +21,14 @@ Hooks 提供了一个可扩展的事件驱动系统，用于响应智能体命�
 
 Hooks 是在事件发生时运行的小脚本。有两种类型：
 
-- **Hooks**（本页）：当智能体事件触发时在 Gateway 网关内运行，如 `/new`、`/reset`、`/stop` 或生命周期事件。
+- **Hooks**（本页）：当智能体事件触发时在 Gateway 网关内运行，如 `/new`、`/stop` 或生命周期事件。
 - **Webhooks**：外部 HTTP webhooks，让其他系统触发 OpenClaw 中的工作。参见 [Webhook Hooks](/automation/webhook) 或使用 `openclaw webhooks` 获取 Gmail 助手命令。
 
 Hooks 也可以捆绑在插件中；参见 [插件](/tools/plugin#plugin-hooks)。
 
 常见用途：
 
-- 重置会话时保存记忆快照
+- daily rollover 结束会话时保存记忆快照
 - 保留命令审计跟踪用于故障排除或合规
 - 会话开始或结束时触发后续自动化
 - 事件触发时向智能体工作区写入文件或调用外部 API
@@ -39,7 +39,7 @@ Hooks 也可以捆绑在插件中；参见 [插件](/tools/plugin#plugin-hooks)�
 
 hooks 系统允许你：
 
-- 在发出 `/new` 或 `/reset` 时触发会话类自动化
+- 在发出 `/new` 时触发会话类自动化
 - 记录所有命令以供审计
 - 在智能体生命周期事件上触发自定义自动化
 - 在不修改核心代码的情况下扩展 OpenClaw 的行为
@@ -50,7 +50,7 @@ hooks 系统允许你：
 
 OpenClaw 附带四个自动发现的捆绑 hooks：
 
-- **💾 session-memory**：当你发出 `/reset` 时，将旧会话摘要追加到智能体工作区 daily note；builtin runtime 会在 `session_end(reason="daily")` 时复用同一条 helper，`idle` rollover 不会触发
+- **💾 session-memory**：builtin runtime 会在 `session_end(reason="daily")` 时将结构化摘要追加到智能体工作区 daily note；`idle` rollover 不会触发
 - **📎 bootstrap-extra-files**：在 `agent:bootstrap` 时按配置注入额外工作区文件
 - **📝 command-logger**：将所有命令事件记录到 `~/.openclaw/logs/commands.log`
 - **🚀 boot-md**：当 Gateway 网关启动时运行 `BOOT.md`（需要启用内部 hooks）
@@ -163,7 +163,7 @@ No configuration needed.
 `metadata.openclaw` 对象支持：
 
 - **`emoji`**：CLI 的显示表情符号（例如 `"💾"`）
-- **`events`**：要监听的事件数组（例如 `["command:new", "command:reset"]`）
+- **`events`**：要监听的事件数组（例如 `["command:new"]`）
 - **`export`**：要使用的命名导出（默认为 `"default"`）
 - **`homepage`**：文档 URL
 - **`requires`**：可选要求
@@ -208,7 +208,7 @@ export default myHandler;
 ```typescript
 {
   type: 'command' | 'session' | 'agent' | 'gateway',
-  action: string,              // e.g., 'new', 'reset', 'stop'
+  action: string,              // e.g., 'new', 'stop'
   sessionKey: string,          // Session identifier
   timestamp: Date,             // When the event occurred
   messages: string[],          // Push messages here to send to user
@@ -233,7 +233,6 @@ export default myHandler;
 
 - **`command`**：所有命令事件（通用监听器）
 - **`command:new`**：当发出 `/new` 命令时
-- **`command:reset`**：当发出 `/reset` 命令时
 - **`command:stop`**：当发出 `/stop` 命令时
 
 ### 智能体事件
@@ -454,13 +453,11 @@ openclaw hooks disable command-logger
 
 ### session-memory
 
-当你发出 `/reset` 时，将旧会话沉淀为结构化记忆摘要，并把可持久的事实提升到 `MEMORY.md`。
+Builtin daily rollover 会保存结构化记忆摘要，并把可持久的事实提升到 `MEMORY.md`。
 
-builtin runtime 在旧会话因 daily reset 自动 rollover 时，也会复用同一份 capture helper。
-这不是新的 hook event。
-idle rollover 不会触发它。
+这不是新的 hook event。idle rollover 不会触发它。
 
-**事件**：`command:reset`
+**事件**：无；builtin daily rollover 直接复用 helper
 
 **要求**：必须配置 `workspace.dir`
 
@@ -471,7 +468,7 @@ idle rollover 不会触发它。
 
 **当前功能**：
 
-1. 使用预重置会话条目定位正确的记录
+1. 使用结束会话条目定位正确的记录
 2. 提取最后 N 条 user / assistant 消息，默认 15 条
 3. 使用配置好的模型生成 grounded structured summary
 4. 将摘要以 append-only block 追加到当天 daily note
@@ -484,7 +481,7 @@ idle rollover 不会触发它。
 ## Daily Structured Summary
 
 - **Generated At**: 2026-01-16 14:30:00 UTC
-- **Source**: reset
+- **Source**: daily-rollover
 - **Source Sessions**: abc123def456
 
 ### 当前主问题 / 当天主线
@@ -506,12 +503,12 @@ idle rollover 不会触发它。
 
 ### 正向进展 / 已验证有效
 
-- daily rollover 和 `/reset` 现在都会产出更适合召回的任务态摘要块。
+- daily rollover 现在会产出更适合召回的任务态摘要块。
 ```
 
 **说明**：
 
-- 当前实现里，`/new` 不再触发这条写盘链路。
+- 当前实现里，`/new` 不触发这条写盘链路。
 - builtin memory 的推荐方向是 `memory/*.md` 负责结构化摘要，`sessions` source 负责原始 transcript recall。
 - `MEMORY.md` 的最终落盘格式仍是 Markdown；JSON patch 只是内部更新协议。
 - pre-compaction memory flush 会继续保留，作为上下文压缩前的同日写盘兜底；它写入后的索引更新继续走默认 watcher / debounced sync，不会额外触发 compaction rebuild。
@@ -655,7 +652,6 @@ metadata: { "openclaw": { "events": ["command"] } } # General - more overhead
 Gateway 网关在启动时记录 hook 加载：
 
 ```
-Registered hook: session-memory -> command:reset
 Registered hook: command-logger -> command
 Registered hook: bootstrap-extra-files -> agent:bootstrap
 Registered hook: boot-md -> gateway:startup
