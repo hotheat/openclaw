@@ -77,6 +77,12 @@ describe("memory cli", () => {
     );
   }
 
+  function expectCliRepairStore(repairStore: ReturnType<typeof vi.fn>) {
+    expect(repairStore).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.any(Function) }),
+    );
+  }
+
   function makeMemoryStatus(overrides: Record<string, unknown> = {}) {
     return {
       files: 0,
@@ -322,6 +328,30 @@ describe("memory cli", () => {
     expect(close).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Memory store initialized (main).");
     expect(log).toHaveBeenCalledWith("Memory index updated (main).");
+  });
+
+  it("repairs memory store", async () => {
+    const close = vi.fn(async () => {});
+    const repairStore = vi.fn(async () => {});
+    mockManager({ repairStore, close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["repair-store"]);
+
+    expectCliRepairStore(repairStore);
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory store repaired (main).");
+  });
+
+  it("reports when backend does not support repair-store", async () => {
+    const close = vi.fn(async () => {});
+    mockManager({ close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["repair-store"]);
+
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory backend does not support store repair.");
   });
 
   it("logs qmd index file path and size after index", async () => {

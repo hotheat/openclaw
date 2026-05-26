@@ -176,13 +176,16 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 - `model text not null`
 - `text text not null`
 - `search_tokens text not null`
-- `embedding vector(1024)`
+- `embedding double precision[] not null`
+- `embedding_vec vector(1024)`
 - `updated_at timestamptz not null default now()`
 - `primary key (agent_id, id)`
 
 说明：
 
-- `embedding` 第一版固定按当前主模型 `1024` 维落地。
+- 线上迁移阶段保留 `embedding` 作为兼容数组列，并新增 `embedding_vec` 作为原生 pgvector 列。
+- 新写入采用双写；查询优先读 `embedding_vec`，缺失时退回 `embedding::vector(1024)`。
+- `embedding_vec` 第一版固定按当前主模型 `1024` 维落地。
 - 若后续要混用不同维度模型，再升级为按模型分表或按模型建部分索引。
 - `search_tokens` 是应用侧生成的检索 token 串，例如 `今天 讨论 中文 分词 中文分词`。
 
@@ -219,20 +222,21 @@ CREATE INDEX chunks_tokens_trgm_idx
 
 CREATE INDEX chunks_embedding_hnsw_idx
   ON agent_memory.chunks
-  USING hnsw (embedding vector_cosine_ops);
+  USING hnsw (embedding_vec vector_cosine_ops);
 ```
 
 说明：
 
 - 第一版即使不建 HNSW 也能工作；在 chunk 数较小时可先精确检索。
 - 若主模型固定，也可改成按 `model` 建部分 HNSW 索引。
+- 迁移完成并确认无旧数据后，可删除数组列 `embedding`，只保留 `embedding_vec`。
 
 ## Query Strategy
 
 ### Vector Retrieval
 
 - 生成 query embedding
-- 使用 PostgreSQL `ORDER BY embedding <=> $1 LIMIT k`
+- 使用 PostgreSQL `ORDER BY coalesce(embedding_vec, embedding::vector(1024)) <=> $1 LIMIT k`
 - 默认加过滤条件：
   - `agent_id = $agentId`
   - `model = $providerModel`

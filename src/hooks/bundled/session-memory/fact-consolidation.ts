@@ -31,7 +31,6 @@ function buildSameCategoryConsolidationPrompt(params: {
   category: StructuredMemoryCategory;
   incomingFact: StructuredMemoryFactUpdate;
   existingFacts: StructuredMemoryFact[];
-  transcript: string | null;
   generatedAt: string;
   source: string;
   sessionId?: string;
@@ -84,9 +83,6 @@ function buildSameCategoryConsolidationPrompt(params: {
       null,
       2,
     ),
-    "",
-    "Sanitized Transcript:",
-    (params.transcript?.trim() || "(No usable transcript content was available.)").slice(0, 4000),
   ].join("\n");
 }
 
@@ -121,7 +117,6 @@ export async function consolidateSameCategoryFact(params: {
   category: StructuredMemoryCategory;
   incomingFact: StructuredMemoryFactUpdate;
   existingFacts: StructuredMemoryFact[];
-  transcript: string | null;
   generatedAt: string;
   source: string;
   sessionId?: string;
@@ -149,7 +144,6 @@ export async function consolidateSameCategoryFact(params: {
         category: params.category,
         incomingFact: params.incomingFact,
         existingFacts: params.existingFacts,
-        transcript: params.transcript,
         generatedAt: params.generatedAt,
         source: params.source,
         sessionId: params.sessionId,

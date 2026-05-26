@@ -100,6 +100,9 @@ describe("ensurePostgresMemorySchema", () => {
       sql.queries.some((query) => query.includes("CREATE EXTENSION IF NOT EXISTS pg_trgm")),
     ).toBe(true);
     expect(sql.queries.some((query) => query.includes("gin_trgm_ops"))).toBe(true);
+    expect(sql.queries.some((query) => query.includes("embedding_vec VECTOR"))).toBe(true);
+    expect(sql.queries.some((query) => query.includes("embedding_vec VECTOR(1024)"))).toBe(false);
+    expect(sql.queries.some((query) => query.includes("USING hnsw"))).toBe(false);
     expect(sql.queries.some((query) => query.includes("exclude_globs JSONB"))).toBe(true);
     expect(
       sql.queries.some(
@@ -109,7 +112,7 @@ describe("ensurePostgresMemorySchema", () => {
     ).toBe(true);
   });
 
-  it("continues when optional extensions cannot be created", async () => {
+  it("fails fast when pgvector cannot be created", async () => {
     const sql = createFakeSql({
       failCreateVector: true,
       failCreateTrgm: true,
@@ -120,13 +123,40 @@ describe("ensurePostgresMemorySchema", () => {
         sql: sql as unknown as Parameters<typeof ensurePostgresMemorySchema>[0]["sql"],
         config,
       }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("PostgreSQL memory store requires pgvector");
 
     expect(
       sql.queries.some((query) =>
         query.includes('CREATE TABLE IF NOT EXISTS "agent_memory"."chunks"'),
       ),
-    ).toBe(true);
+    ).toBe(false);
+    expect(sql.queries.some((query) => query.includes("USING hnsw"))).toBe(false);
     expect(sql.queries.some((query) => query.includes("gin_trgm_ops"))).toBe(false);
+  });
+
+  it("keeps keyword-only schema working when pgvector is disabled", async () => {
+    const sql = createFakeSql({
+      failCreateVector: true,
+      failCreateTrgm: true,
+    });
+
+    await expect(
+      ensurePostgresMemorySchema({
+        sql: sql as unknown as Parameters<typeof ensurePostgresMemorySchema>[0]["sql"],
+        config,
+        requireVector: false,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(
+      sql.queries.some((query) => query.includes("CREATE EXTENSION IF NOT EXISTS vector")),
+    ).toBe(false);
+    expect(sql.queries.some((query) => query.includes("embedding_vec VECTOR"))).toBe(false);
+    expect(
+      sql.queries.some((query) =>
+        query.includes('CREATE TABLE IF NOT EXISTS "agent_memory"."chunks"'),
+      ),
+    ).toBe(true);
+    expect(sql.queries.some((query) => query.includes("USING hnsw"))).toBe(false);
   });
 });

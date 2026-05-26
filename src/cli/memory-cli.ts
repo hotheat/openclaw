@@ -160,6 +160,41 @@ async function runInitStoreForManager(params: {
   return true;
 }
 
+async function runRepairStoreForManager(params: {
+  manager: MemoryManager;
+  agentId: string;
+}): Promise<boolean> {
+  const repairStoreFn = params.manager.repairStore
+    ? params.manager.repairStore.bind(params.manager)
+    : null;
+  if (!repairStoreFn) {
+    defaultRuntime.log("Memory backend does not support store repair.");
+    return false;
+  }
+  await withProgressTotals(
+    {
+      label: "Repairing memory store…",
+      total: 0,
+    },
+    async (update, progress) => {
+      await repairStoreFn({
+        progress: (repairUpdate) => {
+          update({
+            completed: repairUpdate.completed,
+            total: repairUpdate.total,
+            label: repairUpdate.label,
+          });
+          if (repairUpdate.label) {
+            progress.setLabel(repairUpdate.label);
+          }
+        },
+      });
+    },
+  );
+  defaultRuntime.log(`Memory store repaired (${params.agentId}).`);
+  return true;
+}
+
 async function scanSessionFiles(agentId: string): Promise<SourceScan> {
   const issues: string[] = [];
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
@@ -585,6 +620,7 @@ export function registerMemoryCli(program: Command) {
       () =>
         `\n${theme.heading("Examples:")}\n${formatHelpExamples([
           ["openclaw memory status", "Show index and provider status."],
+          ["openclaw memory repair-store", "Repair pgvector columns and metadata in place."],
           ["openclaw memory index --force", "Force a full reindex."],
           ['openclaw memory search --query "deployment notes"', "Search indexed memory entries."],
           ["openclaw memory status --json", "Output machine-readable JSON."],
@@ -666,6 +702,32 @@ export function registerMemoryCli(program: Command) {
             } catch (err) {
               const message = formatErrorMessage(err);
               defaultRuntime.error(`Memory store bootstrap failed (${agentId}): ${message}`);
+              process.exitCode = 1;
+            }
+          },
+        });
+      }
+    });
+
+  memory
+    .command("repair-store")
+    .description("Repair the configured memory store in place")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentIds = resolveAgentIds(cfg, opts.agent);
+      for (const agentId of agentIds) {
+        await withMemoryManagerForAgent({
+          cfg,
+          agentId,
+          run: async (manager) => {
+            try {
+              await runRepairStoreForManager({ manager, agentId });
+            } catch (err) {
+              const message = formatErrorMessage(err);
+              defaultRuntime.error(`Memory store repair failed (${agentId}): ${message}`);
               process.exitCode = 1;
             }
           },

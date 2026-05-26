@@ -48,6 +48,7 @@ import {
 import { buildSessionEntry, listSessionFilesForAgent } from "./session-files.js";
 import type {
   MemoryEmbeddingProbeResult,
+  MemoryRepairProgressUpdate,
   MemoryProviderStatus,
   MemorySearchManager,
   MemorySearchResult,
@@ -73,6 +74,7 @@ const INDEX_CACHE = new Map<string, PostgresMemoryManager>();
 const SNIPPET_MAX_CHARS = 700;
 const EMBEDDING_INDEX_CONCURRENCY = 4;
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
+const POSTGRES_HNSW_MAX_VECTOR_DIMS = 2000;
 const SESSION_DIRTY_DEBOUNCE_MS = 5000;
 const SESSION_DELTA_READ_CHUNK_BYTES = 64 * 1024;
 const IGNORED_MEMORY_WATCH_DIR_NAMES = new Set([
@@ -84,6 +86,18 @@ const IGNORED_MEMORY_WATCH_DIR_NAMES = new Set([
   ".tox",
   "__pycache__",
 ]);
+
+function serializePgvector(values: number[]): string {
+  return `[${values.map((value) => Number(value)).join(",")}]`;
+}
+
+function quotePgIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
+function qualifyIndex(schema: string, indexName: string): string {
+  return `${quotePgIdentifier(schema)}.${quotePgIdentifier(indexName)}`;
+}
 
 function truncateSnippet(text: string, maxChars = SNIPPET_MAX_CHARS): string {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
@@ -297,6 +311,21 @@ export class PostgresMemoryManager implements MemorySearchManager {
     reporter.tick("Extensions checked");
     await this.refreshStatusSnapshot();
     reporter.tick("Metadata loaded");
+  }
+
+  async repairStore(params?: {
+    progress?: (update: MemoryRepairProgressUpdate) => void;
+  }): Promise<void> {
+    const progress = params?.progress;
+    progress?.({ completed: 0, total: 4, label: "Preparing PostgreSQL memory repair..." });
+    await ensurePostgresMemorySchema({ sql: this.sql, config: this.store });
+    progress?.({ completed: 1, total: 4, label: "Schema ready" });
+    this.vector.available = await this.detectVectorAvailability();
+    progress?.({ completed: 2, total: 4, label: "Vector capability checked" });
+    await this.backfillVectorMetadata();
+    progress?.({ completed: 3, total: 4, label: "Backfilled pgvector columns and metadata" });
+    await this.refreshStatusSnapshot();
+    progress?.({ completed: 4, total: 4, label: "Repair complete" });
   }
 
   async search(
@@ -549,11 +578,19 @@ export class PostgresMemoryManager implements MemorySearchManager {
   }
 
   private async initializeStoreState(): Promise<MemoryIndexMeta | null> {
-    await ensurePostgresMemorySchema({ sql: this.sql, config: this.store });
+    await ensurePostgresMemorySchema({
+      sql: this.sql,
+      config: this.store,
+      requireVector: this.vector.enabled,
+    });
     this.vector.available = await this.detectVectorAvailability();
     this.fts.available = await this.detectTrigramAvailability();
+    await this.backfillVectorMetadata();
     try {
       const meta = await this.readMeta();
+      if (meta?.vectorDims) {
+        await this.ensureVectorIndexForDims(meta.vectorDims);
+      }
       this.dirty = this.sources.has("memory") && (this.purpose === "status" ? !meta : true);
       this.initialized = true;
       return meta;
@@ -561,6 +598,52 @@ export class PostgresMemoryManager implements MemorySearchManager {
       this.initialized = true;
       throw err;
     }
+  }
+
+  private async backfillVectorMetadata(): Promise<void> {
+    const chunksTable = qualifyTable(this.store.schema, "chunks");
+    const metaTable = qualifyTable(this.store.schema, "index_meta");
+    if (this.vector.enabled && this.vector.available) {
+      await this.sql.unsafe(`
+        UPDATE ${chunksTable}
+           SET embedding_vec = embedding::vector
+         WHERE embedding_vec IS NULL
+           AND array_length(embedding, 1) > 0
+      `);
+    }
+    await this.sql.unsafe(`
+      UPDATE ${metaTable} AS m
+         SET vector_dims = dims.vector_dims,
+             updated_at = NOW()
+        FROM (
+          SELECT agent_id, MIN(array_length(embedding, 1)) AS vector_dims
+          FROM ${chunksTable}
+          WHERE array_length(embedding, 1) IS NOT NULL
+          GROUP BY agent_id
+          HAVING MIN(array_length(embedding, 1)) = MAX(array_length(embedding, 1))
+        ) AS dims
+       WHERE m.agent_id = dims.agent_id
+         AND (m.vector_dims IS NULL OR m.vector_dims <> dims.vector_dims)
+    `);
+  }
+
+  private async ensureVectorIndexForDims(dims: number): Promise<void> {
+    if (
+      !this.vector.available ||
+      !Number.isInteger(dims) ||
+      dims <= 0 ||
+      dims > POSTGRES_HNSW_MAX_VECTOR_DIMS
+    ) {
+      return;
+    }
+    const chunksTable = qualifyTable(this.store.schema, "chunks");
+    const indexName = qualifyIndex(this.store.schema, `chunks_embedding_vec_${dims}_hnsw_idx`);
+    await this.activeSql.unsafe(`
+      CREATE INDEX IF NOT EXISTS ${indexName}
+        ON ${chunksTable}
+        USING hnsw ((embedding_vec::vector(${dims})) vector_cosine_ops)
+        WHERE embedding_vec IS NOT NULL AND vector_dims(embedding_vec) = ${dims}
+    `);
   }
 
   private ensureWatcher(): void {
@@ -858,6 +941,10 @@ export class PostgresMemoryManager implements MemorySearchManager {
   }
 
   private async detectVectorAvailability(): Promise<boolean> {
+    if (!this.vector.enabled) {
+      this.vector.available = false;
+      return false;
+    }
     try {
       const rows = await this.sql<{ available: boolean }[]>`
         SELECT EXISTS (
@@ -1137,7 +1224,16 @@ export class PostgresMemoryManager implements MemorySearchManager {
       : limitedChunks.map(() => []);
     const sample = embeddings.find((embedding) => embedding.length > 0);
     if (sample) {
-      this.vector.dims = sample.length;
+      const targetDims = sample.length;
+      for (const embedding of embeddings) {
+        if (embedding.length > 0 && embedding.length !== targetDims) {
+          throw new Error(
+            `postgres memory expected ${targetDims}-dim embeddings, got ${embedding.length}`,
+          );
+        }
+      }
+      this.vector.dims = targetDims;
+      await this.ensureVectorIndexForDims(targetDims);
     }
 
     await this.deletePath(entry.path, options.source);
@@ -1149,25 +1245,52 @@ export class PostgresMemoryManager implements MemorySearchManager {
         `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider?.model ?? "fts-only"}`,
       );
       const searchTokens = serializeSearchTokens(buildSearchTokens(chunk.text));
-      await this.activeSql`
-        INSERT INTO ${chunksTable}
-          (agent_id, id, path, source, start_line, end_line, hash, model, text, search_tokens, embedding, updated_at)
-        VALUES
-          (
-            ${this.agentId},
-            ${id},
-            ${entry.path},
-            ${options.source},
-            ${chunk.startLine},
-            ${chunk.endLine},
-            ${chunk.hash},
-            ${this.provider?.model ?? "fts-only"},
-            ${chunk.text},
-            ${searchTokens},
-            ${this.activeSql.array(embedding, 701)},
-            NOW()
-          )
-      `;
+      if (this.vector.enabled && this.vector.available) {
+        await this.activeSql`
+          INSERT INTO ${chunksTable}
+            (agent_id, id, path, source, start_line, end_line, hash, model, text, search_tokens, embedding, embedding_vec, updated_at)
+          VALUES
+            (
+              ${this.agentId},
+              ${id},
+              ${entry.path},
+              ${options.source},
+              ${chunk.startLine},
+              ${chunk.endLine},
+              ${chunk.hash},
+              ${this.provider?.model ?? "fts-only"},
+              ${chunk.text},
+              ${searchTokens},
+              ${this.activeSql.array(embedding, 701)},
+              ${
+                embedding.length > 0
+                  ? this.activeSql.unsafe(`'${serializePgvector(embedding)}'::vector`)
+                  : null
+              },
+              NOW()
+            )
+        `;
+      } else {
+        await this.activeSql`
+          INSERT INTO ${chunksTable}
+            (agent_id, id, path, source, start_line, end_line, hash, model, text, search_tokens, embedding, updated_at)
+          VALUES
+            (
+              ${this.agentId},
+              ${id},
+              ${entry.path},
+              ${options.source},
+              ${chunk.startLine},
+              ${chunk.endLine},
+              ${chunk.hash},
+              ${this.provider?.model ?? "fts-only"},
+              ${chunk.text},
+              ${searchTokens},
+              ${this.activeSql.array(embedding, 701)},
+              NOW()
+            )
+        `;
+      }
     }
 
     const filesTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "files"));
@@ -1408,6 +1531,8 @@ export class PostgresMemoryManager implements MemorySearchManager {
     }
     const chunksTable = this.sql.unsafe(qualifyTable(this.store.schema, "chunks"));
     const vectorType = this.sql.unsafe(`vector(${dims})`);
+    const embeddingExpr = this.sql.unsafe(`embedding_vec::vector(${dims})`);
+    await this.ensureVectorIndexForDims(dims);
     const rows = await this.sql<
       {
         id: string;
@@ -1416,8 +1541,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
         start_line: number;
         end_line: number;
         text: string;
-        embedding: number[] | string;
-        score?: number;
+        score: number;
       }[]
     >`
       SELECT
@@ -1427,17 +1551,17 @@ export class PostgresMemoryManager implements MemorySearchManager {
         start_line,
         end_line,
         text,
-        embedding,
         GREATEST(
           0::double precision,
-          1 - (embedding::${vectorType} <=> ${this.sql.array(queryVec, 701)}::${vectorType})
+          1 - (${embeddingExpr} <=> ${this.sql.array(queryVec, 701)}::${vectorType})
         ) AS score
       FROM ${chunksTable}
       WHERE agent_id = ${this.agentId}
         AND source = ANY(${this.sql.array(Array.from(this.sources))})
         AND model = ${this.provider?.model ?? "fts-only"}
-        AND array_length(embedding, 1) = ${dims}
-      ORDER BY embedding::${vectorType} <=> ${this.sql.array(queryVec, 701)}::${vectorType}
+        AND embedding_vec IS NOT NULL
+        AND vector_dims(embedding_vec) = ${dims}
+      ORDER BY ${embeddingExpr} <=> ${this.sql.array(queryVec, 701)}::${vectorType}
       LIMIT ${limit}
     `;
     return rows.map(
@@ -1448,16 +1572,9 @@ export class PostgresMemoryManager implements MemorySearchManager {
         start_line: number;
         end_line: number;
         text: string;
-        embedding: number[] | string;
-        score?: number;
+        score: number;
       }) => {
-        const embedding = Array.isArray(row.embedding)
-          ? row.embedding.map((value: number) => Number(value))
-          : parseEmbedding(String(row.embedding));
-        const score =
-          typeof row.score === "number" && Number.isFinite(row.score)
-            ? row.score
-            : cosineSimilarity(queryVec, embedding);
+        const score = typeof row.score === "number" && Number.isFinite(row.score) ? row.score : 0;
         return {
           id: row.id,
           path: row.path,

@@ -19,23 +19,21 @@ const DEFAULT_STRUCTURED_SUMMARY = [
   "- **Source**: reset",
   "- **Source Sessions**: test-123",
   "",
-  "### 用户偏好",
-  "- 偏好精确结论。",
+  "### 最终结论",
+  "- 已将本轮可复用结论沉淀为结构化记忆。",
   "",
-  "### 自定义需求",
-  "- 输出中文。",
+  "### 已验证有效的方法",
+  "- 优先给出精确结论，避免模糊表述。",
   "",
-  "### 失败经验 / 反模式",
-  "- 避免模糊剂量。",
-  "",
-  "### 重要决策",
+  "### 稳定约束 / 用户偏好 / 重要决策",
+  "- 偏好精确结论，并要求输出中文。",
   "- 仅采官方来源。",
   "",
-  "### 未完成事项",
+  "### 待继续事项",
   "- 继续核对 Roche 财报。",
   "",
-  "### 风险 / 注意点",
-  "- 未披露剂量不得推断。",
+  "### 稳定失败教训",
+  "- 未披露剂量不得推断，避免模糊剂量。",
 ].join("\n");
 
 const EMPTY_STRUCTURED_SUMMARY = [
@@ -45,22 +43,6 @@ const EMPTY_STRUCTURED_SUMMARY = [
   "- **Source**: reset",
   "- **Source Sessions**: test-123",
   "",
-  "### 用户偏好",
-  "- 无可靠新增项。",
-  "",
-  "### 自定义需求",
-  "- 无可靠新增项。",
-  "",
-  "### 失败经验 / 反模式",
-  "- 无可靠新增项。",
-  "",
-  "### 重要决策",
-  "- 无可靠新增项。",
-  "",
-  "### 未完成事项",
-  "- 无可靠新增项。",
-  "",
-  "### 风险 / 注意点",
   "- 无可靠新增项。",
 ].join("\n");
 
@@ -71,17 +53,11 @@ const HEARTBEAT_NOISE_STRUCTURED_SUMMARY = [
   "- **Source**: daily-rollover",
   "- **Source Sessions**: test-123",
   "",
-  "### 当前主问题 / 当天主线",
+  "### 最终结论",
   "- 周一清晨例行心跳检查，无主动用户请求。",
   "",
-  "### 主要任务推进",
-  "- 无可靠新增项。",
-  "",
-  "### 负向反馈 / 失败信号",
-  "- 心跳检查期间出现 Connection error，连续重试后无法正常响应。",
-  "",
-  "### 风险 / 注意点",
-  "- 上游连接不稳定，可能影响后续心跳轮询。",
+  "### 稳定失败教训",
+  "- Connection error after retries.",
 ].join("\n");
 
 const OPERATIONAL_DEBUG_STRUCTURED_SUMMARY = [
@@ -91,10 +67,10 @@ const OPERATIONAL_DEBUG_STRUCTURED_SUMMARY = [
   "- **Source**: reset",
   "- **Source Sessions**: test-123",
   "",
-  "### 当前主问题 / 当天主线",
+  "### 最终结论",
   "- 用户明确要求排查 Connection error。",
   "",
-  "### 重要决策",
+  "### 稳定约束 / 用户偏好 / 重要决策",
   "- 将网关连接错误排查作为当前任务。",
 ].join("\n");
 
@@ -265,7 +241,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
       };
     }
     if (typeof prompt === "string" && prompt.includes("Return strict JSON with this shape")) {
-      if (prompt.includes("语义合并测试")) {
+      if (prompt.includes("Source Session ID: test-merge")) {
         return {
           payloads: [
             {
@@ -274,7 +250,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
           ],
         };
       }
-      if (prompt.includes("冲突覆盖测试")) {
+      if (prompt.includes("Source Session ID: test-contradiction")) {
         return {
           payloads: [
             {
@@ -292,7 +268,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
       };
     }
     if (typeof prompt === "string" && prompt.includes("Return strict JSON matching this shape")) {
-      if (prompt.includes("语义合并测试")) {
+      if (prompt.includes("Source Session ID: test-merge")) {
         return {
           payloads: [
             {
@@ -301,7 +277,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
           ],
         };
       }
-      if (prompt.includes("冲突覆盖测试")) {
+      if (prompt.includes("Source Session ID: test-contradiction")) {
         return {
           payloads: [
             {
@@ -310,7 +286,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
           ],
         };
       }
-      if (prompt.includes("并发记忆 A")) {
+      if (prompt.includes("Source Session ID: concurrent-a")) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         return {
           payloads: [
@@ -320,7 +296,7 @@ vi.mock("../../../agents/pi-embedded.js", () => ({
           ],
         };
       }
-      if (prompt.includes("并发记忆 B")) {
+      if (prompt.includes("Source Session ID: concurrent-b")) {
         return {
           payloads: [
             {
@@ -557,12 +533,11 @@ describe("session-memory hook", () => {
     expect(output?.memoryFilePath.endsWith(path.join("memory", "2026-05-14.md"))).toBe(true);
     expect(saved).toContain("## Daily Structured Summary");
     expect(saved).toContain("**Source**: daily-rollover");
-    expect(saved).toContain("### 当前主问题 / 当天主线");
-    expect(saved).toContain("### 主要任务推进");
-    expect(saved).toContain("### 负向反馈 / 失败信号");
-    expect(saved).toContain("### 改进方向");
-    expect(saved).toContain("### 正向进展 / 已验证有效");
-    expect(saved).toContain("### 用户偏好");
+    expect(saved).toContain("### 最终结论");
+    expect(saved).toContain("### 已验证有效的方法");
+    expect(saved).toContain("### 稳定约束 / 用户偏好 / 重要决策");
+    expect(saved).toContain("### 待继续事项");
+    expect(saved).toContain("### 稳定失败教训");
   });
 
   it("skips non-command events", async () => {
@@ -622,12 +597,11 @@ describe("session-memory hook", () => {
     expect(files).toEqual(["2026-05-15.md"]);
     expect(memoryContent).toContain("## Daily Structured Summary");
     expect(memoryContent).toContain("**Source**: reset");
-    expect(memoryContent).toContain("### 当前主问题 / 当天主线");
-    expect(memoryContent).toContain("### 主要任务推进");
-    expect(memoryContent).toContain("### 负向反馈 / 失败信号");
-    expect(memoryContent).toContain("### 改进方向");
-    expect(memoryContent).toContain("### 正向进展 / 已验证有效");
-    expect(memoryContent).toContain("### 用户偏好");
+    expect(memoryContent).toContain("### 最终结论");
+    expect(memoryContent).toContain("### 已验证有效的方法");
+    expect(memoryContent).toContain("### 稳定约束 / 用户偏好 / 重要决策");
+    expect(memoryContent).toContain("### 待继续事项");
+    expect(memoryContent).toContain("### 稳定失败教训");
     expect(memoryContent).not.toContain("Please reset and keep notes");
     expect(memoryContent).not.toContain("Captured before reset");
     expect(memoryContent.match(/\*\*Generated At\*\*/g)?.length).toBe(1);
@@ -885,6 +859,13 @@ describe("session-memory hook", () => {
       expect(call.provider).toBe("openai");
       expect(call.model).toBe("gpt-4.1-mini");
     }
+    const longTermPrompt = embeddedRunMock.mock.calls.find(
+      ([call]) =>
+        typeof call.prompt === "string" &&
+        call.prompt.includes("Latest Structured Summary Markdown:"),
+    )?.[0].prompt;
+    expect(longTermPrompt).toContain("Latest Structured Summary Markdown:");
+    expect(longTermPrompt).not.toContain("Sanitized Transcript:");
   });
 
   it("uses 30s as the default timeout for session-memory LLM runs", async () => {

@@ -21,6 +21,12 @@ export type MemorySyncProgressUpdate = {
   label?: string;
 };
 
+export type MemoryRepairProgressUpdate = {
+  completed: number;
+  total: number;
+  label?: string;
+};
+
 export type MemoryProviderStatus = {
   backend: "builtin" | "qmd";
   provider: string;
@@ -75,6 +81,7 @@ export interface MemorySearchManager {
     progress?: (update: MemorySyncProgressUpdate) => void;
   }): Promise<void>;
   initStore?(params?: { progress?: (update: MemorySyncProgressUpdate) => void }): Promise<void>;
+  repairStore?(params?: { progress?: (update: MemoryRepairProgressUpdate) => void }): Promise<void>;
   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
   probeVectorAvailability(): Promise<boolean>;
   close?(): Promise<void>;

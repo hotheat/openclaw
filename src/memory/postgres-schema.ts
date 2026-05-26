@@ -16,8 +16,8 @@ async function tryEnsureExtension(
     await sql.unsafe(`CREATE EXTENSION IF NOT EXISTS ${name}`);
   } catch {
     // Extension creation can fail when the server does not have the package
-    // installed or the current role does not have privileges. The backend can
-    // still operate with degraded capabilities, so continue.
+    // installed or the current role does not have privileges. The caller
+    // decides whether that extension is required.
   }
 
   try {
@@ -37,10 +37,19 @@ async function tryEnsureExtension(
 export async function ensurePostgresMemorySchema(params: {
   sql: PostgresMemoryClient;
   config: PostgresMemoryStoreConfig;
+  requireVector?: boolean;
 }): Promise<void> {
+  const requireVector = params.requireVector ?? true;
   const schema = quoteIdentifier(params.config.schema);
   await params.sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
-  const vectorAvailable = await tryEnsureExtension(params.sql, "vector");
+  if (requireVector) {
+    const vectorAvailable = await tryEnsureExtension(params.sql, "vector");
+    if (!vectorAvailable) {
+      throw new Error(
+        "PostgreSQL memory store requires pgvector. Install pgvector and enable the vector extension for this database.",
+      );
+    }
+  }
   const trigramAvailable = await tryEnsureExtension(params.sql, "pg_trgm");
   const indexMetaTable = qualifyTable(params.config.schema, "index_meta");
 
@@ -101,10 +110,17 @@ export async function ensurePostgresMemorySchema(params: {
       text TEXT NOT NULL,
       search_tokens TEXT NOT NULL,
       embedding DOUBLE PRECISION[] NOT NULL,
+      ${requireVector ? "embedding_vec VECTOR," : ""}
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (agent_id, id)
     )
   `);
+  if (requireVector) {
+    await params.sql.unsafe(`
+      ALTER TABLE ${qualifyTable(params.config.schema, "chunks")}
+        ADD COLUMN IF NOT EXISTS embedding_vec VECTOR
+    `);
+  }
 
   await params.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS ${qualifyTable(params.config.schema, "embedding_cache")} (
@@ -142,6 +158,4 @@ export async function ensurePostgresMemorySchema(params: {
     CREATE INDEX IF NOT EXISTS embedding_cache_updated_at_idx
       ON ${qualifyTable(params.config.schema, "embedding_cache")} (updated_at)
   `);
-
-  void vectorAvailable;
 }

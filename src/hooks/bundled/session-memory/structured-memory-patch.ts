@@ -74,7 +74,6 @@ export async function applyStructuredMemoryPatch(params: {
   workspaceDir: string;
   llmOverrides?: SessionMemoryLlmOverrides;
   llmTimeoutMs: number;
-  transcript: string | null;
   current: StructuredMemoryState;
   patch: StructuredMemoryPatch;
   generatedAt: string;
@@ -175,7 +174,6 @@ export async function applyStructuredMemoryPatch(params: {
       category,
       incomingFact: fact,
       existingFacts: sameCategoryFacts,
-      transcript: params.transcript,
       generatedAt: params.generatedAt,
       source: params.source,
       sessionId: params.sessionId,

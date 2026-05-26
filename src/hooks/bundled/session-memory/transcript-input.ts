@@ -40,18 +40,54 @@ function extractTextFromMessageContent(content: unknown): string | null {
   return parts.join("\n");
 }
 
-function sanitizeTranscriptText(text: string): string {
+function isOperationalTranscriptLine(line: string, role: TranscriptMessage["role"]): boolean {
+  if (role !== "assistant") {
+    return false;
+  }
+  const normalized = line.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  if (/^connection error(?:\b|[:：\s]|$)/.test(normalized)) {
+    return true;
+  }
+  if (
+    /^(?:retrying|retry|timed out|timeout|agent was busy|busy)(?:\b|[:：\s]|$)/.test(normalized)
+  ) {
+    return true;
+  }
+  if (/^(?:连接错误|连接异常|连接失败|连接超时|排队|重试)(?:[:：\s]|$)/.test(normalized)) {
+    return true;
+  }
+  if (
+    /^(?:发送文件|发送附件|重新发送|outbox|libreoffice|依赖缺失|安装失败|module not found|command not found)(?:[:：\s]|$)/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeTranscriptText(text: string, role: TranscriptMessage["role"]): string {
   return text
     .replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>/gi, "")
     .replace(/<SUBAGENT_HANDOFF>[\s\S]*?<\/SUBAGENT_HANDOFF>/gi, "")
     .replace(/\[UNTRUSTED DATA[\s\S]*?\[END UNTRUSTED DATA\]/gi, "")
     .replace(/^Conversation info \(untrusted metadata\):\s*```json[\s\S]*?```/gim, "")
+    .replace(/^Sender \(untrusted metadata\):\s*```json[\s\S]*?```/gim, "")
+    .replace(/^reply(?:ed)? json:\s*```json[\s\S]*?```/gim, "")
     .replace(/^System:\s*\[[^\n]*\][^\n]*\n?/gm, "")
+    .replace(/^assistant:\s*\{[\s\S]*?\}\s*$/gim, "")
     .replace(/^\[Image\]\s*$/gm, "")
     .replace(/^User text:\s*$/gm, "")
     .replace(/^Description:\s*$/gm, "")
     .replace(/^\[Queued messages while agent was busy\]\s*$/gm, "")
+    .replace(/^Queued messages?:[\s\S]*?(?=\n{2,}|$)/gim, "")
     .replace(/^---\s*$/gm, "")
+    .split(/\r?\n/)
+    .filter((line) => !isOperationalTranscriptLine(line, role))
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -153,7 +189,7 @@ async function readSessionSummaryInput(
           continue;
         }
 
-        const sanitized = sanitizeTranscriptText(rawText);
+        const sanitized = sanitizeTranscriptText(rawText, role);
         if (!sanitized) {
           continue;
         }

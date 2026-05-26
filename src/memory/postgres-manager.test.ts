@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 
-const { watchMock } = vi.hoisted(() => ({
+const { embeddingBatchVectors, embeddingDims, watchMock } = vi.hoisted(() => ({
+  embeddingBatchVectors: { value: null as number[][] | null },
+  embeddingDims: { value: 1024 },
   watchMock: vi.fn(() => ({
     on: vi.fn(),
     close: vi.fn(async () => undefined),
@@ -30,6 +32,7 @@ const sqlTag = vi.hoisted(() => {
     text: string;
     search_tokens: string;
     embedding: number[];
+    embedding_vec?: string | null;
   };
   type FileRow = {
     agent_id: string;
@@ -69,13 +72,21 @@ const sqlTag = vi.hoisted(() => {
   const cache = new Map<string, CacheRow>();
   const beginCalls: string[] = [];
   const txCalls: string[] = [];
+  type UnsafeIdentifier = { raw: string; toString: () => string };
+  const makeUnsafeIdentifier = (value: string): UnsafeIdentifier => ({
+    raw: value,
+    toString: () => `[unsafe:${value}]`,
+  });
+  const isUnsafeIdentifier = (value: unknown): value is UnsafeIdentifier =>
+    typeof value === "object" && value !== null && "raw" in value && typeof value.raw === "string";
 
   const tag = Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
       const query = strings.join("?");
       calls.push(query);
       const firstArg = values[0];
-      const firstArgText = typeof firstArg === "string" ? firstArg : "";
+      const firstArgText =
+        typeof firstArg === "string" ? firstArg : isUnsafeIdentifier(firstArg) ? firstArg.raw : "";
       if (query.includes("FROM pg_extension")) {
         if (query.includes("extname = 'vector'")) {
           return Promise.resolve([{ available: extensions.get("vector") ?? false }]);
@@ -91,7 +102,7 @@ const sqlTag = vi.hoisted(() => {
         }
         return Promise.resolve([{ available: true }]);
       }
-      if (query.startsWith("\n        INSERT INTO ?\n          (agent_id, id, path, source")) {
+      if (query.includes("INSERT INTO ?") && query.includes("(agent_id, id, path, source")) {
         const [
           table,
           agentId,
@@ -105,6 +116,7 @@ const sqlTag = vi.hoisted(() => {
           text,
           searchTokens,
           embedding,
+          embeddingVec,
         ] = values;
         void table;
         chunks.set(String(id), {
@@ -119,6 +131,7 @@ const sqlTag = vi.hoisted(() => {
           text: String(text),
           search_tokens: String(searchTokens),
           embedding: Array.isArray(embedding) ? embedding.map((value) => Number(value)) : [],
+          embedding_vec: typeof embeddingVec === "string" ? embeddingVec : null,
         });
         return Promise.resolve([]);
       }
@@ -161,6 +174,24 @@ const sqlTag = vi.hoisted(() => {
           chunk_overlap: Number(chunkOverlap),
           vector_dims: vectorDims == null ? null : Number(vectorDims),
         });
+        return Promise.resolve([]);
+      }
+      if (query.includes("SET vector_dims = dims.vector_dims")) {
+        for (const row of meta.values()) {
+          if (row.vector_dims != null) {
+            continue;
+          }
+          const agentChunks = Array.from(chunks.values()).filter(
+            (chunk) => chunk.agent_id === row.agent_id && chunk.embedding.length > 0,
+          );
+          if (agentChunks.length === 0) {
+            continue;
+          }
+          const dims = agentChunks[0]?.embedding.length ?? null;
+          if (dims && agentChunks.every((chunk) => chunk.embedding.length === dims)) {
+            row.vector_dims = dims;
+          }
+        }
         return Promise.resolve([]);
       }
       if (
@@ -293,6 +324,14 @@ const sqlTag = vi.hoisted(() => {
         return Promise.resolve(Array.from(files.values()));
       }
       if (query.includes("FROM ?") && firstArgText.includes("chunks")) {
+        if (query.includes("SET embedding_vec = embedding::vector")) {
+          for (const row of chunks.values()) {
+            if (!row.embedding_vec && row.embedding.length > 0) {
+              row.embedding_vec = `[${row.embedding.join(",")}]`;
+            }
+          }
+          return Promise.resolve([]);
+        }
         if (query.includes("GROUP BY source")) {
           const agentId = values[1];
           const counts = new Map<string, number>();
@@ -332,18 +371,21 @@ const sqlTag = vi.hoisted(() => {
             ),
           );
         }
-        if (query.includes("ORDER BY embedding::") && query.includes("<=>")) {
-          const [, agentId, sources, model] = values;
+        if (query.includes("ORDER BY ? <=>") && query.includes("vector_dims(embedding_vec)")) {
+          const [, , , , agentId, sources, model] = values;
           const sourceSet = new Set(
             Array.isArray(sources) ? sources.map((value) => String(value)) : [],
           );
           return Promise.resolve(
-            Array.from(chunks.values()).filter(
-              (row) =>
-                row.agent_id === String(agentId) &&
-                sourceSet.has(row.source) &&
-                row.model === String(model),
-            ),
+            Array.from(chunks.values())
+              .filter(
+                (row) =>
+                  row.agent_id === String(agentId) &&
+                  sourceSet.has(row.source) &&
+                  row.model === String(model) &&
+                  row.embedding_vec,
+              )
+              .map((row) => ({ ...row, score: 1 })),
           );
         }
         if (query.includes("AND model = ?")) {
@@ -365,7 +407,15 @@ const sqlTag = vi.hoisted(() => {
       return Promise.resolve([]);
     },
     {
-      unsafe: (value: string) => value,
+      unsafe: (value: string) => {
+        if (value.includes("[unsafe:")) {
+          throw new Error('syntax error at or near "["');
+        }
+        if (value.startsWith('"')) {
+          return makeUnsafeIdentifier(value);
+        }
+        return value;
+      },
       array: (value: unknown[]) => value,
       json: (value: unknown) => value,
       begin: vi.fn(async (fn: (tx: typeof tag) => Promise<unknown>) => {
@@ -442,8 +492,14 @@ vi.mock("./embeddings.js", () => ({
     provider: {
       id: "mock",
       model: "mock-embed",
-      embedQuery: async () => [1, 0, 0],
-      embedBatch: async (texts: string[]) => texts.map(() => [1, 0, 0]),
+      embedQuery: async () => [1, ...Array.from({ length: embeddingDims.value - 1 }, () => 0)],
+      embedBatch: async (texts: string[]) => {
+        if (embeddingBatchVectors.value) {
+          const fallback = embeddingBatchVectors.value.at(-1) ?? [];
+          return texts.map((_, index) => embeddingBatchVectors.value?.[index] ?? fallback);
+        }
+        return texts.map(() => [1, ...Array.from({ length: embeddingDims.value - 1 }, () => 0)]);
+      },
     },
   })),
 }));
@@ -503,6 +559,8 @@ describe("PostgresMemoryManager", () => {
     watchMock.mockClear();
     createPostgresMemoryClient.mockClear();
     ensurePostgresMemorySchema.mockClear();
+    embeddingBatchVectors.value = null;
+    embeddingDims.value = 1024;
   });
 
   afterEach(async () => {
@@ -532,6 +590,80 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
+  it("validates embedding dimensions before replacing existing chunks", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-dim-guard-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.chunking = { tokens: 8, overlap: 0 };
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    const previousChunkIds = Array.from(sqlTag.chunks.keys()).toSorted();
+    expect(previousChunkIds.length).toBeGreaterThan(0);
+
+    embeddingBatchVectors.value = [
+      [1, 0, 0],
+      [1, 0],
+    ];
+    await fs.writeFile(
+      path.join(memoryDir, "notes.md"),
+      Array.from({ length: 20 }, (_, index) => `Alpha changed line ${index}`).join("\n"),
+      "utf-8",
+    );
+    await expect(
+      (
+        manager as unknown as {
+          indexFile: (
+            entry: {
+              path: string;
+              absPath: string;
+              hash: string;
+              mtimeMs: number;
+              size: number;
+            },
+            options: { source: "memory" },
+          ) => Promise<void>;
+        }
+      ).indexFile(
+        {
+          path: "memory/notes.md",
+          absPath: path.join(memoryDir, "notes.md"),
+          hash: "changed",
+          mtimeMs: Date.now(),
+          size: 1,
+        },
+        { source: "memory" },
+      ),
+    ).rejects.toThrow("postgres memory expected 3-dim embeddings, got 2");
+    expect(Array.from(sqlTag.chunks.keys()).toSorted()).toEqual(previousChunkIds);
+
+    await manager?.close?.();
+  });
+
+  it("repairs postgres memory store in place", async () => {
+    const manager = await PostgresMemoryManager.get({
+      cfg: createConfig(),
+      agentId: "main",
+    });
+
+    expect(manager).toBeTruthy();
+    await manager?.repairStore?.();
+
+    expect(ensurePostgresMemorySchema).toHaveBeenCalledTimes(1);
+    await manager?.close?.();
+  });
+
   it("syncs memory files and returns search results", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-"));
     const workspaceDir = path.join(tmpRoot, "workspace");
@@ -557,6 +689,7 @@ describe("PostgresMemoryManager", () => {
     const status = manager?.status();
     expect(sqlTag.files.size).toBe(1);
     expect(sqlTag.chunks.size).toBeGreaterThan(0);
+    expect(Array.from(sqlTag.chunks.values()).every((row) => row.embedding_vec)).toBe(true);
     expect(
       sqlTag.calls.filter((query) => query.includes("SELECT COUNT(*)::int AS count")).length,
     ).toBeGreaterThan(0);
@@ -575,7 +708,66 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
-  it("uses pgvector sql retrieval when vector extension is available", async () => {
+  it("keeps postgres memory usable when pgvector is disabled", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-keyword-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    sqlTag.extensions.set("vector", false);
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    expect(ensurePostgresMemorySchema).toHaveBeenCalledWith(
+      expect.objectContaining({ requireVector: false }),
+    );
+    expect(
+      sqlTag.calls.some((query) => query.includes("embedding, embedding_vec, updated_at")),
+    ).toBe(false);
+    expect(manager?.status().vector).toMatchObject({ enabled: false, available: false });
+
+    const results = await manager?.search("Alpha", { maxResults: 3 });
+    expect(results?.length).toBeGreaterThan(0);
+
+    await manager?.close?.();
+  });
+
+  it("stores pgvector values using the provider embedding dimensions", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-dims-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    expect(Array.from(sqlTag.chunks.values()).every((row) => row.embedding.length === 3)).toBe(
+      true,
+    );
+    expect(Array.from(sqlTag.chunks.values()).every((row) => row.embedding_vec)).toBe(true);
+
+    await manager?.close?.();
+  });
+
+  it("uses embedding_vec-only pgvector retrieval when vector extension is available", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-vector-"));
     const workspaceDir = path.join(tmpRoot, "workspace");
     const memoryDir = path.join(workspaceDir, "memory");
@@ -600,9 +792,13 @@ describe("PostgresMemoryManager", () => {
     sqlTag.calls.length = 0;
     await manager?.search("Alpha", { maxResults: 3 });
 
-    expect(
-      sqlTag.calls.some((query) => query.includes("ORDER BY embedding::") && query.includes("<=>")),
-    ).toBe(true);
+    const vectorQuery = sqlTag.calls.find(
+      (query) => query.includes("ORDER BY ? <=>") && query.includes("vector_dims(embedding_vec)"),
+    );
+    expect(vectorQuery).toBeTruthy();
+    expect(vectorQuery).not.toContain("COALESCE");
+    expect(vectorQuery).not.toContain("embedding::");
+    expect(vectorQuery).not.toContain("\n        embedding,");
 
     await manager?.close?.();
   });

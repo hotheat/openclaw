@@ -121,23 +121,22 @@ vi.mock("../../agents/pi-embedded.js", () => ({
             "- **Source**: daily-rollover",
             "- **Source Sessions**: daily-session-id",
             "",
-            "### 用户偏好",
+            "### 最终结论",
+            "- 已用 daily structured summary 替代 transcript capture。",
+            "",
+            "### 已验证有效的方法",
+            "- 需要剂量可追溯，并保留来源核对。",
+            "",
+            "### 稳定约束 / 用户偏好 / 重要决策",
             "- 偏好官方资料。",
-            "",
-            "### 自定义需求",
-            "- 需要剂量可追溯。",
-            "",
-            "### 失败经验 / 反模式",
-            "- 不接受推断剂量。",
-            "",
-            "### 重要决策",
+            "- 官方未披露时要标未披露。",
             "- 用 daily structured summary 替代 transcript capture。",
             "",
-            "### 未完成事项",
+            "### 待继续事项",
             "- 继续核对剂量来源。",
             "",
-            "### 风险 / 注意点",
-            "- 官方未披露时要标未披露。",
+            "### 稳定失败教训",
+            "- 不接受推断剂量。",
           ].join("\n"),
         },
       ],
@@ -846,12 +845,11 @@ describe("initSessionState reset policy", () => {
     const memoryContent = await fs.readFile(path.join(memoryDir, files[0]), "utf-8");
     expect(memoryContent).toContain("## Daily Structured Summary");
     expect(memoryContent).toContain("**Source**: daily-rollover");
-    expect(memoryContent).toContain("### 当前主问题 / 当天主线");
-    expect(memoryContent).toContain("### 主要任务推进");
-    expect(memoryContent).toContain("### 负向反馈 / 失败信号");
-    expect(memoryContent).toContain("### 改进方向");
-    expect(memoryContent).toContain("### 正向进展 / 已验证有效");
-    expect(memoryContent).toContain("### 用户偏好");
+    expect(memoryContent).toContain("### 最终结论");
+    expect(memoryContent).toContain("### 已验证有效的方法");
+    expect(memoryContent).toContain("### 稳定约束 / 用户偏好 / 重要决策");
+    expect(memoryContent).toContain("### 待继续事项");
+    expect(memoryContent).toContain("### 稳定失败教训");
     expect(memoryContent).not.toContain("Yesterday work item");
     expect(memoryContent).not.toContain("Captured before daily rollover");
 

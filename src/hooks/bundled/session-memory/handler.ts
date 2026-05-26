@@ -308,7 +308,6 @@ async function generateLongTermMemoryPatch(params: {
       prompt: buildLongTermMemoryPrompt({
         currentMemory: params.currentMemory,
         summaryBlock: params.summaryBlock,
-        transcript: params.transcript,
         generatedAt: params.generatedAt,
         source: params.source,
         sessionId: params.sessionId,
@@ -427,7 +426,6 @@ async function updateLongTermMemory(params: {
       workspaceDir: params.workspaceDir,
       llmOverrides: params.llmOverrides,
       llmTimeoutMs: params.llmTimeoutMs,
-      transcript: params.transcript,
       current: currentState,
       patch: patch!,
       generatedAt: params.generatedAt,
