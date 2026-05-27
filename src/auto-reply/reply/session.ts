@@ -648,6 +648,10 @@ export async function initSessionState(params: {
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
     sessionEntry.recentMediaSnapshot = undefined;
+    // Clear transient behavior controls so /new returns to configured defaults.
+    sessionEntry.thinkingLevel = undefined;
+    sessionEntry.reasoningLevel = undefined;
+    sessionEntry.responseUsage = undefined;
     // Clear stale token metrics from previous session so /status doesn't
     // display the old session's context usage after /new.
     sessionEntry.totalTokens = undefined;
@@ -671,12 +675,12 @@ export async function initSessionState(params: {
   }
   sessionEntry.pendingRecentMediaSnapshotInit = undefined;
 
-  // Preserve per-session overrides while resetting compaction state on /new.
+  // Persist the reset session state while keeping stable routing metadata.
   sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
   await updateSessionStore(
     storePath,
     (store) => {
-      // Preserve per-session overrides while resetting compaction state on /new.
+      // Persist the reset session state while keeping stable routing metadata.
       store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
     },
     {

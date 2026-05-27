@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { AgentModelListConfig } from "../config/types.js";
 
-export const OPENAI_CODEX_DEFAULT_MODEL = "openai-codex/gpt-5.3-codex";
+export const OPENAI_CODEX_DEFAULT_MODEL = "openai/gpt-5.5";
 
 function shouldSetOpenAICodexModel(model?: string): boolean {
   const trimmed = model?.trim();
@@ -9,6 +9,9 @@ function shouldSetOpenAICodexModel(model?: string): boolean {
     return true;
   }
   const normalized = trimmed.toLowerCase();
+  if (normalized === OPENAI_CODEX_DEFAULT_MODEL) {
+    return false;
+  }
   if (normalized.startsWith("openai-codex/")) {
     return false;
   }

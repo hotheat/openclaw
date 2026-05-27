@@ -498,8 +498,8 @@ export async function agentCommand(
       }
     }
 
+    let catalogForThinking = modelCatalog ?? allowedModelCatalog;
     if (!resolvedThinkLevel) {
-      let catalogForThinking = modelCatalog ?? allowedModelCatalog;
       if (!catalogForThinking || catalogForThinking.length === 0) {
         modelCatalog = await loadModelCatalog({ config: cfg });
         catalogForThinking = modelCatalog;
@@ -512,7 +512,17 @@ export async function agentCommand(
         catalog: catalogForThinking,
       });
     }
-    if (resolvedThinkLevel === "xhigh" && !supportsXHighThinking(provider, model)) {
+    if (
+      resolvedThinkLevel === "xhigh" &&
+      (!catalogForThinking || catalogForThinking.length === 0)
+    ) {
+      modelCatalog = await loadModelCatalog({ config: cfg });
+      catalogForThinking = modelCatalog;
+    }
+    if (
+      resolvedThinkLevel === "xhigh" &&
+      !supportsXHighThinking(provider, model, catalogForThinking)
+    ) {
       const explicitThink = Boolean(thinkOnce || thinkOverride);
       if (explicitThink) {
         throw new Error(`Thinking level "xhigh" is only supported for ${formatXHighModelHint()}.`);

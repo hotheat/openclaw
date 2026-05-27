@@ -26,7 +26,7 @@ const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
   "sonnet-4.6": "claude-sonnet-4-6",
   "sonnet-4.5": "claude-sonnet-4-5",
 };
-const OPENAI_CODEX_OAUTH_MODEL_PREFIXES = ["gpt-5.3-codex"] as const;
+const OPENAI_CODEX_OAUTH_MODEL_PREFIXES = ["gpt-5.3-codex", "gpt-5.4", "gpt-5.5"] as const;
 
 function normalizeAliasKey(value: string): string {
   return value.trim().toLowerCase();

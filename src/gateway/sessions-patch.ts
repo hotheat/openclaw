@@ -77,6 +77,14 @@ export async function applySessionsPatchToStore(params: {
   const subagentModelHint = isSubagentSessionKey(storeKey)
     ? resolveSubagentConfiguredModelSelection({ cfg, agentId: sessionAgentId })
     : undefined;
+  let loadedModelCatalog: ModelCatalogEntry[] | undefined;
+  const loadModelCatalogOnce = async () => {
+    if (loadedModelCatalog) {
+      return loadedModelCatalog;
+    }
+    loadedModelCatalog = (await params.loadGatewayModelCatalog?.()) ?? [];
+    return loadedModelCatalog;
+  };
 
   const existing = store[storeKey];
   const next: SessionEntry = existing
@@ -299,7 +307,7 @@ export async function applySessionsPatchToStore(params: {
           error: errorShape(ErrorCodes.UNAVAILABLE, "model catalog unavailable"),
         };
       }
-      const catalog = await params.loadGatewayModelCatalog();
+      const catalog = await loadModelCatalogOnce();
       const resolved = resolveAllowedModelRef({
         cfg,
         catalog,
@@ -327,7 +335,8 @@ export async function applySessionsPatchToStore(params: {
   if (next.thinkingLevel === "xhigh") {
     const effectiveProvider = next.providerOverride ?? resolvedDefault.provider;
     const effectiveModel = next.modelOverride ?? resolvedDefault.model;
-    if (!supportsXHighThinking(effectiveProvider, effectiveModel)) {
+    const catalog = await loadModelCatalogOnce();
+    if (!supportsXHighThinking(effectiveProvider, effectiveModel, catalog)) {
       if ("thinkingLevel" in patch) {
         return invalid(`thinkingLevel "xhigh" is only supported for ${formatXHighModelHint()}`);
       }

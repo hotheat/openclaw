@@ -10,6 +10,7 @@ export {
   modelsAuthPasteTokenCommand,
   modelsAuthSetupTokenCommand,
 } from "./models/auth.js";
+export { modelsAuthSyncCommand } from "./models/auth-sync.js";
 export {
   modelsAuthOrderClearCommand,
   modelsAuthOrderGetCommand,

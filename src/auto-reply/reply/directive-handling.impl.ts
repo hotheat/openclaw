@@ -131,6 +131,7 @@ export async function handleDirectiveOnly(
 
   const resolvedProvider = modelSelection?.provider ?? provider;
   const resolvedModel = modelSelection?.model ?? model;
+  const thinkingCatalog = allowedModelCatalog;
 
   if (directives.hasThinkDirective && !directives.thinkLevel) {
     // If no argument was provided, show the current level
@@ -139,12 +140,12 @@ export async function handleDirectiveOnly(
       return {
         text: withOptions(
           `Current thinking level: ${level}.`,
-          formatThinkingLevels(resolvedProvider, resolvedModel),
+          formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog),
         ),
       };
     }
     return {
-      text: `Unrecognized thinking level "${directives.rawThinkLevel}". Valid levels: ${formatThinkingLevels(resolvedProvider, resolvedModel)}.`,
+      text: `Unrecognized thinking level "${directives.rawThinkLevel}". Valid levels: ${formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog)}.`,
     };
   }
   if (directives.hasVerboseDirective && !directives.verboseLevel) {
@@ -253,7 +254,7 @@ export async function handleDirectiveOnly(
   if (
     directives.hasThinkDirective &&
     directives.thinkLevel === "xhigh" &&
-    !supportsXHighThinking(resolvedProvider, resolvedModel)
+    !supportsXHighThinking(resolvedProvider, resolvedModel, thinkingCatalog)
   ) {
     return {
       text: `Thinking level "xhigh" is only supported for ${formatXHighModelHint()}.`,
@@ -266,7 +267,7 @@ export async function handleDirectiveOnly(
   const shouldDowngradeXHigh =
     !directives.hasThinkDirective &&
     nextThinkLevel === "xhigh" &&
-    !supportsXHighThinking(resolvedProvider, resolvedModel);
+    !supportsXHighThinking(resolvedProvider, resolvedModel, thinkingCatalog);
 
   const prevElevatedLevel =
     currentElevatedLevel ??

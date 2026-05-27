@@ -20,6 +20,7 @@ export const ModelCompatSchema = z
     supportsReasoningEffort: z.boolean().optional(),
     supportsUsageInStreaming: z.boolean().optional(),
     supportsStrictMode: z.boolean().optional(),
+    supportedReasoningEfforts: z.array(z.string().min(1)).optional(),
     maxTokensField: z
       .union([z.literal("max_completion_tokens"), z.literal("max_tokens")])
       .optional(),

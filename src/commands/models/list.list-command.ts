@@ -98,6 +98,7 @@ export async function modelsListCommand(
         continue;
       }
       let model = modelByKey.get(entry.key);
+      let availableWithProviderAuth = false;
       if (!model && modelRegistry) {
         const forwardCompat = resolveForwardCompatModel(
           entry.ref.provider,
@@ -107,6 +108,7 @@ export async function modelsListCommand(
         if (forwardCompat) {
           model = forwardCompat;
           modelByKey.set(entry.key, forwardCompat);
+          availableWithProviderAuth = true;
         }
       }
       if (!model) {
@@ -126,6 +128,7 @@ export async function modelsListCommand(
           tags: Array.from(entry.tags),
           aliases: entry.aliases,
           availableKeys,
+          availableWithProviderAuth,
           cfg,
           authStore,
         }),

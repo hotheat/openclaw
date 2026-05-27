@@ -357,7 +357,7 @@ export async function runCronIsolatedAgentTurn(params: {
       catalog: await loadCatalog(),
     });
   }
-  if (thinkLevel === "xhigh" && !supportsXHighThinking(provider, model)) {
+  if (thinkLevel === "xhigh" && !supportsXHighThinking(provider, model, await loadCatalog())) {
     logWarn(
       `[cron:${params.job.id}] Thinking level "xhigh" is not supported for ${provider}/${model}; downgrading to "high".`,
     );

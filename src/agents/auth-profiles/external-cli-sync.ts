@@ -1,10 +1,12 @@
 import {
+  readCodexCliCredentialsCached,
   readQwenCliCredentialsCached,
   readMiniMaxCliCredentialsCached,
 } from "../cli-credentials.js";
 import {
   EXTERNAL_CLI_NEAR_EXPIRY_MS,
   EXTERNAL_CLI_SYNC_TTL_MS,
+  OPENAI_CODEX_DEFAULT_PROFILE_ID,
   QWEN_CLI_PROFILE_ID,
   MINIMAX_CLI_PROFILE_ID,
   log,
@@ -44,6 +46,38 @@ function isExternalProfileFresh(cred: AuthProfileCredential | undefined, now: nu
     return true;
   }
   return cred.expires > now + EXTERNAL_CLI_NEAR_EXPIRY_MS;
+}
+
+function hasInlineOAuthTokenMaterial(cred: OAuthCredential | undefined): boolean {
+  return [cred?.access, cred?.refresh].some(
+    (value) => typeof value === "string" && value.trim().length > 0,
+  );
+}
+
+function syncCodexCliDefaultProfile(store: AuthProfileStore): boolean {
+  const existing = store.profiles[OPENAI_CODEX_DEFAULT_PROFILE_ID];
+  if (existing && (existing.type !== "oauth" || existing.provider !== "openai-codex")) {
+    return false;
+  }
+  if (existing?.type === "oauth" && hasInlineOAuthTokenMaterial(existing)) {
+    return false;
+  }
+
+  const creds = readCodexCliCredentialsCached({ ttlMs: EXTERNAL_CLI_SYNC_TTL_MS });
+  if (!creds) {
+    return false;
+  }
+  const existingOAuth = existing?.type === "oauth" ? existing : undefined;
+  if (shallowEqualOAuthCredentials(existingOAuth, creds)) {
+    return false;
+  }
+
+  store.profiles[OPENAI_CODEX_DEFAULT_PROFILE_ID] = creds;
+  log.info("synced openai-codex credentials from codex cli", {
+    profileId: OPENAI_CODEX_DEFAULT_PROFILE_ID,
+    expires: new Date(creds.expires).toISOString(),
+  });
+  return true;
 }
 
 /** Sync external CLI credentials into the store for a given provider. */
@@ -89,6 +123,10 @@ function syncExternalCliCredentialsForProvider(
 export function syncExternalCliCredentials(store: AuthProfileStore): boolean {
   let mutated = false;
   const now = Date.now();
+
+  if (syncCodexCliDefaultProfile(store)) {
+    mutated = true;
+  }
 
   // Sync from Qwen Code CLI
   const existingQwen = store.profiles[QWEN_CLI_PROFILE_ID];

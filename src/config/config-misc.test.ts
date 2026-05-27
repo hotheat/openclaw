@@ -272,6 +272,7 @@ describe("model compat config schema", () => {
                 compat: {
                   supportsUsageInStreaming: true,
                   supportsStrictMode: false,
+                  supportedReasoningEfforts: ["low", "medium", "high", "xhigh"],
                   thinkingFormat: "qwen",
                   requiresToolResultName: true,
                   requiresAssistantAfterToolResult: false,

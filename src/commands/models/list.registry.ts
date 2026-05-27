@@ -198,10 +198,20 @@ export function toModelRow(params: {
   tags: string[];
   aliases?: string[];
   availableKeys?: Set<string>;
+  availableWithProviderAuth?: boolean;
   cfg?: OpenClawConfig;
   authStore?: AuthProfileStore;
 }): ModelRow {
-  const { model, key, tags, aliases = [], availableKeys, cfg, authStore } = params;
+  const {
+    model,
+    key,
+    tags,
+    aliases = [],
+    availableKeys,
+    availableWithProviderAuth = false,
+    cfg,
+    authStore,
+  } = params;
   if (!model) {
     return {
       key,
@@ -221,7 +231,10 @@ export function toModelRow(params: {
   // Fall back to provider-level auth heuristics only if registry availability isn't available.
   const available =
     availableKeys !== undefined
-      ? availableKeys.has(modelKey(model.provider, model.id))
+      ? availableKeys.has(modelKey(model.provider, model.id)) ||
+        (availableWithProviderAuth && cfg && authStore
+          ? hasAuthForProvider(model.provider, cfg, authStore)
+          : false)
       : cfg && authStore
         ? hasAuthForProvider(model.provider, cfg, authStore)
         : false;

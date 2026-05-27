@@ -19,6 +19,7 @@ vi.mock("../commands/models.js", () => ({
   modelsAuthOrderSetCommand: noopAsync,
   modelsAuthPasteTokenCommand: noopAsync,
   modelsAuthSetupTokenCommand: noopAsync,
+  modelsAuthSyncCommand: noopAsync,
   modelsFallbacksAddCommand: noopAsync,
   modelsFallbacksClearCommand: noopAsync,
   modelsFallbacksListCommand: noopAsync,
@@ -108,5 +109,30 @@ describe("models cli", () => {
       const error = err as { exitCode?: number };
       expect(error.exitCode).toBe(0);
     }
+  });
+
+  it("registers models auth sync command", async () => {
+    await runModelsCommand([
+      "models",
+      "auth",
+      "sync",
+      "--provider",
+      "openai-codex",
+      "--from-agent",
+      "main",
+      "--to-agents",
+      "all",
+      "--json",
+    ]);
+
+    expect(noopAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai-codex",
+        fromAgent: "main",
+        toAgents: "all",
+        json: true,
+      }),
+      expect.any(Object),
+    );
   });
 });

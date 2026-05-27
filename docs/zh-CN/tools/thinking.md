@@ -17,17 +17,17 @@ x-i18n:
 ## 功能说明
 
 - 在任何入站消息正文中使用内联指令：`/t <level>`、`/think:<level>` 或 `/thinking <level>`。
-- 级别（别名）：`off | minimal | low | medium | high | xhigh`（仅 GPT-5.2 + Codex 模型）
+- 级别（别名）：`off | minimal | low | medium | high | xhigh`（`xhigh` 需要内置支持，或模型声明 `compat.supportedReasoningEfforts`）
   - minimal → "think"
   - low → "think hard"
   - medium → "think harder"
   - high → "ultrathink"（最大预算）
-  - xhigh → "ultrathink+"（仅 GPT-5.2 + Codex 模型）
+  - xhigh → "ultrathink+"（仅适用于声明支持 xhigh reasoning 的模型）
   - `highest`、`max` 映射为 `high`。
 - 提供商说明：
   - Z.AI（`zai/*`）仅支持二元思考（`on`/`off`）。任何非 `off` 级别均视为 `on`（映射为 `low`）。
   - DeepSeek（`deepseek/*` 或指向 `https://api.deepseek.com` 的自定义 provider）会将 `off` 映射为 `thinking.disabled`；非 `off` 映射为 `thinking.enabled` 和 `reasoning_effort: "high"`，其中 `xhigh` 映射为 `"max"`。
-  - `openai`、`micu`、`duckcoding` 等 OpenAI-compatible provider 可使用同一套 `thinkingDefault` 配置；实际请求字段仍取决于模型和 provider transport。
+  - `openai`、`micu`、`duckcoding` 等 OpenAI-compatible provider 可使用同一套 `thinkingDefault` 配置；自定义 provider 需要在模型上配置 `compat.supportedReasoningEfforts` 才会暴露 `xhigh`，实际请求字段仍取决于模型和 provider transport。
 
 ## 解析优先顺序
 

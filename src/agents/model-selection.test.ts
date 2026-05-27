@@ -79,6 +79,36 @@ describe("model-selection", () => {
       });
     });
 
+    it("normalizes openai gpt-5.4 refs to openai-codex provider", () => {
+      expect(parseModelRef("openai/gpt-5.4", "anthropic")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.4",
+      });
+      expect(parseModelRef("gpt-5.4", "openai")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.4",
+      });
+      expect(parseModelRef("openai/gpt-5.4-pro", "anthropic")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.4-pro",
+      });
+    });
+
+    it("normalizes openai gpt-5.5 refs to openai-codex provider", () => {
+      expect(parseModelRef("openai/gpt-5.5", "anthropic")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      });
+      expect(parseModelRef("gpt-5.5", "openai")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.5",
+      });
+      expect(parseModelRef("openai/gpt-5.5-pro", "anthropic")).toEqual({
+        provider: "openai-codex",
+        model: "gpt-5.5-pro",
+      });
+    });
+
     it("should return null for empty strings", () => {
       expect(parseModelRef("", "anthropic")).toBeNull();
       expect(parseModelRef("  ", "anthropic")).toBeNull();

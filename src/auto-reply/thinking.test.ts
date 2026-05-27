@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatThinkingLevels,
   listThinkingLevelLabels,
   listThinkingLevels,
   normalizeReasoningLevel,
@@ -46,10 +47,45 @@ describe("listThinkingLevels", () => {
     expect(listThinkingLevels("openai", "gpt-5.2")).toContain("xhigh");
   });
 
-  it("includes xhigh for gpt-5.4 compatible providers", () => {
+  it("includes xhigh for official openai gpt-5.4 models", () => {
     expect(listThinkingLevels("openai", "gpt-5.4")).toContain("xhigh");
-    expect(listThinkingLevels("micu", "gpt-5.4")).toContain("xhigh");
-    expect(listThinkingLevels("duckcoding", "gpt-5.4")).toContain("xhigh");
+    expect(listThinkingLevels("openai-codex", "gpt-5.4")).toContain("xhigh");
+  });
+
+  it("includes xhigh for official openai gpt-5.5 models", () => {
+    expect(listThinkingLevels("openai", "gpt-5.5")).toContain("xhigh");
+    expect(listThinkingLevels("openai-codex", "gpt-5.5")).toContain("xhigh");
+  });
+
+  it("does not hardcode custom gpt-5.4 providers as xhigh-capable", () => {
+    expect(listThinkingLevels("sss", "gpt-5.4")).not.toContain("xhigh");
+    expect(listThinkingLevels("micu", "gpt-5.4")).not.toContain("xhigh");
+    expect(listThinkingLevels("duckcoding", "gpt-5.4")).not.toContain("xhigh");
+  });
+
+  it("includes xhigh for custom providers that advertise supported reasoning efforts", () => {
+    const catalog = [
+      {
+        provider: "sss",
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        reasoning: true,
+        compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
+      },
+      {
+        provider: "micu",
+        id: "gpt-5.4",
+        name: "GPT-5.4",
+        reasoning: true,
+        compat: { supportedReasoningEfforts: ["low", "medium", "high", "xhigh"] },
+      },
+    ];
+
+    expect(listThinkingLevels("sss", "gpt-5.4", catalog)).toContain("xhigh");
+    expect(listThinkingLevels("micu", "gpt-5.4", catalog)).toContain("xhigh");
+    expect(formatThinkingLevels("sss", "gpt-5.4", ", ", catalog)).toBe(
+      "off, minimal, low, medium, high, xhigh",
+    );
   });
 
   it("includes xhigh for DeepSeek V4 models", () => {

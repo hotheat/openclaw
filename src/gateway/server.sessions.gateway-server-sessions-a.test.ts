@@ -200,6 +200,8 @@ describe("gateway server sessions", () => {
           inputTokens: 10,
           outputTokens: 20,
           thinkingLevel: "low",
+          reasoningLevel: "on",
+          responseUsage: "full",
           verboseLevel: "on",
           lastChannel: "whatsapp",
           lastTo: "+1555",
@@ -451,11 +453,21 @@ describe("gateway server sessions", () => {
     const reset = await rpcReq<{
       ok: true;
       key: string;
-      entry: { sessionId: string };
+      entry: {
+        sessionId: string;
+        thinkingLevel?: string;
+        reasoningLevel?: string;
+        responseUsage?: string;
+        verboseLevel?: string;
+      };
     }>(ws, "sessions.reset", { key: "agent:main:main" });
     expect(reset.ok).toBe(true);
     expect(reset.payload?.key).toBe("agent:main:main");
     expect(reset.payload?.entry.sessionId).not.toBe("sess-main");
+    expect(reset.payload?.entry.thinkingLevel).toBeUndefined();
+    expect(reset.payload?.entry.reasoningLevel).toBeUndefined();
+    expect(reset.payload?.entry.responseUsage).toBeUndefined();
+    expect(reset.payload?.entry.verboseLevel).toBeUndefined();
     const filesAfterReset = await fs.readdir(dir);
     expect(filesAfterReset.some((f) => f.startsWith("sess-main.jsonl.reset."))).toBe(true);
 

@@ -10,18 +10,18 @@ title: "Thinking Levels"
 ## What it does
 
 - Inline directive in any inbound body: `/t <level>`, `/think:<level>`, or `/thinking <level>`.
-- Levels (aliases): `off | minimal | low | medium | high | xhigh` (GPT-5.2 + Codex models only)
+- Levels (aliases): `off | minimal | low | medium | high | xhigh` (`xhigh` requires built-in support or model `compat.supportedReasoningEfforts`)
   - minimal → “think”
   - low → “think hard”
   - medium → “think harder”
   - high → “ultrathink” (max budget)
-  - xhigh → “ultrathink+” (GPT-5.2 + Codex models only)
+  - xhigh → “ultrathink+” (only for models that advertise xhigh reasoning)
   - `x-high`, `x_high`, `extra-high`, `extra high`, and `extra_high` map to `xhigh`.
   - `highest`, `max` map to `high`.
 - Provider notes:
   - Z.AI (`zai/*`) only supports binary thinking (`on`/`off`). Any non-`off` level is treated as `on` (mapped to `low`).
   - DeepSeek (`deepseek/*` or custom providers pointed at `https://api.deepseek.com`) maps `off` to `thinking.disabled`; non-`off` levels map to `thinking.enabled` with `reasoning_effort: "high"` except `xhigh`, which maps to `"max"`.
-  - OpenAI-compatible providers such as `openai`, `micu`, and `duckcoding` can use the same `thinkingDefault` config. The exact request payload still depends on each model/provider transport.
+  - OpenAI-compatible providers such as `openai`, `micu`, and `duckcoding` can use the same `thinkingDefault` config. Custom providers need model `compat.supportedReasoningEfforts` to expose `xhigh`; the exact request payload still depends on each model/provider transport.
 
 ## Resolution order
 

@@ -275,6 +275,7 @@ export async function createModelSelectionState(params: {
   provider: string;
   model: string;
   hasModelDirective: boolean;
+  hasThinkDirective?: boolean;
   /** True when heartbeat.model was explicitly resolved for this run.
    *  In that case, skip session-stored overrides so the heartbeat selection wins. */
   hasResolvedHeartbeatModelOverride?: boolean;
@@ -303,7 +304,11 @@ export async function createModelSelectionState(params: {
     parentSessionKey,
   });
   const hasStoredOverride = Boolean(initialStoredOverride);
-  const needsModelCatalog = params.hasModelDirective || hasAllowlist || hasStoredOverride;
+  const needsModelCatalog =
+    params.hasModelDirective ||
+    params.hasThinkDirective === true ||
+    hasAllowlist ||
+    hasStoredOverride;
 
   let allowedModelKeys = new Set<string>();
   let allowedModelCatalog: ModelCatalog = [];

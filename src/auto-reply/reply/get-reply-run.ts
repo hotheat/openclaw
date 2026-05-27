@@ -343,7 +343,11 @@ export async function runPreparedReply(
   if (!resolvedThinkLevel && prefixedCommandBody) {
     const parts = prefixedCommandBody.split(/\s+/);
     const maybeLevel = normalizeThinkLevel(parts[0]);
-    if (maybeLevel && (maybeLevel !== "xhigh" || supportsXHighThinking(provider, model))) {
+    if (
+      maybeLevel &&
+      (maybeLevel !== "xhigh" ||
+        supportsXHighThinking(provider, model, modelState.allowedModelCatalog))
+    ) {
       resolvedThinkLevel = maybeLevel;
       prefixedCommandBody = parts.slice(1).join(" ").trim();
     }
@@ -351,7 +355,10 @@ export async function runPreparedReply(
   if (!resolvedThinkLevel) {
     resolvedThinkLevel = await modelState.resolveDefaultThinkingLevel();
   }
-  if (resolvedThinkLevel === "xhigh" && !supportsXHighThinking(provider, model)) {
+  if (
+    resolvedThinkLevel === "xhigh" &&
+    !supportsXHighThinking(provider, model, modelState.allowedModelCatalog)
+  ) {
     const explicitThink = directives.hasThinkDirective && directives.thinkLevel !== undefined;
     if (explicitThink) {
       typing.cleanup();

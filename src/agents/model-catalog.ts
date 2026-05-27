@@ -12,6 +12,9 @@ export type ModelCatalogEntry = {
   contextWindow?: number;
   reasoning?: boolean;
   input?: Array<"text" | "image">;
+  compat?: {
+    supportedReasoningEfforts?: string[];
+  };
 };
 
 type DiscoveredModel = {
@@ -21,6 +24,7 @@ type DiscoveredModel = {
   contextWindow?: number;
   reasoning?: boolean;
   input?: Array<"text" | "image">;
+  compat?: ModelCatalogEntry["compat"];
 };
 
 type PiSdkModule = typeof import("./pi-model-discovery.js");
@@ -140,7 +144,8 @@ export async function loadModelCatalog(params?: {
             : undefined;
         const reasoning = typeof entry?.reasoning === "boolean" ? entry.reasoning : undefined;
         const input = Array.isArray(entry?.input) ? entry.input : undefined;
-        models.push({ id, name, provider, contextWindow, reasoning, input });
+        const compat = entry?.compat && typeof entry.compat === "object" ? entry.compat : undefined;
+        models.push({ id, name, provider, contextWindow, reasoning, input, compat });
       }
       applyOpenAICodexSparkFallback(models);
 

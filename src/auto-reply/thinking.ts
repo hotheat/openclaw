@@ -5,6 +5,14 @@ export type ElevatedLevel = "off" | "on" | "ask" | "full";
 export type ElevatedMode = "off" | "ask" | "full";
 export type ReasoningLevel = "off" | "on" | "stream";
 export type UsageDisplayLevel = "off" | "tokens" | "full";
+export type ThinkingCatalogEntry = {
+  provider: string;
+  id: string;
+  reasoning?: boolean;
+  compat?: {
+    supportedReasoningEfforts?: readonly string[] | null;
+  } | null;
+};
 
 function normalizeProviderId(provider?: string | null): string {
   if (!provider) {
@@ -22,9 +30,10 @@ export function isBinaryThinkingProvider(provider?: string | null): boolean {
 }
 
 export const XHIGH_MODEL_REFS = [
+  "openai/gpt-5.5",
+  "openai-codex/gpt-5.5",
   "openai/gpt-5.4",
-  "micu/gpt-5.4",
-  "duckcoding/gpt-5.4",
+  "openai-codex/gpt-5.4",
   "openai/gpt-5.2",
   "deepseek/deepseek-v4-pro",
   "deepseek/deepseek-v4-flash",
@@ -42,6 +51,35 @@ const XHIGH_MODEL_IDS = new Set(
     (entry): entry is string => Boolean(entry),
   ),
 );
+
+function catalogXHighSupport(
+  provider: string | null | undefined,
+  model: string | null | undefined,
+  catalog?: ThinkingCatalogEntry[],
+): boolean | undefined {
+  if (!catalog || catalog.length === 0) {
+    return undefined;
+  }
+  const modelKey = model?.trim();
+  if (!modelKey) {
+    return undefined;
+  }
+  const providerKey = normalizeProviderId(provider);
+  const candidate = catalog.find((entry) => {
+    if (entry.id !== modelKey) {
+      return false;
+    }
+    if (!providerKey) {
+      return true;
+    }
+    return normalizeProviderId(entry.provider) === providerKey;
+  });
+  const efforts = candidate?.compat?.supportedReasoningEfforts;
+  if (!Array.isArray(efforts)) {
+    return undefined;
+  }
+  return efforts.some((effort) => normalizeThinkLevel(effort) === "xhigh");
+}
 
 // Normalize user-provided thinking level strings to the canonical enum.
 export function normalizeThinkLevel(raw?: string | null): ThinkLevel | undefined {
@@ -79,7 +117,15 @@ export function normalizeThinkLevel(raw?: string | null): ThinkLevel | undefined
   return undefined;
 }
 
-export function supportsXHighThinking(provider?: string | null, model?: string | null): boolean {
+export function supportsXHighThinking(
+  provider?: string | null,
+  model?: string | null,
+  catalog?: ThinkingCatalogEntry[],
+): boolean {
+  const catalogSupport = catalogXHighSupport(provider, model, catalog);
+  if (catalogSupport !== undefined) {
+    return catalogSupport;
+  }
   const modelKey = model?.trim().toLowerCase();
   if (!modelKey) {
     return false;
@@ -91,41 +137,40 @@ export function supportsXHighThinking(provider?: string | null, model?: string |
   return XHIGH_MODEL_IDS.has(modelKey);
 }
 
-export function listThinkingLevels(provider?: string | null, model?: string | null): ThinkLevel[] {
+export function listThinkingLevels(
+  provider?: string | null,
+  model?: string | null,
+  catalog?: ThinkingCatalogEntry[],
+): ThinkLevel[] {
   const levels: ThinkLevel[] = ["off", "minimal", "low", "medium", "high"];
-  if (supportsXHighThinking(provider, model)) {
+  if (supportsXHighThinking(provider, model, catalog)) {
     levels.push("xhigh");
   }
   return levels;
 }
 
-export function listThinkingLevelLabels(provider?: string | null, model?: string | null): string[] {
+export function listThinkingLevelLabels(
+  provider?: string | null,
+  model?: string | null,
+  catalog?: ThinkingCatalogEntry[],
+): string[] {
   if (isBinaryThinkingProvider(provider)) {
     return ["off", "on"];
   }
-  return listThinkingLevels(provider, model);
+  return listThinkingLevels(provider, model, catalog);
 }
 
 export function formatThinkingLevels(
   provider?: string | null,
   model?: string | null,
   separator = ", ",
+  catalog?: ThinkingCatalogEntry[],
 ): string {
-  return listThinkingLevelLabels(provider, model).join(separator);
+  return listThinkingLevelLabels(provider, model, catalog).join(separator);
 }
 
 export function formatXHighModelHint(): string {
-  const refs = [...XHIGH_MODEL_REFS] as string[];
-  if (refs.length === 0) {
-    return "unknown model";
-  }
-  if (refs.length === 1) {
-    return refs[0];
-  }
-  if (refs.length === 2) {
-    return `${refs[0]} or ${refs[1]}`;
-  }
-  return `${refs.slice(0, -1).join(", ")} or ${refs[refs.length - 1]}`;
+  return "provider models that advertise xhigh reasoning";
 }
 
 type OnOffFullLevel = "off" | "on" | "full";

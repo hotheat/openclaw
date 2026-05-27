@@ -1663,7 +1663,7 @@ describe("applyResetModelOverride", () => {
   });
 });
 
-describe("initSessionState preserves behavior overrides across /new", () => {
+describe("initSessionState handles behavior overrides across /new", () => {
   async function seedSessionStoreWithOverrides(params: {
     storePath: string;
     sessionKey: string;
@@ -1721,7 +1721,7 @@ describe("initSessionState preserves behavior overrides across /new", () => {
     expect(result.sessionEntry.verboseLevel).toBe("on");
   });
 
-  it("/new preserves thinkingLevel and reasoningLevel from previous session", async () => {
+  it("/new clears thinkingLevel, reasoningLevel, and responseUsage from previous session", async () => {
     const storePath = await createStorePath("openclaw-reset-thinking-");
     const sessionKey = "agent:main:telegram:dm:user2";
     const existingSessionId = "existing-session-thinking";
@@ -1729,7 +1729,11 @@ describe("initSessionState preserves behavior overrides across /new", () => {
       storePath,
       sessionKey,
       sessionId: existingSessionId,
-      overrides: { thinkingLevel: "high", reasoningLevel: "low" },
+      overrides: {
+        thinkingLevel: "high",
+        reasoningLevel: "low",
+        responseUsage: "full",
+      },
     });
 
     const cfg = {
@@ -1755,8 +1759,9 @@ describe("initSessionState preserves behavior overrides across /new", () => {
     expect(result.isNewSession).toBe(true);
     expect(result.resetTriggered).toBe(true);
     expect(result.sessionId).not.toBe(existingSessionId);
-    expect(result.sessionEntry.thinkingLevel).toBe("high");
-    expect(result.sessionEntry.reasoningLevel).toBe("low");
+    expect(result.sessionEntry.thinkingLevel).toBeUndefined();
+    expect(result.sessionEntry.reasoningLevel).toBeUndefined();
+    expect(result.sessionEntry.responseUsage).toBeUndefined();
   });
 
   it("/new preserves session label from previous session", async () => {

@@ -7,7 +7,20 @@ const mocks = vi.hoisted(() => {
       agents: { defaults: { model: { primary: "openai-codex/gpt-5.3-codex" } } },
       models: { providers: {} },
     }),
-    ensureAuthProfileStore: vi.fn().mockReturnValue({ version: 1, profiles: {}, order: {} }),
+    ensureAuthProfileStore: vi.fn().mockReturnValue({
+      version: 1,
+      profiles: {
+        "openai-codex:default": {
+          provider: "openai-codex",
+          type: "oauth",
+          access: "access",
+          refresh: "refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+      order: {},
+    }),
+    listProfilesForProvider: vi.fn().mockReturnValue(["openai-codex:default"]),
     loadModelRegistry: vi
       .fn()
       .mockResolvedValue({ models: [], availableKeys: new Set(), registry: {} }),
@@ -45,7 +58,7 @@ vi.mock("../../agents/auth-profiles.js", async (importOriginal) => {
   return {
     ...actual,
     ensureAuthProfileStore: mocks.ensureAuthProfileStore,
-    listProfilesForProvider: vi.fn().mockReturnValue([]),
+    listProfilesForProvider: mocks.listProfilesForProvider,
   };
 });
 
@@ -86,11 +99,13 @@ describe("modelsListCommand forward-compat", () => {
       key: string;
       tags: string[];
       missing: boolean;
+      available: boolean | null;
     }>;
 
     const codex = rows.find((r) => r.key === "openai-codex/gpt-5.3-codex");
     expect(codex).toBeTruthy();
     expect(codex?.missing).toBe(false);
+    expect(codex?.available).toBe(true);
     expect(codex?.tags).not.toContain("missing");
   });
 });
