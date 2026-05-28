@@ -1874,8 +1874,8 @@ For the China endpoint: `baseUrl: "https://api.moonshot.cn/v1"` or `openclaw onb
   env: { KIMI_API_KEY: "sk-..." },
   agents: {
     defaults: {
-      model: { primary: "kimi-coding/k2p5" },
-      models: { "kimi-coding/k2p5": { alias: "Kimi K2.5" } },
+      model: { primary: "kimi/kimi-for-coding" },
+      models: { "kimi/kimi-for-coding": { alias: "Kimi for Coding" } },
     },
   },
 }

@@ -188,15 +188,15 @@ Kimi K2 model IDs:
 
 Kimi Coding uses Moonshot AI's Anthropic-compatible endpoint:
 
-- Provider: `kimi-coding`
+- Provider: `kimi`
 - Auth: `KIMI_API_KEY`
-- Example model: `kimi-coding/k2p5`
+- Example model: `kimi/kimi-for-coding`
 
 ```json5
 {
   env: { KIMI_API_KEY: "sk-..." },
   agents: {
-    defaults: { model: { primary: "kimi-coding/k2p5" } },
+    defaults: { model: { primary: "kimi/kimi-for-coding" } },
   },
 }
 ```

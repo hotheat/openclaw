@@ -560,7 +560,7 @@ export async function applyNonInteractiveAuthChoice(params: {
 
   if (authChoice === "kimi-code-api-key") {
     const resolved = await resolveNonInteractiveApiKey({
-      provider: "kimi-coding",
+      provider: "kimi",
       cfg: baseConfig,
       flagValue: opts.kimiCodeApiKey,
       flagName: "--kimi-code-api-key",
@@ -574,8 +574,8 @@ export async function applyNonInteractiveAuthChoice(params: {
       await setKimiCodingApiKey(resolved.key);
     }
     nextConfig = applyAuthProfileConfig(nextConfig, {
-      profileId: "kimi-coding:default",
-      provider: "kimi-coding",
+      profileId: "kimi:default",
+      provider: "kimi",
       mode: "api_key",
     });
     return applyKimiCodeConfig(nextConfig);

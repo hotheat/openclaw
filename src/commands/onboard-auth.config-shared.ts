@@ -1,3 +1,4 @@
+import { normalizeProviderId } from "../agents/model-selection.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AgentModelEntryConfig } from "../config/types.agent-defaults.js";
 import type {
@@ -154,12 +155,51 @@ type ProviderModelMergeState = {
   existingModels: ModelDefinitionConfig[];
 };
 
+function mergeProviderModels(
+  first: ModelDefinitionConfig[] | undefined,
+  second: ModelDefinitionConfig[] | undefined,
+): ModelDefinitionConfig[] {
+  const out: ModelDefinitionConfig[] = [];
+  const seen = new Set<string>();
+  for (const model of [...(first ?? []), ...(second ?? [])]) {
+    if (seen.has(model.id)) {
+      continue;
+    }
+    seen.add(model.id);
+    out.push(model);
+  }
+  return out;
+}
+
 function resolveProviderModelMergeState(
   cfg: OpenClawConfig,
   providerId: string,
 ): ProviderModelMergeState {
   const providers = { ...cfg.models?.providers } as Record<string, ModelProviderConfig>;
-  const existingProvider = providers[providerId] as ModelProviderConfig | undefined;
+  const normalizedProviderId = normalizeProviderId(providerId);
+  const matchingProviderKeys = Object.keys(providers).filter(
+    (key) => normalizeProviderId(key) === normalizedProviderId,
+  );
+  const existingProvider = matchingProviderKeys.reduce<ModelProviderConfig | undefined>(
+    (merged, key) => {
+      const provider = providers[key] as ModelProviderConfig | undefined;
+      if (key !== providerId) {
+        delete providers[key];
+      }
+      if (!provider) {
+        return merged;
+      }
+      if (!merged) {
+        return provider;
+      }
+      return {
+        ...provider,
+        ...merged,
+        models: mergeProviderModels(provider.models, merged.models),
+      };
+    },
+    providers[providerId] as ModelProviderConfig | undefined,
+  );
   const existingModels: ModelDefinitionConfig[] = Array.isArray(existingProvider?.models)
     ? existingProvider.models
     : [];

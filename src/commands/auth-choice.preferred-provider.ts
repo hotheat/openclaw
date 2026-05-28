@@ -16,7 +16,7 @@ const PREFERRED_PROVIDER_BY_AUTH_CHOICE: Partial<Record<AuthChoice, string>> = {
   "cloudflare-ai-gateway-api-key": "cloudflare-ai-gateway",
   "moonshot-api-key": "moonshot",
   "moonshot-api-key-cn": "moonshot",
-  "kimi-code-api-key": "kimi-coding",
+  "kimi-code-api-key": "kimi",
   "gemini-api-key": "google",
   "google-antigravity": "google-antigravity",
   "google-gemini-cli": "google-gemini-cli",

@@ -452,14 +452,14 @@ describe("applyAuthChoice", () => {
       },
     });
 
-    expect(result.config.auth?.profiles?.["kimi-coding:default"]).toMatchObject({
-      provider: "kimi-coding",
+    expect(result.config.auth?.profiles?.["kimi:default"]).toMatchObject({
+      provider: "kimi",
       mode: "api_key",
     });
-    expect(result.config.agents?.defaults?.model?.primary).toMatch(/^kimi-coding\/.+/);
+    expect(result.config.agents?.defaults?.model?.primary).toBe("kimi/kimi-for-coding");
     expect(text).not.toHaveBeenCalled();
     expect(confirm).not.toHaveBeenCalled();
-    expect((await readAuthProfile("kimi-coding:default"))?.key).toBe("sk-kimi-token-provider-test");
+    expect((await readAuthProfile("kimi:default"))?.key).toBe("sk-kimi-token-provider-test");
   });
 
   it("maps apiKey + tokenProvider= GOOGLE  (case-insensitive/trimmed) to gemini-api-key flow", async () => {
@@ -538,9 +538,9 @@ describe("applyAuthChoice", () => {
     {
       authChoice: "kimi-code-api-key",
       tokenProvider: "kimi-code",
-      profileId: "kimi-coding:default",
-      provider: "kimi-coding",
-      modelPrefix: "kimi-coding/",
+      profileId: "kimi:default",
+      provider: "kimi",
+      modelPrefix: "kimi/",
     },
     {
       authChoice: "xiaomi-api-key",

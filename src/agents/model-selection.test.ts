@@ -19,7 +19,8 @@ describe("model-selection", () => {
       expect(normalizeProviderId("z-ai")).toBe("zai");
       expect(normalizeProviderId("OpenCode-Zen")).toBe("opencode");
       expect(normalizeProviderId("qwen")).toBe("qwen-portal");
-      expect(normalizeProviderId("kimi-code")).toBe("kimi-coding");
+      expect(normalizeProviderId("kimi-code")).toBe("kimi");
+      expect(normalizeProviderId("kimi-coding")).toBe("kimi");
     });
   });
 
@@ -61,6 +62,21 @@ describe("model-selection", () => {
       expect(parseModelRef("claude-3-5-sonnet", "anthropic")).toEqual({
         provider: "anthropic",
         model: "claude-3-5-sonnet",
+      });
+    });
+
+    it("normalizes legacy Kimi Coding model refs to canonical model id", () => {
+      expect(parseModelRef("kimi-coding/k2p5", "anthropic")).toEqual({
+        provider: "kimi",
+        model: "kimi-for-coding",
+      });
+      expect(parseModelRef("kimi-code/k2p5", "anthropic")).toEqual({
+        provider: "kimi",
+        model: "kimi-for-coding",
+      });
+      expect(parseModelRef("k2p5", "kimi-coding")).toEqual({
+        provider: "kimi",
+        model: "kimi-for-coding",
       });
     });
 
@@ -227,6 +243,24 @@ describe("model-selection", () => {
         defaultModel: "gpt-4",
       });
       expect(result).toEqual({ provider: "openai", model: "gpt-4" });
+    });
+
+    it("normalizes configured legacy Kimi Coding primary model", () => {
+      const cfg: Partial<OpenClawConfig> = {
+        agents: {
+          defaults: {
+            model: { primary: "kimi-coding/k2p5" },
+          },
+        },
+      };
+
+      const result = resolveConfiguredModelRef({
+        cfg: cfg as OpenClawConfig,
+        defaultProvider: "anthropic",
+        defaultModel: "claude-opus-4-6",
+      });
+
+      expect(result).toEqual({ provider: "kimi", model: "kimi-for-coding" });
     });
   });
 

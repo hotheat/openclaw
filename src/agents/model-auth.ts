@@ -290,7 +290,7 @@ export function resolveEnvApiKey(provider: string): EnvApiKeyResult | null {
     return pick("MINIMAX_OAUTH_TOKEN") ?? pick("MINIMAX_API_KEY");
   }
 
-  if (normalized === "kimi-coding") {
+  if (normalized === "kimi") {
     return pick("KIMI_API_KEY") ?? pick("KIMICODE_API_KEY");
   }
 
@@ -312,6 +312,7 @@ export function resolveEnvApiKey(provider: string): EnvApiKeyResult | null {
     "vercel-ai-gateway": "AI_GATEWAY_API_KEY",
     "cloudflare-ai-gateway": "CLOUDFLARE_AI_GATEWAY_API_KEY",
     moonshot: "MOONSHOT_API_KEY",
+    kimi: "KIMI_API_KEY",
     minimax: "MINIMAX_API_KEY",
     nvidia: "NVIDIA_API_KEY",
     xiaomi: "XIAOMI_API_KEY",

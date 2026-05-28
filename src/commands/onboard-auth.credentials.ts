@@ -170,10 +170,10 @@ export async function setMoonshotApiKey(key: string, agentDir?: string) {
 export async function setKimiCodingApiKey(key: string, agentDir?: string) {
   // Write to resolved agent dir so gateway finds credentials on startup.
   upsertAuthProfile({
-    profileId: "kimi-coding:default",
+    profileId: "kimi:default",
     credential: {
       type: "api_key",
-      provider: "kimi-coding",
+      provider: "kimi",
       key,
     },
     agentDir: resolveAuthAgentDir(agentDir),

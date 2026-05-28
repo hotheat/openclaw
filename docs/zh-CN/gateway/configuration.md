@@ -2522,8 +2522,8 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
   env: { KIMI_API_KEY: "sk-..." },
   agents: {
     defaults: {
-      model: { primary: "kimi-coding/k2p5" },
-      models: { "kimi-coding/k2p5": { alias: "Kimi K2.5" } },
+      model: { primary: "kimi/kimi-for-coding" },
+      models: { "kimi/kimi-for-coding": { alias: "Kimi for Coding" } },
     },
   },
 }
@@ -2532,7 +2532,7 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
 说明：
 
 - 在环境中设置 `KIMI_API_KEY` 或使用 `openclaw onboard --auth-choice kimi-code-api-key`。
-- 模型引用：`kimi-coding/k2p5`。
+- 模型引用：`kimi/kimi-for-coding`。
 
 ### Synthetic（Anthropic 兼容）
 

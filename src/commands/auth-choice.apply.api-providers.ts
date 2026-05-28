@@ -167,9 +167,9 @@ const SIMPLE_API_KEY_PROVIDER_FLOWS: Partial<Record<AuthChoice, SimpleApiKeyProv
     applyProviderConfig: applyMoonshotProviderConfigCn,
   },
   "kimi-code-api-key": {
-    provider: "kimi-coding",
-    profileId: "kimi-coding:default",
-    expectedProviders: ["kimi-code", "kimi-coding"],
+    provider: "kimi",
+    profileId: "kimi:default",
+    expectedProviders: ["kimi", "kimi-code", "kimi-coding"],
     envLabel: "KIMI_API_KEY",
     promptMessage: "Enter Kimi Coding API key",
     setCredential: setKimiCodingApiKey,

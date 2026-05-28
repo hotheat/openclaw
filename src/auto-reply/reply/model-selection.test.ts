@@ -7,6 +7,7 @@ vi.mock("../../agents/model-catalog.js", () => ({
     { provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus 4.5" },
     { provider: "inferencer", id: "deepseek-v3-4bit-mlx", name: "DeepSeek V3" },
     { provider: "kimi-coding", id: "k2p5", name: "Kimi K2.5" },
+    { provider: "kimi", id: "kimi-for-coding", name: "Kimi for Coding" },
     { provider: "openai", id: "gpt-4o-mini", name: "GPT-4o mini" },
     { provider: "openai", id: "gpt-4o", name: "GPT-4o" },
   ]),
@@ -218,7 +219,7 @@ describe("createModelSelectionState respects session model override", () => {
     });
   }
 
-  it("applies session modelOverride when set", async () => {
+  it("normalizes legacy Kimi Coding session modelOverride", async () => {
     const state = await resolveState(
       makeEntry({
         providerOverride: "kimi-coding",
@@ -226,8 +227,8 @@ describe("createModelSelectionState respects session model override", () => {
       }),
     );
 
-    expect(state.provider).toBe("kimi-coding");
-    expect(state.model).toBe("k2p5");
+    expect(state.provider).toBe("kimi");
+    expect(state.model).toBe("kimi-for-coding");
   });
 
   it("falls back to default when no modelOverride is set", async () => {

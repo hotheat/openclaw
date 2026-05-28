@@ -56,6 +56,39 @@ describe("onboard auth provider config merges", () => {
     expect(next.agents?.defaults?.models).toEqual(agentModels);
   });
 
+  it("merges normalized legacy provider keys into the canonical provider", () => {
+    const cfg: OpenClawConfig = {
+      models: {
+        providers: {
+          "kimi-coding": {
+            api: "openai-completions",
+            baseUrl: "https://legacy.example.com/v1",
+            authHeader: true,
+            headers: { "X-Legacy": "1" },
+            models: [makeModel("k2p5")],
+          },
+        },
+      },
+    };
+
+    const next = applyProviderConfigWithDefaultModel(cfg, {
+      agentModels,
+      providerId: "kimi",
+      api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding/",
+      defaultModel: makeModel("kimi-for-coding"),
+      defaultModelId: "kimi-for-coding",
+    });
+
+    expect(next.models?.providers?.["kimi-coding"]).toBeUndefined();
+    expect(next.models?.providers?.kimi?.headers).toEqual({ "X-Legacy": "1" });
+    expect(next.models?.providers?.kimi?.authHeader).toBe(true);
+    expect(next.models?.providers?.kimi?.models?.map((m) => m.id)).toEqual([
+      "k2p5",
+      "kimi-for-coding",
+    ]);
+  });
+
   it("merges model catalogs without duplicating existing model ids", () => {
     const cfg: OpenClawConfig = {
       models: {

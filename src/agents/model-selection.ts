@@ -27,6 +27,9 @@ const ANTHROPIC_MODEL_ALIASES: Record<string, string> = {
   "sonnet-4.5": "claude-sonnet-4-5",
 };
 const OPENAI_CODEX_OAUTH_MODEL_PREFIXES = ["gpt-5.3-codex", "gpt-5.4", "gpt-5.5"] as const;
+const KIMI_CODING_LEGACY_MODEL_ALIASES: Record<string, string> = {
+  k2p5: "kimi-for-coding",
+};
 
 function normalizeAliasKey(value: string): string {
   return value.trim().toLowerCase();
@@ -47,8 +50,8 @@ export function normalizeProviderId(provider: string): string {
   if (normalized === "qwen") {
     return "qwen-portal";
   }
-  if (normalized === "kimi-code") {
-    return "kimi-coding";
+  if (normalized === "kimi-code" || normalized === "kimi-coding") {
+    return "kimi";
   }
   // Backward compatibility for older provider naming.
   if (normalized === "bytedance" || normalized === "doubao") {
@@ -105,9 +108,20 @@ function normalizeAnthropicModelId(model: string): string {
   return ANTHROPIC_MODEL_ALIASES[lower] ?? trimmed;
 }
 
+function normalizeKimiModelId(model: string): string {
+  const trimmed = model.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return KIMI_CODING_LEGACY_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
+}
+
 function normalizeProviderModelId(provider: string, model: string): string {
   if (provider === "anthropic") {
     return normalizeAnthropicModelId(model);
+  }
+  if (provider === "kimi") {
+    return normalizeKimiModelId(model);
   }
   if (provider === "google") {
     return normalizeGoogleModelId(model);

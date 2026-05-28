@@ -154,6 +154,20 @@ export function resolveStoredModelOverride(params: {
   return { ...parentOverride, source: "parent" };
 }
 
+function normalizeStoredModelOverrideRef(
+  override: StoredModelOverride | { provider?: string; model: string },
+  defaultProvider: string,
+): { provider: string; model: string } {
+  const raw = override.provider ? `${override.provider}/${override.model}` : override.model;
+  const resolved = resolveModelRefFromString({ raw, defaultProvider });
+  return (
+    resolved?.ref ?? {
+      provider: override.provider ? normalizeProviderId(override.provider) : defaultProvider,
+      model: override.model,
+    }
+  );
+}
+
 function scoreFuzzyMatch(params: {
   provider: string;
   model: string;
@@ -328,10 +342,16 @@ export async function createModelSelectionState(params: {
   }
 
   if (sessionEntry && sessionStore && sessionKey && hasStoredOverride) {
-    const overrideProvider = sessionEntry.providerOverride?.trim() || defaultProvider;
     const overrideModel = sessionEntry.modelOverride?.trim();
     if (overrideModel) {
-      const key = modelKey(overrideProvider, overrideModel);
+      const overrideRef = normalizeStoredModelOverrideRef(
+        {
+          provider: sessionEntry.providerOverride?.trim() || undefined,
+          model: overrideModel,
+        },
+        defaultProvider,
+      );
+      const key = modelKey(overrideRef.provider, overrideRef.model);
       if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key)) {
         const { updated } = applyModelOverrideToSessionEntry({
           entry: sessionEntry,
@@ -361,11 +381,11 @@ export async function createModelSelectionState(params: {
   // the regular session/parent model override behavior.
   const skipStoredOverride = params.hasResolvedHeartbeatModelOverride === true;
   if (storedOverride?.model && !skipStoredOverride) {
-    const candidateProvider = storedOverride.provider || defaultProvider;
-    const key = modelKey(candidateProvider, storedOverride.model);
+    const storedOverrideRef = normalizeStoredModelOverrideRef(storedOverride, defaultProvider);
+    const key = modelKey(storedOverrideRef.provider, storedOverrideRef.model);
     if (allowedModelKeys.size === 0 || allowedModelKeys.has(key)) {
-      provider = candidateProvider;
-      model = storedOverride.model;
+      provider = storedOverrideRef.provider;
+      model = storedOverrideRef.model;
     }
   }
 

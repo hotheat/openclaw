@@ -112,7 +112,7 @@ const MOONSHOT_DEFAULT_COST = {
 };
 
 const KIMI_CODING_BASE_URL = "https://api.kimi.com/coding/";
-const KIMI_CODING_DEFAULT_MODEL_ID = "k2p5";
+const KIMI_CODING_DEFAULT_MODEL_ID = "kimi-for-coding";
 const KIMI_CODING_DEFAULT_CONTEXT_WINDOW = 262144;
 const KIMI_CODING_DEFAULT_MAX_TOKENS = 32768;
 const KIMI_CODING_DEFAULT_COST = {
@@ -533,7 +533,7 @@ function buildMoonshotProvider(): ProviderConfig {
   };
 }
 
-export function buildKimiCodingProvider(): ProviderConfig {
+export function buildKimiProvider(): ProviderConfig {
   return {
     baseUrl: KIMI_CODING_BASE_URL,
     api: "anthropic-messages",
@@ -549,6 +549,10 @@ export function buildKimiCodingProvider(): ProviderConfig {
       },
     ],
   };
+}
+
+export function buildKimiCodingProvider(): ProviderConfig {
+  return buildKimiProvider();
 }
 
 function buildQwenPortalProvider(): ProviderConfig {
@@ -833,11 +837,12 @@ export async function resolveImplicitProviders(params: {
     providers.moonshot = { ...buildMoonshotProvider(), apiKey: moonshotKey };
   }
 
-  const kimiCodingKey =
-    resolveEnvApiKeyVarName("kimi-coding") ??
+  const kimiKey =
+    resolveEnvApiKeyVarName("kimi") ??
+    resolveApiKeyFromProfiles({ provider: "kimi", store: authStore }) ??
     resolveApiKeyFromProfiles({ provider: "kimi-coding", store: authStore });
-  if (kimiCodingKey) {
-    providers["kimi-coding"] = { ...buildKimiCodingProvider(), apiKey: kimiCodingKey };
+  if (kimiKey) {
+    providers.kimi = { ...buildKimiProvider(), apiKey: kimiKey };
   }
 
   const syntheticKey =

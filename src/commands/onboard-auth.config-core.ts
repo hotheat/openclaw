@@ -4,7 +4,7 @@ import {
   HUGGINGFACE_MODEL_CATALOG,
 } from "../agents/huggingface-models.js";
 import {
-  buildKimiCodingProvider,
+  buildKimiProvider,
   buildQianfanProvider,
   buildXiaomiProvider,
   QIANFAN_DEFAULT_MODEL_ID,
@@ -215,11 +215,11 @@ export function applyKimiCodeProviderConfig(cfg: OpenClawConfig): OpenClawConfig
     alias: models[KIMI_CODING_MODEL_REF]?.alias ?? "Kimi for Coding",
   };
 
-  const defaultModel = buildKimiCodingProvider().models[0];
+  const defaultModel = buildKimiProvider().models[0];
 
   return applyProviderConfigWithDefaultModel(cfg, {
     agentModels: models,
-    providerId: "kimi-coding",
+    providerId: "kimi",
     api: "anthropic-messages",
     baseUrl: "https://api.kimi.com/coding/",
     defaultModel,
