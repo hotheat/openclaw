@@ -414,6 +414,54 @@ describe("subagent announce formatting", () => {
     });
   });
 
+  it("routes completion through requester agent when parent delivery is required", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-parent-delivery",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-parent-delivery",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "final.pptx ready; delivery.json status failed" }],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-parent-delivery",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(appendAssistantMessageToSessionTranscriptMock).not.toHaveBeenCalled();
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const call = agentSpy.mock.calls[0]?.[0] as {
+      params?: Record<string, unknown>;
+      expectFinal?: boolean;
+    };
+    expect(call?.params?.sessionKey).toBe("agent:main:main");
+    expect(call?.params?.channel).toBe("discord");
+    expect(call?.params?.to).toBe("channel:12345");
+    expect(call?.params?.deliver).toBe(true);
+    expect(call?.expectFinal).toBe(true);
+    const msg = typeof call?.params?.message === "string" ? call.params.message : "";
+    expect(msg).toContain("final.pptx ready; delivery.json status failed");
+    expect(msg).toContain("A completed subagent task is ready for user delivery.");
+  });
+
   it("keeps completion-mode delivery coordinated when sibling runs are still active", async () => {
     sessionStore = {
       "agent:main:subagent:test": {

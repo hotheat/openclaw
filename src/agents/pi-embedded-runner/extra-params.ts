@@ -5,6 +5,8 @@ import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { log } from "./logger.js";
 
+type KimiMoonshotThinkingType = "enabled" | "disabled";
+
 const OPENROUTER_APP_HEADERS: Record<string, string> = {
   "HTTP-Referer": "https://openclaw.ai",
   "X-Title": "OpenClaw",
@@ -391,6 +393,117 @@ function isDeepseekProviderOrBaseUrl(provider: unknown, baseUrl: unknown): boole
   );
 }
 
+function isKimiMoonshotBaseUrl(baseUrl: unknown): boolean {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) {
+    return false;
+  }
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api.kimi.com" || host === "api.moonshot.ai" || host === "api.moonshot.cn";
+  } catch {
+    const normalized = baseUrl.toLowerCase();
+    return (
+      normalized.includes("api.kimi.com") ||
+      normalized.includes("api.moonshot.ai") ||
+      normalized.includes("api.moonshot.cn")
+    );
+  }
+}
+
+function isKimiMoonshotProviderOrBaseUrl(provider: unknown, baseUrl: unknown): boolean {
+  if (typeof provider === "string") {
+    const normalized = provider.trim().toLowerCase();
+    if (
+      normalized === "kimi" ||
+      normalized === "kimi-code" ||
+      normalized === "kimi-coding" ||
+      normalized === "moonshot"
+    ) {
+      return true;
+    }
+  }
+  return isKimiMoonshotBaseUrl(baseUrl);
+}
+
+function normalizeKimiMoonshotThinkingType(value: unknown): KimiMoonshotThinkingType | undefined {
+  if (typeof value === "boolean") {
+    return value ? "enabled" : "disabled";
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["enabled", "enable", "on", "true"].includes(normalized)) {
+      return "enabled";
+    }
+    if (["disabled", "disable", "off", "false"].includes(normalized)) {
+      return "disabled";
+    }
+    return undefined;
+  }
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return normalizeKimiMoonshotThinkingType((value as Record<string, unknown>).type);
+  }
+  return undefined;
+}
+
+function resolveKimiMoonshotThinkingType(params: {
+  configuredThinking: unknown;
+  thinkingLevel?: ThinkLevel;
+}): KimiMoonshotThinkingType | undefined {
+  if (params.thinkingLevel) {
+    return params.thinkingLevel === "off" ? "disabled" : "enabled";
+  }
+  return normalizeKimiMoonshotThinkingType(params.configuredThinking);
+}
+
+function isKimiMoonshotToolChoiceCompatible(toolChoice: unknown): boolean {
+  if (toolChoice == null || toolChoice === "auto" || toolChoice === "none") {
+    return true;
+  }
+  if (typeof toolChoice === "object" && !Array.isArray(toolChoice)) {
+    const typeValue = (toolChoice as Record<string, unknown>).type;
+    return typeValue === "auto" || typeValue === "none";
+  }
+  return false;
+}
+
+function createKimiMoonshotThinkingWrapper(
+  baseStreamFn: StreamFn | undefined,
+  provider: string,
+  configuredBaseUrl: unknown,
+  thinkingType: KimiMoonshotThinkingType,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    if (
+      !isKimiMoonshotProviderOrBaseUrl(
+        model.provider ?? provider,
+        model.baseUrl ?? configuredBaseUrl,
+      )
+    ) {
+      return underlying(model, context, options);
+    }
+
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
+        if (payload && typeof payload === "object") {
+          const payloadObj = payload as Record<string, unknown>;
+          payloadObj.thinking = { type: thinkingType };
+          if (
+            thinkingType === "enabled" &&
+            !isKimiMoonshotToolChoiceCompatible(payloadObj.tool_choice)
+          ) {
+            payloadObj.tool_choice = "auto";
+          }
+        }
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
+      },
+    });
+  };
+}
+
 function mapDeepseekThinkingPayload(thinkingLevel?: ThinkLevel):
   | {
       thinking: { type: "enabled" | "disabled" };
@@ -569,6 +682,20 @@ export function applyExtraParamsToAgent(
     log.debug(`applying OpenRouter app attribution headers for ${provider}/${modelId}`);
     agent.streamFn = createOpenRouterWrapper(agent.streamFn, thinkingLevel);
     agent.streamFn = createOpenRouterSystemCacheWrapper(agent.streamFn);
+  }
+
+  const kimiMoonshotThinkingType = resolveKimiMoonshotThinkingType({
+    configuredThinking: merged?.thinking,
+    thinkingLevel,
+  });
+  if (kimiMoonshotThinkingType) {
+    log.debug(`applying Kimi/Moonshot thinking params for ${provider}/${modelId}`);
+    agent.streamFn = createKimiMoonshotThinkingWrapper(
+      agent.streamFn,
+      provider,
+      providerBaseUrl,
+      kimiMoonshotThinkingType,
+    );
   }
 
   if (thinkingLevel && isDeepseekProviderOrBaseUrl(provider, providerBaseUrl)) {

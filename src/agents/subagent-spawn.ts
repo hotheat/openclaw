@@ -9,6 +9,7 @@ import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
+import { resolveSubagentAllowlist } from "./subagent-allowlist.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { countActiveRunsForSession, registerSubagentRun } from "./subagent-registry.js";
@@ -21,6 +22,8 @@ import {
 
 export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
+export const SUBAGENT_COMPLETION_DELIVERIES = ["auto", "parent"] as const;
+export type SubagentCompletionDelivery = (typeof SUBAGENT_COMPLETION_DELIVERIES)[number];
 
 export type SpawnSubagentParams = {
   task: string;
@@ -33,6 +36,7 @@ export type SpawnSubagentParams = {
   mode?: SpawnSubagentMode;
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
+  completionDelivery?: SubagentCompletionDelivery;
 };
 
 export type SpawnSubagentContext = {
@@ -186,6 +190,7 @@ export async function spawnSubagentDirect(
         ? params.cleanup
         : "keep";
   const expectsCompletionMessage = params.expectsCompletionMessage !== false;
+  const completionDelivery = params.completionDelivery === "parent" ? "parent" : undefined;
   const requesterOrigin = normalizeDeliveryContext({
     channel: ctx.agentChannel,
     accountId: ctx.agentAccountId,
@@ -240,14 +245,8 @@ export async function spawnSubagentDirect(
   );
   const targetAgentId = requestedAgentId ? normalizeAgentId(requestedAgentId) : requesterAgentId;
   if (targetAgentId !== requesterAgentId) {
-    const allowAgents = resolveAgentConfig(cfg, requesterAgentId)?.subagents?.allowAgents ?? [];
-    const allowAny = allowAgents.some((value) => value.trim() === "*");
+    const { allowAny, allowSet } = resolveSubagentAllowlist(cfg, requesterAgentId);
     const normalizedTargetId = targetAgentId.toLowerCase();
-    const allowSet = new Set(
-      allowAgents
-        .filter((value) => value.trim() && value.trim() !== "*")
-        .map((value) => normalizeAgentId(value).toLowerCase()),
-    );
     if (!allowAny && !allowSet.has(normalizedTargetId)) {
       const allowedText = allowSet.size > 0 ? Array.from(allowSet).join(", ") : "none";
       return {
@@ -484,6 +483,7 @@ export async function spawnSubagentDirect(
     model: resolvedModel,
     runTimeoutSeconds,
     expectsCompletionMessage,
+    completionDelivery,
     spawnMode,
   });
 

@@ -6,7 +6,10 @@ import {
   resetSessionsSpawnConfigOverride,
   setSessionsSpawnConfigOverride,
 } from "./openclaw-tools.subagents.sessions-spawn.test-harness.js";
-import { resetSubagentRegistryForTests } from "./subagent-registry.js";
+import {
+  listSubagentRunsForRequester,
+  resetSubagentRegistryForTests,
+} from "./subagent-registry.js";
 
 const callGatewayMock = getCallGatewayMock();
 
@@ -137,6 +140,39 @@ describe("openclaw-tools: subagents (sessions_spawn allowlist)", () => {
     });
   });
 
+  it("sessions_spawn allows cross-agent spawning from default allowlist", async () => {
+    setSessionsSpawnConfigOverride({
+      session: {
+        mainKey: "main",
+        scope: "per-sender",
+      },
+      agents: {
+        defaults: {
+          subagents: {
+            allowAgents: ["ppt-agent"],
+          },
+        },
+        list: [
+          {
+            id: "main",
+          },
+          {
+            id: "ppt-agent",
+          },
+        ],
+      },
+    });
+    const getChildSessionKey = mockAcceptedSpawn(5300);
+
+    const result = await executeSpawn("call-defaults", "ppt-agent");
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-1",
+    });
+    expect(getChildSessionKey()?.startsWith("agent:ppt-agent:subagent:")).toBe(true);
+  });
+
   it("sessions_spawn allows any agent when allowlist is *", async () => {
     await expectAllowedSpawn({
       allowAgents: ["*"],
@@ -153,5 +189,26 @@ describe("openclaw-tools: subagents (sessions_spawn allowlist)", () => {
       callId: "call10",
       acceptedAt: 5200,
     });
+  });
+
+  it("stores parent completion delivery preference for same-agent runs", async () => {
+    mockAcceptedSpawn(5400);
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "feishu",
+    });
+
+    const result = await tool.execute("call-parent-delivery", {
+      task: "do thing",
+      completionDelivery: "parent",
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-1",
+    });
+    const runs = listSubagentRunsForRequester("agent:main:main");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.completionDelivery).toBe("parent");
   });
 });

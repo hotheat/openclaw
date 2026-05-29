@@ -757,6 +757,14 @@ export const ToolsSchema = z
       .optional(),
     exec: ToolExecSchema,
     fs: ToolFsSchema,
+    artifactJobs: z
+      .object({
+        root: z.string().optional(),
+        allowedSourceRoots: z.array(z.string()).optional(),
+        exportDirName: z.string().optional(),
+      })
+      .strict()
+      .optional(),
     subagents: z
       .object({
         tools: ToolPolicySchema,

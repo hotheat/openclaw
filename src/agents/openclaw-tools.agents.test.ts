@@ -90,6 +90,37 @@ describe("agents_list", () => {
     expect(agents?.map((agent) => agent.id)).toEqual(["main", "research"]);
   });
 
+  it("includes targets from default subagent allowlist", async () => {
+    configOverride = {
+      session: {
+        mainKey: "main",
+        scope: "per-sender",
+      },
+      agents: {
+        defaults: {
+          subagents: {
+            allowAgents: ["ppt-agent"],
+          },
+        },
+        list: [
+          {
+            id: "main",
+            name: "Main",
+          },
+          {
+            id: "ppt-agent",
+            name: "PPT Agent",
+          },
+        ],
+      },
+    };
+
+    const tool = requireAgentsListTool();
+    const result = await tool.execute("call-defaults", {});
+    const agents = readAgentList(result);
+    expect(agents?.map((agent) => agent.id)).toEqual(["main", "ppt-agent"]);
+  });
+
   it("returns configured agents when allowlist is *", async () => {
     setConfigWithAgentList([
       {

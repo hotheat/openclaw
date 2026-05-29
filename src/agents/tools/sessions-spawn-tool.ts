@@ -1,7 +1,11 @@
 import { Type } from "@sinclair/typebox";
 import type { GatewayMessageChannel } from "../../utils/message-channel.js";
 import { optionalStringEnum } from "../schema/typebox.js";
-import { SUBAGENT_SPAWN_MODES, spawnSubagentDirect } from "../subagent-spawn.js";
+import {
+  SUBAGENT_COMPLETION_DELIVERIES,
+  SUBAGENT_SPAWN_MODES,
+  spawnSubagentDirect,
+} from "../subagent-spawn.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
@@ -60,6 +64,10 @@ const SessionsSpawnToolSchema = Type.Object({
     description:
       'keep preserves the sub-agent session and artifacts for review. delete removes the session after completion/announce. Default is "keep".',
   }),
+  completionDelivery: optionalStringEnum(SUBAGENT_COMPLETION_DELIVERIES, {
+    description:
+      "auto may deliver the completion directly to the bound channel. parent forces completion through the requester session so the parent can run post-completion checks or tool-mediated delivery.",
+  }),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -91,6 +99,10 @@ export function createSessionsSpawnTool(opts?: {
       const mode = params.mode === "run" || params.mode === "session" ? params.mode : undefined;
       const cleanup =
         params.cleanup === "keep" || params.cleanup === "delete" ? params.cleanup : "keep";
+      const completionDelivery =
+        params.completionDelivery === "parent" || params.completionDelivery === "auto"
+          ? params.completionDelivery
+          : undefined;
       // Back-compat: older callers used timeoutSeconds for this tool.
       const timeoutSecondsCandidate =
         typeof params.runTimeoutSeconds === "number"
@@ -116,6 +128,7 @@ export function createSessionsSpawnTool(opts?: {
           mode,
           cleanup,
           expectsCompletionMessage: true,
+          completionDelivery,
         },
         {
           agentSessionKey: opts?.agentSessionKey,

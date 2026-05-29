@@ -5,7 +5,7 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
-import { resolveAgentConfig } from "../agent-scope.js";
+import { resolveSubagentAllowlist } from "../subagent-allowlist.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult } from "./common.js";
 import { resolveInternalSessionKey, resolveMainSessionAlias } from "./sessions-helpers.js";
@@ -45,13 +45,7 @@ export function createAgentsListTool(opts?: {
           DEFAULT_AGENT_ID,
       );
 
-      const allowAgents = resolveAgentConfig(cfg, requesterAgentId)?.subagents?.allowAgents ?? [];
-      const allowAny = allowAgents.some((value) => value.trim() === "*");
-      const allowSet = new Set(
-        allowAgents
-          .filter((value) => value.trim() && value.trim() !== "*")
-          .map((value) => normalizeAgentId(value)),
-      );
+      const { allowAny, allowSet } = resolveSubagentAllowlist(cfg, requesterAgentId);
 
       const configuredAgents = Array.isArray(cfg.agents?.list) ? cfg.agents?.list : [];
       const configuredIds = configuredAgents.map((entry) => normalizeAgentId(entry.id));
@@ -72,7 +66,7 @@ export function createAgentsListTool(opts?: {
         }
       } else {
         for (const id of allowSet) {
-          allowed.add(id);
+          allowed.add(normalizeAgentId(id));
         }
       }
 

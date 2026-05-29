@@ -35,7 +35,7 @@ import {
 } from "./pi-embedded.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
-import type { SpawnSubagentMode } from "./subagent-spawn.js";
+import type { SpawnSubagentMode, SubagentCompletionDelivery } from "./subagent-spawn.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
 import { sanitizeTextContent, extractAssistantText } from "./tools/sessions-helpers.js";
 
@@ -718,6 +718,7 @@ async function sendSubagentAnnounceDirectly(params: {
   completionMediaUrls?: string[];
   expectsCompletionMessage: boolean;
   completionRouteMode?: "bound" | "fallback" | "hook";
+  completionDelivery?: SubagentCompletionDelivery;
   spawnMode?: SpawnSubagentMode;
   directIdempotencyKey: string;
   completionDirectOrigin?: DeliveryContext;
@@ -754,6 +755,7 @@ async function sendSubagentAnnounceDirectly(params: {
 
     if (
       params.expectsCompletionMessage &&
+      params.completionDelivery !== "parent" &&
       hasCompletionDirectTarget &&
       params.completionMessage?.trim()
     ) {
@@ -872,6 +874,7 @@ async function deliverSubagentAnnouncement(params: {
   requesterIsSubagent: boolean;
   expectsCompletionMessage: boolean;
   completionRouteMode?: "bound" | "fallback" | "hook";
+  completionDelivery?: SubagentCompletionDelivery;
   spawnMode?: SpawnSubagentMode;
   directIdempotencyKey: string;
   signal?: AbortSignal;
@@ -909,6 +912,7 @@ async function deliverSubagentAnnouncement(params: {
     directIdempotencyKey: params.directIdempotencyKey,
     completionDirectOrigin: params.completionDirectOrigin,
     completionRouteMode: params.completionRouteMode,
+    completionDelivery: params.completionDelivery,
     spawnMode: params.spawnMode,
     directOrigin: params.directOrigin,
     requesterIsSubagent: params.requesterIsSubagent,
@@ -1048,6 +1052,7 @@ function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
   announceType: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  completionDelivery?: SubagentCompletionDelivery;
 }): string {
   if (params.remainingActiveSubagentRuns > 0) {
     const activeRunsLabel = params.remainingActiveSubagentRuns === 1 ? "run" : "runs";
@@ -1057,7 +1062,11 @@ function buildAnnounceReplyInstruction(params: {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
   if (params.expectsCompletionMessage) {
-    return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
+    const parentCheck =
+      params.completionDelivery === "parent"
+        ? " This completion was routed through you for parent-side delivery checks; perform any required file/tool delivery before replying."
+        : "";
+    return `A completed ${params.announceType} is ready for user delivery.${parentCheck} Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
   }
   return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type), and do not copy the system message verbatim. Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`;
 }
@@ -1079,6 +1088,7 @@ export async function runSubagentAnnounceFlow(params: {
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
+  completionDelivery?: SubagentCompletionDelivery;
   spawnMode?: SpawnSubagentMode;
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -1288,6 +1298,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterIsSubagent,
       announceType,
       expectsCompletionMessage,
+      completionDelivery: params.completionDelivery,
     });
     const statsLine = await buildCompactAnnounceStatsLine({
       sessionKey: params.childSessionKey,
@@ -1357,6 +1368,7 @@ export async function runSubagentAnnounceFlow(params: {
       requesterIsSubagent,
       expectsCompletionMessage: expectsCompletionMessage,
       completionRouteMode: completionResolution.routeMode,
+      completionDelivery: params.completionDelivery,
       spawnMode: params.spawnMode,
       directIdempotencyKey,
       signal: params.signal,

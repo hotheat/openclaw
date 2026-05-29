@@ -283,6 +283,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
+    completionDelivery: entry.completionDelivery,
   }).then((didAnnounce) => {
     void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
   });
@@ -843,6 +844,7 @@ export function registerSubagentRun(params: {
   model?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
+  completionDelivery?: SubagentRunRecord["completionDelivery"];
   spawnMode?: "run" | "session";
 }) {
   const now = Date.now();
@@ -863,6 +865,7 @@ export function registerSubagentRun(params: {
     task: params.task,
     cleanup: params.cleanup,
     expectsCompletionMessage: params.expectsCompletionMessage,
+    completionDelivery: params.completionDelivery === "parent" ? "parent" : undefined,
     spawnMode,
     label: params.label,
     model: params.model,

@@ -4,6 +4,7 @@ import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
+import { createArtifactJobsTool } from "./tools/artifact-jobs-tool.js";
 import { createBrowserTool } from "./tools/browser-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -137,6 +138,14 @@ export function createOpenClawTools(options?: {
     createAgentsListTool({
       agentSessionKey: options?.agentSessionKey,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
+    }),
+    createArtifactJobsTool({
+      config: options?.config,
+      workspaceDir,
+      requesterAgentId: resolveSessionAgentId({
+        sessionKey: options?.agentSessionKey,
+        config: options?.config,
+      }),
     }),
     createSessionsListTool({
       agentSessionKey: options?.agentSessionKey,
