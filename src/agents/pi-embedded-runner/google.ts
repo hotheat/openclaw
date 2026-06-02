@@ -70,6 +70,78 @@ function isValidAntigravitySignature(value: unknown): value is string {
   return ANTIGRAVITY_SIGNATURE_RE.test(trimmed);
 }
 
+function isTextBlock(
+  block: Extract<AgentMessage, { role: "assistant" }>["content"][number],
+): block is Extract<
+  Extract<AgentMessage, { role: "assistant" }>["content"][number],
+  { type: "text" }
+> {
+  return Boolean(block && typeof block === "object" && block.type === "text");
+}
+
+function isSameAssistantModel(
+  message: Extract<AgentMessage, { role: "assistant" }>,
+  params: { modelApi?: string | null; modelId?: string; provider?: string },
+): boolean {
+  return (
+    message.provider === params.provider &&
+    message.api === params.modelApi &&
+    message.model === params.modelId
+  );
+}
+
+function hasTextSignature(
+  block: Extract<Extract<AgentMessage, { role: "assistant" }>["content"][number], { type: "text" }>,
+): boolean {
+  return typeof (block as { textSignature?: unknown }).textSignature === "string";
+}
+
+function coalesceOpenAIResponsesAssistantTextBlocks(
+  messages: AgentMessage[],
+  params: { modelApi?: string | null; modelId?: string; provider?: string },
+): AgentMessage[] {
+  let touched = false;
+
+  const nextMessages = messages.map((message) => {
+    if (!isAssistantMessageWithContent(message)) {
+      return message;
+    }
+
+    const textBlocks = message.content.filter(isTextBlock);
+    if (textBlocks.length < 2 || textBlocks.length !== message.content.length) {
+      return message;
+    }
+
+    const sameModel = isSameAssistantModel(message, params);
+    if (sameModel && textBlocks.every(hasTextSignature)) {
+      return message;
+    }
+
+    const mergedText = textBlocks
+      .map((block) => block.text)
+      .filter((text) => text.length > 0)
+      .join("\n\n");
+    let insertedMergedText = false;
+    const content: typeof message.content = [];
+    for (const block of message.content) {
+      if (!isTextBlock(block)) {
+        content.push(block);
+        continue;
+      }
+      if (insertedMergedText) {
+        continue;
+      }
+      insertedMergedText = true;
+      content.push({ ...block, text: mergedText });
+    }
+
+    touched = true;
+    return { ...message, content };
+  });
+
+  return touched ? nextMessages : messages;
+}
+
 export function sanitizeAntigravityThinkingBlocks(messages: AgentMessage[]): AgentMessage[] {
   let touched = false;
   const out: AgentMessage[] = [];
@@ -511,6 +583,13 @@ export async function sanitizeSessionHistory(params: {
   const sanitizedOpenAI = isOpenAIResponsesApi
     ? downgradeOpenAIReasoningBlocks(sanitizedCompactionUsage)
     : sanitizedCompactionUsage;
+  const sanitizedOpenAITextBlocks = isOpenAIResponsesApi
+    ? coalesceOpenAIResponsesAssistantTextBlocks(sanitizedOpenAI, {
+        modelApi: params.modelApi,
+        modelId: params.modelId,
+        provider: params.provider,
+      })
+    : sanitizedOpenAI;
 
   if (hasSnapshot && (!priorSnapshot || modelChanged)) {
     appendModelSnapshot(params.sessionManager, {
@@ -522,11 +601,11 @@ export async function sanitizeSessionHistory(params: {
   }
 
   if (!policy.applyGoogleTurnOrdering) {
-    return sanitizedOpenAI;
+    return sanitizedOpenAITextBlocks;
   }
 
   return applyGoogleTurnOrderingFix({
-    messages: sanitizedOpenAI,
+    messages: sanitizedOpenAITextBlocks,
     modelApi: params.modelApi,
     sessionManager: params.sessionManager,
     sessionId: params.sessionId,

@@ -108,6 +108,9 @@ describe("resolveCommandsSystemPromptBundle", () => {
     expect(mocks.buildAgentSystemPrompt).toHaveBeenCalledWith(
       expect.objectContaining({
         securityPolicyPrompt: "Rule A\nRule B",
+        runtimeInfo: expect.objectContaining({
+          channel: "feishu",
+        }),
       }),
     );
   });

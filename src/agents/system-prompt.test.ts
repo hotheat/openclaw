@@ -189,6 +189,31 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Do not invent commands");
   });
 
+  it("omits gateway service-control refusals for non-messaging runtimes", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).not.toContain("Gateway/service-control redline");
+    expect(prompt).toContain("openclaw gateway restart");
+  });
+
+  it("treats gateway service-control requests as direct refusals for messaging runtimes", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      runtimeInfo: {
+        channel: "telegram",
+      },
+    });
+
+    expect(prompt).toContain("Gateway/service-control redline");
+    expect(prompt).toContain("refuse directly");
+    expect(prompt).toContain("Do not ask for confirmation");
+    expect(prompt).toContain("openclaw gateway restart");
+    expect(prompt).toContain("systemctl --user restart openclaw-gateway.service");
+    expect(prompt).toContain("该操作涉及系统运维权限，无法执行。");
+  });
+
   it("marks system message blocks as internal and not user-visible", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

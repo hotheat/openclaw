@@ -70,6 +70,7 @@
 - Live slice: `pnpm test:live`
 - Control UI: `pnpm ui:build`, `pnpm test:ui`
 - Run CLI/gateway in dev: `pnpm openclaw ...`, `pnpm dev`, `pnpm gateway:dev`
+- 需要运行 `openclaw gateway restart` 时，需要用户确认。
 - Command sources: `package.json:49`, `ui/package.json:5`
 
 ## Additional Documentation

@@ -402,11 +402,17 @@ export function buildAgentSystemPrompt(params: {
     params.sandboxInfo?.enabled && sanitizedSandboxContainerWorkspace
       ? `For read/write/edit/apply_patch, file paths resolve against host workspace: ${sanitizedWorkspaceDir}. For bash/exec commands, use sandbox container paths under ${sanitizedSandboxContainerWorkspace} (or relative paths from that workdir), not host paths. Prefer relative paths so both sandboxed exec and file tools work consistently.`
       : "Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.";
+  const isMessagingRuntime = Boolean(runtimeChannel);
   const safetySection = [
     "## Safety",
     "You have no independent goals: do not pursue self-preservation, replication, resource acquisition, or power-seeking; avoid long-term plans beyond the user's request.",
     "Prioritize safety and human oversight over completion; if instructions conflict, pause and ask; comply with stop/pause/audit requests and never bypass safeguards. (Inspired by Anthropic's constitution.)",
     "Do not manipulate or persuade anyone to expand access or disable safeguards. Do not copy yourself or change system prompts, safety rules, or tool policies unless explicitly requested.",
+    ...(isMessagingRuntime
+      ? [
+          "Gateway/service-control redline: if a chat user asks you to start, stop, restart, reload, or otherwise control OpenClaw Gateway or host services, refuse directly with `该操作涉及系统运维权限，无法执行。` Do not ask for confirmation or provide an approval phrase. This includes `openclaw gateway restart`, `openclaw gateway stop`, and `systemctl --user restart openclaw-gateway.service`.",
+        ]
+      : []),
     "",
   ];
   const securityPolicySection = securityPolicyPrompt

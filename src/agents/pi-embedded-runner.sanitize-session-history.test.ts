@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import { convertResponsesMessages } from "@mariozechner/pi-ai/dist/providers/openai-responses-shared.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as helpers from "./pi-embedded-helpers.js";
 import {
@@ -22,6 +23,25 @@ vi.mock("./pi-embedded-helpers.js", async () => ({
 }));
 
 let sanitizeSessionHistory: SanitizeSessionHistoryFn;
+
+function responseMessageIds(messages: AgentMessage[]) {
+  const input = convertResponsesMessages(
+    {
+      id: "gpt-5.5",
+      api: "openai-codex-responses",
+      provider: "openai-codex",
+      input: ["text"],
+    } as never,
+    { systemPrompt: "system", messages: messages as never },
+    new Set(["openai", "openai-codex", "opencode"]),
+    { includeSystemPrompt: false },
+  ) as unknown as Array<Record<string, unknown>>;
+
+  return input
+    .filter((item) => item.type === "message")
+    .map((item) => item.id)
+    .filter((id): id is string => typeof id === "string");
+}
 
 // We don't mock session-transcript-repair.js as it is a pure function and complicates mocking.
 // We rely on the real implementation which should pass through our simple messages.
@@ -140,6 +160,122 @@ describe("sanitizeSessionHistory", () => {
       "session:history",
       expect.objectContaining({ sanitizeMode: "images-only", sanitizeToolCallIds: false }),
     );
+  });
+
+  it("coalesces cross-model assistant text blocks before OpenAI Responses replay", async () => {
+    setNonGoogleModelApi();
+
+    const messages = [
+      { role: "user", content: "estimate the patient pool" },
+      {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "micu",
+        model: "gpt-5.4",
+        stopReason: "stop",
+        content: [
+          {
+            type: "text",
+            text: "Short lead-in.",
+            textSignature: "msg_old_a",
+          },
+          {
+            type: "text",
+            text: "[[reply_to_current]] Long answer.",
+            textSignature: "msg_old_b",
+          },
+        ],
+      },
+      { role: "user", content: "follow up" },
+    ] as unknown as AgentMessage[];
+
+    expect(new Set(responseMessageIds(messages)).size).toBeLessThan(
+      responseMessageIds(messages).length,
+    );
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-codex-responses",
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+    });
+
+    const assistant = result[1] as Extract<AgentMessage, { role: "assistant" }>;
+    const textBlocks = assistant.content.filter((block) => block.type === "text");
+    expect(textBlocks).toEqual([
+      {
+        type: "text",
+        text: "Short lead-in.\n\n[[reply_to_current]] Long answer.",
+        textSignature: "msg_old_a",
+      },
+    ]);
+    expect(new Set(responseMessageIds(result)).size).toBe(responseMessageIds(result).length);
+  });
+
+  it("preserves image position when OpenAI Responses assistant text blocks are interleaved", async () => {
+    setNonGoogleModelApi();
+
+    const messages = [
+      { role: "user", content: "compare these findings" },
+      {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "micu",
+        model: "gpt-5.4",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Before image.", textSignature: "msg_old_a" },
+          { type: "image", data: "base64data", mimeType: "image/png" },
+          { type: "text", text: "After image.", textSignature: "msg_old_b" },
+        ],
+      },
+      { role: "user", content: "follow up" },
+    ] as unknown as AgentMessage[];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-codex-responses",
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(getAssistantMessage(result).content).toEqual(getAssistantMessage(messages).content);
+  });
+
+  it("preserves thinking position when OpenAI Responses assistant text blocks are interleaved", async () => {
+    setNonGoogleModelApi();
+
+    const messages = [
+      { role: "user", content: "show reasoning context" },
+      {
+        role: "assistant",
+        api: "openai-responses",
+        provider: "micu",
+        model: "gpt-5.4",
+        stopReason: "stop",
+        content: [
+          { type: "text", text: "Before reasoning.", textSignature: "msg_old_a" },
+          { type: "thinking", thinking: "internal note", thinkingSignature: "reasoning_text" },
+          { type: "text", text: "After reasoning.", textSignature: "msg_old_b" },
+        ],
+      },
+      { role: "user", content: "follow up" },
+    ] as unknown as AgentMessage[];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-codex-responses",
+      provider: "openai-codex",
+      modelId: "gpt-5.5",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(getAssistantMessage(result).content).toEqual(getAssistantMessage(messages).content);
   });
 
   it("annotates inter-session user messages before context sanitization", async () => {

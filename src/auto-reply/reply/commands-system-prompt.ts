@@ -95,6 +95,7 @@ export async function resolveCommandsSystemPromptBundle(
       node: process.version,
       model: `${params.provider}/${params.model}`,
       defaultModel: defaultModelLabel,
+      channel: params.command.channel,
     },
   });
   const sandboxInfo = sandboxRuntime.sandboxed
@@ -129,7 +130,7 @@ export async function resolveCommandsSystemPromptBundle(
     skillsPrompt,
     heartbeatPrompt: undefined,
     ttsHint,
-    runtimeInfo,
+    runtimeInfo: { ...runtimeInfo, channel: params.command.channel },
     sandboxInfo,
     memoryCitationsMode: params.cfg?.memory?.citations,
   });
