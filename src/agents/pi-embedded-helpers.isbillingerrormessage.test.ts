@@ -303,6 +303,21 @@ describe("isFailoverErrorMessage", () => {
       expect(isFailoverErrorMessage(sample)).toBe(true);
     }
   });
+
+  it("matches transport connection failures as timeout failovers", () => {
+    const samples = [
+      "Connection error.",
+      "API connection failed",
+      "Network error while calling provider",
+      "fetch failed",
+      "The socket connection was closed unexpectedly",
+    ];
+    for (const sample of samples) {
+      expect(isTimeoutErrorMessage(sample)).toBe(true);
+      expect(classifyFailoverReason(sample)).toBe("timeout");
+      expect(isFailoverErrorMessage(sample)).toBe(true);
+    }
+  });
 });
 
 describe("parseImageSizeError", () => {

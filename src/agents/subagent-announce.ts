@@ -1085,6 +1085,7 @@ export async function runSubagentAnnounceFlow(params: {
   startedAt?: number;
   endedAt?: number;
   label?: string;
+  sessionLabel?: string;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
@@ -1383,12 +1384,12 @@ export async function runSubagentAnnounceFlow(params: {
     defaultRuntime.error?.(`Subagent announce failed: ${String(err)}`);
     // Best-effort follow-ups; ignore failures to avoid breaking the caller response.
   } finally {
-    // Patch label after all writes complete
-    if (params.label) {
+    // Patch the unique session label after all writes complete.
+    if (params.sessionLabel) {
       try {
         await callGateway({
           method: "sessions.patch",
-          params: { key: params.childSessionKey, label: params.label },
+          params: { key: params.childSessionKey, label: params.sessionLabel },
           timeoutMs: 10_000,
         });
       } catch {

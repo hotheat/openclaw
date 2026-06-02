@@ -385,10 +385,21 @@ export type GatewaySessionRow = {
   kind: "direct" | "group" | "global" | "unknown";
   label?: string;
   displayName?: string;
+  origin?: {
+    label?: string;
+    provider?: string;
+    from?: string;
+    to?: string;
+  };
+  deliveryContext?: {
+    to?: string;
+    [key: string]: unknown;
+  };
   surface?: string;
   subject?: string;
   room?: string;
   space?: string;
+  lastTo?: string;
   updatedAt: number | null;
   sessionId?: string;
   systemSent?: boolean;

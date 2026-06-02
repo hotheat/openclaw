@@ -63,6 +63,7 @@
 - Core build: `pnpm build`
 - Full checks: `pnpm check`
 - Main test suite: `pnpm test`
+- Do not proactively run `make test`; it can raise CPU and memory usage. Run it only when the user explicitly asks for it.
 - Fast unit slice: `pnpm test:fast`
 - Extension tests: `vitest run --config vitest.extensions.config.ts`
 - E2E slice: `pnpm test:e2e`

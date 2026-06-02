@@ -3,13 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { SessionsListResult } from "../types.ts";
 import { renderSessions, type SessionsProps } from "./sessions.ts";
 
-function buildResult(session: SessionsListResult["sessions"][number]): SessionsListResult {
+function buildResult(...sessions: SessionsListResult["sessions"]): SessionsListResult {
   return {
     ts: Date.now(),
     path: "(multiple)",
-    count: 1,
+    count: sessions.length,
     defaults: { model: null, contextTokens: null },
-    sessions: [session],
+    sessions,
   };
 }
 
@@ -77,5 +77,64 @@ describe("sessions view", () => {
     expect(
       Array.from(reasoning?.options ?? []).some((option) => option.value === "custom-mode"),
     ).toBe(true);
+  });
+
+  it("does not render heartbeat-only sessions", async () => {
+    const container = document.createElement("div");
+    render(
+      renderSessions(
+        buildProps(
+          buildResult(
+            {
+              key: "agent:ops:main",
+              kind: "direct",
+              displayName: "heartbeat",
+              updatedAt: Date.now(),
+              deliveryContext: { to: "heartbeat" },
+              lastTo: "heartbeat",
+              origin: {
+                label: "heartbeat",
+                provider: "heartbeat",
+                from: "heartbeat",
+                to: "heartbeat",
+              },
+            },
+            {
+              key: "agent:ops:feishu:direct:user",
+              kind: "direct",
+              displayName: "Feishu User",
+              updatedAt: Date.now(),
+            },
+          ),
+        ),
+      ),
+      container,
+    );
+    await Promise.resolve();
+
+    expect(container.textContent).not.toContain("agent:ops:main");
+    expect(container.textContent).not.toContain("heartbeat");
+    expect(container.textContent).toContain("agent:ops:feishu:direct:user");
+  });
+
+  it("keeps ordinary sessions whose display name is heartbeat", async () => {
+    const container = document.createElement("div");
+    render(
+      renderSessions(
+        buildProps(
+          buildResult({
+            key: "agent:ops:manual-heartbeat",
+            kind: "direct",
+            displayName: "heartbeat",
+            updatedAt: Date.now(),
+          }),
+        ),
+      ),
+      container,
+    );
+    await Promise.resolve();
+
+    expect(container.textContent).toContain("agent:ops:manual-heartbeat");
+    expect(container.textContent).toContain("heartbeat");
   });
 });

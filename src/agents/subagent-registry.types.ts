@@ -12,6 +12,7 @@ export type SubagentRunRecord = {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  sessionLabel?: string;
   model?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;

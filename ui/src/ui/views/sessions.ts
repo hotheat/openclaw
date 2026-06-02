@@ -107,8 +107,33 @@ function resolveThinkLevelPatchValue(value: string, isBinary: boolean): string |
   return value;
 }
 
+function normalizeHeartbeatField(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isHeartbeatOnlySession(row: GatewaySessionRow): boolean {
+  const originProvider = normalizeHeartbeatField(row.origin?.provider);
+  const originFrom = normalizeHeartbeatField(row.origin?.from);
+  const originTo = normalizeHeartbeatField(row.origin?.to);
+  const lastTo = normalizeHeartbeatField(row.lastTo);
+  const deliveryTo = normalizeHeartbeatField(row.deliveryContext?.to);
+
+  if (
+    originProvider === "heartbeat" &&
+    originFrom === "heartbeat" &&
+    originTo === "heartbeat" &&
+    lastTo === "heartbeat" &&
+    deliveryTo === "heartbeat"
+  ) {
+    return true;
+  }
+
+  const displayName = normalizeHeartbeatField(row.displayName);
+  return displayName === "heartbeat" && lastTo === "heartbeat" && deliveryTo === "heartbeat";
+}
+
 export function renderSessions(props: SessionsProps) {
-  const rows = props.result?.sessions ?? [];
+  const rows = (props.result?.sessions ?? []).filter((row) => !isHeartbeatOnlySession(row));
   return html`
     <section class="card">
       <div class="row" style="justify-content: space-between;">

@@ -529,6 +529,70 @@ describe("listSessionsFromStore search", () => {
     expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:cron:job-1"]);
   });
 
+  test("hides internal heartbeat-only main sessions from sessions list", () => {
+    const now = Date.now();
+    const store: Record<string, SessionEntry> = {
+      "agent:main:main": {
+        sessionId: "heartbeat-session",
+        updatedAt: now,
+        chatType: "direct",
+        deliveryContext: { to: "heartbeat" },
+        lastTo: "heartbeat",
+        origin: {
+          label: "heartbeat",
+          provider: "heartbeat",
+          from: "heartbeat",
+          to: "heartbeat",
+        },
+      } as SessionEntry,
+      "agent:main:regular": {
+        sessionId: "regular-session",
+        updatedAt: now - 1000,
+        displayName: "heartbeat",
+        label: "heartbeat",
+        chatType: "direct",
+      } as SessionEntry,
+    };
+
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: {},
+    });
+
+    expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:regular"]);
+  });
+
+  test("keeps heartbeat runs that target a real delivery recipient", () => {
+    const now = Date.now();
+    const store: Record<string, SessionEntry> = {
+      "agent:main:main": {
+        sessionId: "heartbeat-session",
+        updatedAt: now,
+        chatType: "direct",
+        deliveryContext: { channel: "feishu", to: "ou_user" },
+        lastChannel: "feishu",
+        lastTo: "ou_user",
+        origin: {
+          label: "heartbeat",
+          provider: "heartbeat",
+          from: "ou_user",
+          to: "ou_user",
+        },
+      } as SessionEntry,
+    };
+
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: {},
+    });
+
+    expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:main"]);
+  });
+
   test("exposes unknown totals when freshness is stale or missing", () => {
     const now = Date.now();
     const store: Record<string, SessionEntry> = {

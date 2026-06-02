@@ -159,6 +159,13 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
       label: "my-task",
     });
 
+    const childAgentParams = ctx.calls
+      .filter((call) => call.method === "agent")
+      .map((call) => call.params as { lane?: string; label?: string } | undefined)
+      .find((params) => params?.lane === "subagent");
+    const sessionLabel = childAgentParams?.label;
+    expect(sessionLabel).toMatch(/^my-task:[a-f0-9]{8}$/i);
+
     const child = ctx.getChild();
     if (!child.runId) {
       throw new Error("missing child runId");
@@ -170,15 +177,15 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     });
 
     await waitFor(() => ctx.waitCalls.some((call) => call.runId === child.runId));
-    await waitFor(() => patchCalls.some((call) => call.label === "my-task"));
+    await waitFor(() => patchCalls.some((call) => call.label === sessionLabel));
     await waitFor(() => ctx.calls.filter((c) => c.method === "agent").length >= 2);
 
     const childWait = ctx.waitCalls.find((call) => call.runId === child.runId);
     expect(childWait?.timeoutMs).toBe(FAST_TEST_WAIT_POLL_INTERVAL_MS);
-    // Cleanup should patch the label
-    const labelPatch = patchCalls.find((call) => call.label === "my-task");
+    // Cleanup should patch the unique session label.
+    const labelPatch = patchCalls.find((call) => call.label === sessionLabel);
     expect(labelPatch?.key).toBe(child.sessionKey);
-    expect(labelPatch?.label).toBe("my-task");
+    expect(labelPatch?.label).toBe(sessionLabel);
 
     // Two agent calls: subagent spawn + main agent trigger
     const agentCalls = ctx.calls.filter((c) => c.method === "agent");
@@ -197,6 +204,43 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     const sendCalls = ctx.calls.filter((c) => c.method === "send");
     expect(sendCalls.length).toBe(0);
     expect(child.sessionKey?.startsWith("agent:main:subagent:")).toBe(true);
+  });
+
+  it("sessions_spawn gives repeated display labels unique session labels", async () => {
+    const ctx = setupSessionsSpawnGatewayMock({
+      includeSessionsList: true,
+      includeChatHistory: true,
+    });
+
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "main",
+      agentChannel: "whatsapp",
+    });
+
+    const first = await tool.execute("call-label-a", {
+      task: "do thing",
+      runTimeoutSeconds: RUN_TIMEOUT_SECONDS,
+      label: "my-task",
+    });
+    expect(first.details).toMatchObject({ status: "accepted" });
+
+    const second = await tool.execute("call-label-b", {
+      task: "do thing",
+      runTimeoutSeconds: RUN_TIMEOUT_SECONDS,
+      label: "my-task",
+    });
+    expect(second.details).toMatchObject({ status: "accepted" });
+
+    const sessionLabels = ctx.calls
+      .filter((call) => call.method === "agent")
+      .map((call) => call.params as { lane?: string; label?: string } | undefined)
+      .filter((params) => params?.lane === "subagent")
+      .map((params) => params?.label);
+
+    expect(sessionLabels).toHaveLength(2);
+    expect(sessionLabels[0]).toMatch(/^my-task:[a-f0-9]{8}$/i);
+    expect(sessionLabels[1]).toMatch(/^my-task:[a-f0-9]{8}$/i);
+    expect(sessionLabels[0]).not.toBe(sessionLabels[1]);
   });
 
   it("sessions_spawn runs cleanup via lifecycle events", async () => {

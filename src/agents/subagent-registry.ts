@@ -280,6 +280,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     startedAt: entry.startedAt,
     endedAt: entry.endedAt,
     label: entry.label,
+    sessionLabel: entry.sessionLabel,
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
@@ -841,6 +842,7 @@ export function registerSubagentRun(params: {
   task: string;
   cleanup: "delete" | "keep";
   label?: string;
+  sessionLabel?: string;
   model?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
@@ -868,6 +870,7 @@ export function registerSubagentRun(params: {
     completionDelivery: params.completionDelivery === "parent" ? "parent" : undefined,
     spawnMode,
     label: params.label,
+    sessionLabel: params.sessionLabel,
     model: params.model,
     runTimeoutSeconds,
     createdAt: now,

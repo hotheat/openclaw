@@ -5,6 +5,7 @@ import { loadConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import { SESSION_LABEL_MAX_LENGTH } from "../sessions/session-label.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
@@ -100,6 +101,27 @@ function summarizeError(err: unknown): string {
     return err;
   }
   return "error";
+}
+
+function resolveSubagentSessionLabel(params: {
+  displayLabel: string;
+  childSessionKey: string;
+}): string | undefined {
+  const displayLabel = params.displayLabel.trim();
+  if (!displayLabel) {
+    return undefined;
+  }
+
+  const rawSuffix = params.childSessionKey.split(":").pop()?.trim() || crypto.randomUUID();
+  const suffix =
+    rawSuffix.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 8) || crypto.randomUUID().slice(0, 8);
+  const maxDisplayLength = Math.max(1, SESSION_LABEL_MAX_LENGTH - suffix.length - 1);
+  const safeDisplayLabel =
+    displayLabel.length > maxDisplayLength
+      ? displayLabel.slice(0, maxDisplayLength).trimEnd()
+      : displayLabel;
+
+  return `${safeDisplayLabel || "subagent"}:${suffix}`;
 }
 
 async function ensureThreadBindingForSubagentSpawn(params: {
@@ -256,6 +278,10 @@ export async function spawnSubagentDirect(
     }
   }
   const childSessionKey = `agent:${targetAgentId}:subagent:${crypto.randomUUID()}`;
+  const sessionLabel = resolveSubagentSessionLabel({
+    displayLabel: label,
+    childSessionKey,
+  });
   const childDepth = callerDepth + 1;
   const spawnedByKey = requesterInternalKey;
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
@@ -407,7 +433,7 @@ export async function spawnSubagentDirect(
         extraSystemPrompt: childSystemPrompt,
         thinking: thinkingOverride,
         timeout: runTimeoutSeconds,
-        label: label || undefined,
+        label: sessionLabel,
         spawnedBy: spawnedByKey,
         groupId: ctx.agentGroupId ?? undefined,
         groupChannel: ctx.agentGroupChannel ?? undefined,
@@ -480,6 +506,7 @@ export async function spawnSubagentDirect(
     task,
     cleanup,
     label: label || undefined,
+    sessionLabel,
     model: resolvedModel,
     runTimeoutSeconds,
     expectsCompletionMessage,
