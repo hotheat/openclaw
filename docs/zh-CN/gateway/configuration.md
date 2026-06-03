@@ -2743,7 +2743,7 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
 
 字段：
 
-- `allowBundled`：可选的**仅内置**Skills 白名单。如果设置，仅那些内置 Skills 符合条件（管理/工作区 Skills 不受影响）。
+- `allowBundled`：可选的**仅内置**Skills 白名单。如果设置，仅那些内置 Skills 符合条件（管理/工作区 Skills 不受影响）。当前内置目录包含 `coding-agent`；其他 Skills 应作为托管/工作区 Skills 安装，或由插件提供。
 - `load.extraDirs`：额外要扫描的 Skills 目录（最低优先级）。
 - `install.preferBrew`：可用时优先使用 brew 安装程序（默认：true）。
 - `install.nodeManager`：node 安装偏好（`npm` | `pnpm` | `yarn`，默认：npm）。
@@ -2753,14 +2753,14 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
 
 - `enabled`：设为 `false` 禁用 Skills，即使它是内置/已安装的。
 - `env`：为智能体运行注入的环境变量（仅在尚未设置时）。
-- `apiKey`：对于声明了主环境变量的 Skills 的可选便利字段（例如 `nano-banana-pro` → `GEMINI_API_KEY`）。
+- `apiKey`：对于声明了主环境变量的 Skills 的可选便利字段。
 
 示例：
 
 ```json5
 {
   skills: {
-    allowBundled: ["gemini", "peekaboo"],
+    allowBundled: ["coding-agent"],
     load: {
       extraDirs: ["~/Projects/agent-scripts/skills", "~/Projects/oss/some-skill-pack/skills"],
     },
@@ -2769,14 +2769,13 @@ Z.AI 模型通过内置的 `zai` 提供商提供。在环境中设置 `ZAI_API_K
       nodeManager: "npm",
     },
     entries: {
-      "nano-banana-pro": {
-        apiKey: "GEMINI_KEY_HERE",
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
+        apiKey: "API_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+          MY_API_KEY: "API_KEY_HERE",
         },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }

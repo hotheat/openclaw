@@ -320,7 +320,9 @@ Actions:
 - `end_call` (callId)
 - `get_status` (callId)
 
-This repo ships a matching skill doc at `skills/voice-call/SKILL.md`.
+The voice-call plugin does not ship a bundled skill doc. Add a managed or
+workspace skill named `voice-call` if you want extra prompt guidance for this
+tool.
 
 ## Gateway RPC
 

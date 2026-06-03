@@ -239,7 +239,7 @@ openclaw voicecall expose --mode funnel
 - `end_call`（callId）
 - `get_status`（callId）
 
-此仓库在 `skills/voice-call/SKILL.md` 提供了配套的 skill 文档。
+voice-call 插件不再提供内置 skill 文档。如果需要额外提示词指导，请添加名为 `voice-call` 的托管或工作区 Skill。
 
 ## Gateway 网关 RPC
 

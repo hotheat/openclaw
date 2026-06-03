@@ -8,13 +8,13 @@ title: "Skills"
 
 # Skills (OpenClaw)
 
-OpenClaw uses **[AgentSkills](https://agentskills.io)-compatible** skill folders to teach the agent how to use tools. Each skill is a directory containing a `SKILL.md` with YAML frontmatter and instructions. OpenClaw loads **bundled skills** plus optional local overrides, and filters them at load time based on environment, config, and binary presence.
+OpenClaw uses **[AgentSkills](https://agentskills.io)-compatible** skill folders to teach the agent how to use tools. Each skill is a directory containing a `SKILL.md` with YAML frontmatter and instructions. OpenClaw loads the bundled `coding-agent` skill plus optional managed/workspace skills, and filters them at load time based on environment, config, and binary presence.
 
 ## Locations and precedence
 
 Skills are loaded from **three** places:
 
-1. **Bundled skills**: shipped with the install (npm package or OpenClaw.app)
+1. **Bundled skills**: shipped with the install (currently `coding-agent`)
 2. **Managed/local skills**: `~/.openclaw/skills`
 3. **Workspace skills**: `<workspace>/skills`
 
@@ -141,8 +141,8 @@ Note on sandboxing:
   Install it via `agents.defaults.sandbox.docker.setupCommand` (or a custom image).
   `setupCommand` runs once after the container is created.
   Package installs also require network egress, a writable root FS, and a root user in the sandbox.
-  Example: the `summarize` skill (`skills/summarize/SKILL.md`) needs the `summarize` CLI
-  in the sandbox container to run there.
+  Example: a managed `summarize` skill that shells out to a `summarize` CLI
+  needs that CLI in the sandbox container to run there.
 
 Installer example:
 
@@ -187,25 +187,24 @@ disabled in config or blocked by `skills.allowBundled` for bundled skills).
 
 ## Config overrides (`~/.openclaw/openclaw.json`)
 
-Bundled/managed skills can be toggled and supplied with env values:
+Bundled and managed skills can be toggled and supplied with env values:
 
 ```json5
 {
   skills: {
     entries: {
-      "nano-banana-pro": {
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
         enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
+        apiKey: "API_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+          MY_API_KEY: "API_KEY_HERE",
         },
         config: {
           endpoint: "https://example.invalid",
-          model: "nano-pro",
+          model: "default",
         },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }
@@ -224,6 +223,8 @@ Rules:
 - `config`: optional bag for custom per-skill fields; custom keys must live here.
 - `allowBundled`: optional allowlist for **bundled** skills only. If set, only
   bundled skills in the list are eligible (managed/workspace skills unaffected).
+  The current bundled catalog contains `coding-agent`; other skills should be
+  installed as managed/workspace skills or provided by plugins.
 
 ## Environment injection (per agent run)
 
@@ -284,10 +285,10 @@ Notes:
 
 ## Managed skills lifecycle
 
-OpenClaw ships a baseline set of skills as **bundled skills** as part of the
-install (npm package or OpenClaw.app). `~/.openclaw/skills` exists for local
-overrides (for example, pinning/patching a skill without changing the bundled
-copy). Workspace skills are user-owned and override both on name conflicts.
+OpenClaw ships `coding-agent` as the built-in bundled skill. `~/.openclaw/skills`
+exists for managed skills and local overrides, including skills installed from
+ClawHub or copied from another source. Workspace skills are user-owned and
+override both on name conflicts.
 
 ## Config reference
 

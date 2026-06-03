@@ -15,13 +15,13 @@ x-i18n:
 
 # Skills（OpenClaw）
 
-OpenClaw 使用**兼容 [AgentSkills](https://agentskills.io)** 的 Skills 文件夹来教智能体如何使用工具。每个 Skills 是一个包含带有 YAML frontmatter 和说明的 `SKILL.md` 的目录。OpenClaw 加载**内置 Skills** 以及可选的本地覆盖，并在加载时根据环境、配置和二进制文件存在情况进行过滤。
+OpenClaw 使用**兼容 [AgentSkills](https://agentskills.io)** 的 Skills 文件夹来教智能体如何使用工具。每个 Skills 是一个包含带有 YAML frontmatter 和说明的 `SKILL.md` 的目录。OpenClaw 加载内置的 `coding-agent` Skill 以及可选的托管/工作区 Skills，并在加载时根据环境、配置和二进制文件存在情况进行过滤。
 
 ## 位置和优先级
 
 Skills 从**三个**位置加载：
 
-1. **内置 Skills**：随安装包一起发布（npm 包或 OpenClaw.app）
+1. **内置 Skills**：随安装包一起发布（当前为 `coding-agent`）
 2. **托管/本地 Skills**：`~/.openclaw/skills`
 3. **工作区 Skills**：`<workspace>/skills`
 
@@ -130,7 +130,7 @@ metadata:
 沙箱隔离注意事项：
 
 - `requires.bins` 在 Skills 加载时在**宿主机**上检查。
-- 如果智能体处于沙箱隔离状态，二进制文件也必须存在于**容器内部**。通过 `agents.defaults.sandbox.docker.setupCommand`（或自定义镜像）安装它。`setupCommand` 在容器创建后运行一次。包安装还需要网络出口、可写的根文件系统和沙箱中的 root 用户。示例：`summarize` Skills（`skills/summarize/SKILL.md`）需要 `summarize` CLI 在沙箱容器中才能运行。
+- 如果智能体处于沙箱隔离状态，二进制文件也必须存在于**容器内部**。通过 `agents.defaults.sandbox.docker.setupCommand`（或自定义镜像）安装它。`setupCommand` 在容器创建后运行一次。包安装还需要网络出口、可写的根文件系统和沙箱中的 root 用户。示例：一个调用 `summarize` CLI 的托管 `summarize` Skill，需要该 CLI 在沙箱容器中才能运行。
 
 安装器示例：
 
@@ -172,25 +172,24 @@ metadata:
 
 ## 配置覆盖（`~/.openclaw/openclaw.json`）
 
-内置/托管 Skills 可以被切换并提供环境变量值：
+内置和托管 Skills 可以被切换并提供环境变量值：
 
 ```json5
 {
   skills: {
     entries: {
-      "nano-banana-pro": {
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
         enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
+        apiKey: "API_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+          MY_API_KEY: "API_KEY_HERE",
         },
         config: {
           endpoint: "https://example.invalid",
-          model: "nano-pro",
+          model: "default",
         },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }
@@ -206,7 +205,7 @@ metadata:
 - `env`：**仅在**变量在进程中尚未设置时注入。
 - `apiKey`：为声明 `metadata.openclaw.primaryEnv` 的 Skills 提供的便捷字段。
 - `config`：用于自定义单 Skills 字段的可选容器；自定义键必须放在这里。
-- `allowBundled`：可选的仅用于**内置** Skills 的白名单。如果设置，只有列表中的内置 Skills 才有资格（托管/工作区 Skills 不受影响）。
+- `allowBundled`：可选的仅用于**内置** Skills 的白名单。如果设置，只有列表中的内置 Skills 才有资格（托管/工作区 Skills 不受影响）。当前内置目录包含 `coding-agent`；其他 Skills 应作为托管/工作区 Skills 安装，或由插件提供。
 
 ## 环境变量注入（每次智能体运行）
 
@@ -266,7 +265,7 @@ total = 195 + Σ (97 + len(name_escaped) + len(description_escaped) + len(locati
 
 ## 托管 Skills 生命周期
 
-OpenClaw 作为安装的一部分（npm 包或 OpenClaw.app）发布一组基线 Skills 作为**内置 Skills**。`~/.openclaw/skills` 用于本地覆盖（例如，在不更改内置副本的情况下固定/修补 Skills）。工作区 Skills 由用户拥有，在名称冲突时覆盖两者。
+OpenClaw 将 `coding-agent` 作为内置 Skill 随安装包发布。`~/.openclaw/skills` 用于托管 Skills 和本地覆盖，包括从 ClawHub 安装或从其他来源复制的 Skills。工作区 Skills 由用户拥有，在名称冲突时覆盖两者。
 
 ## 配置参考
 

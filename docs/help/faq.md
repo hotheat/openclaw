@@ -1012,7 +1012,7 @@ Showcase: [https://openclaw.ai/showcase](https://openclaw.ai/showcase)
 
 ### How do I customize skills without keeping the repo dirty
 
-Use managed overrides instead of editing the repo copy. Put your changes in `~/.openclaw/skills/<name>/SKILL.md` (or add a folder via `skills.load.extraDirs` in `~/.openclaw/openclaw.json`). Precedence is `<workspace>/skills` > `~/.openclaw/skills` > bundled, so managed overrides win without touching git. Only upstream-worthy edits should live in the repo and go out as PRs.
+Use managed skills instead of editing bundled files. Put your changes in `~/.openclaw/skills/<name>/SKILL.md` (or add a folder via `skills.load.extraDirs` in `~/.openclaw/openclaw.json`). Precedence is `<workspace>/skills` > `~/.openclaw/skills` > bundled, so managed skills win without touching git. The bundled catalog currently contains `coding-agent`; use managed/workspace skills or plugins for other skills.
 
 ### Can I load skills from a custom folder
 

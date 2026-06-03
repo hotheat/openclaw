@@ -1977,7 +1977,7 @@ See [Local Models](/gateway/local-models). TL;DR: run MiniMax M2.1 via LM Studio
 ```json5
 {
   skills: {
-    allowBundled: ["gemini", "peekaboo"],
+    allowBundled: ["coding-agent"],
     load: {
       extraDirs: ["~/Projects/agent-scripts/skills"],
     },
@@ -1986,18 +1986,19 @@ See [Local Models](/gateway/local-models). TL;DR: run MiniMax M2.1 via LM Studio
       nodeManager: "npm", // npm | pnpm | yarn
     },
     entries: {
-      "nano-banana-pro": {
-        apiKey: "GEMINI_KEY_HERE",
-        env: { GEMINI_API_KEY: "GEMINI_KEY_HERE" },
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
+        apiKey: "API_KEY_HERE",
+        env: { MY_API_KEY: "API_KEY_HERE" },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }
 ```
 
 - `allowBundled`: optional allowlist for bundled skills only (managed/workspace skills unaffected).
+  The current bundled catalog contains `coding-agent`; other skills should be
+  installed as managed/workspace skills or provided by plugins.
 - `entries.<skillKey>.enabled: false` disables a skill even if bundled/installed.
 - `entries.<skillKey>.apiKey`: convenience for skills declaring a primary env var.
 

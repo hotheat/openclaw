@@ -614,7 +614,7 @@ export default function (api) {
 本仓库包含一个语音通话插件（Twilio 或 log 回退）：
 
 - 源码：`extensions/voice-call`
-- Skills：`skills/voice-call`
+- Skills：可选的托管/工作区 `voice-call` Skill
 - CLI：`openclaw voicecall start|status`
 - 工具：`voice_call`
 - RPC：`voicecall.start`、`voicecall.status`

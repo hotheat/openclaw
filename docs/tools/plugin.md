@@ -646,7 +646,7 @@ export default function (api) {
 
 ## Skills
 
-Plugins can ship a skill in the repo (`skills/<name>/SKILL.md`).
+Plugins can pair with a managed or workspace skill (`skills/<name>/SKILL.md`).
 Enable it with `plugins.entries.<id>.enabled` (or other config gates) and ensure
 it’s present in your workspace/managed skills locations.
 
@@ -669,7 +669,7 @@ Publishing contract:
 This repo includes a voice‑call plugin (Twilio or log fallback):
 
 - Source: `extensions/voice-call`
-- Skill: `skills/voice-call`
+- Skill: optional managed/workspace skill named `voice-call`
 - CLI: `openclaw voicecall start|status`
 - Tool: `voice_call`
 - RPC: `voicecall.start`, `voicecall.status`

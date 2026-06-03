@@ -13,7 +13,7 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
 ```json5
 {
   skills: {
-    allowBundled: ["gemini", "peekaboo"],
+    allowBundled: ["coding-agent"],
     load: {
       extraDirs: ["~/Projects/agent-scripts/skills", "~/Projects/oss/some-skill-pack/skills"],
       watch: true,
@@ -24,15 +24,13 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
       nodeManager: "npm", // npm | pnpm | yarn | bun (Gateway runtime still Node; bun not recommended)
     },
     entries: {
-      "nano-banana-pro": {
-        enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
+        apiKey: "API_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+          MY_API_KEY: "API_KEY_HERE",
         },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }
@@ -42,6 +40,8 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
 
 - `allowBundled`: optional allowlist for **bundled** skills only. When set, only
   bundled skills in the list are eligible (managed/workspace skills unaffected).
+  The current bundled catalog contains `coding-agent`; other skills should be
+  installed as managed/workspace skills or provided by plugins.
 - `load.extraDirs`: additional skill directories to scan (lowest precedence).
 - `load.watch`: watch skill folders and refresh the skills snapshot (default: true).
 - `load.watchDebounceMs`: debounce for skill watcher events in milliseconds (default: 250).

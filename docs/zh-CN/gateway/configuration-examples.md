@@ -410,7 +410,7 @@ x-i18n:
   },
 
   skills: {
-    allowBundled: ["gemini", "peekaboo"],
+    allowBundled: ["coding-agent"],
     load: {
       extraDirs: ["~/Projects/agent-scripts/skills"],
     },
@@ -419,12 +419,12 @@ x-i18n:
       nodeManager: "npm",
     },
     entries: {
-      "nano-banana-pro": {
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
         enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
-        env: { GEMINI_API_KEY: "GEMINI_KEY_HERE" },
+        apiKey: "API_KEY_HERE",
+        env: { MY_API_KEY: "API_KEY_HERE" },
       },
-      peekaboo: { enabled: true },
     },
   },
 }

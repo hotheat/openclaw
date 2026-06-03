@@ -20,7 +20,7 @@ x-i18n:
 ```json5
 {
   skills: {
-    allowBundled: ["gemini", "peekaboo"],
+    allowBundled: ["coding-agent"],
     load: {
       extraDirs: ["~/Projects/agent-scripts/skills", "~/Projects/oss/some-skill-pack/skills"],
       watch: true,
@@ -31,15 +31,13 @@ x-i18n:
       nodeManager: "npm", // npm | pnpm | yarn | bun（Gateway 网关运行时仍为 Node；不推荐 bun）
     },
     entries: {
-      "nano-banana-pro": {
-        enabled: true,
-        apiKey: "GEMINI_KEY_HERE",
+      "coding-agent": { enabled: true },
+      "my-api-skill": {
+        apiKey: "API_KEY_HERE",
         env: {
-          GEMINI_API_KEY: "GEMINI_KEY_HERE",
+          MY_API_KEY: "API_KEY_HERE",
         },
       },
-      peekaboo: { enabled: true },
-      sag: { enabled: false },
     },
   },
 }
@@ -47,7 +45,7 @@ x-i18n:
 
 ## 字段
 
-- `allowBundled`：可选的仅用于**内置** Skills 的白名单。设置后，只有列表中的内置 Skills 才有资格（托管/工作区 Skills 不受影响）。
+- `allowBundled`：可选的仅用于**内置** Skills 的白名单。设置后，只有列表中的内置 Skills 才有资格（托管/工作区 Skills 不受影响）。当前内置目录包含 `coding-agent`；其他 Skills 应作为托管/工作区 Skills 安装，或由插件提供。
 - `load.extraDirs`：要扫描的附加 Skills 目录（最低优先级）。
 - `load.watch`：监视 Skills 文件夹并刷新 Skills 快照（默认：true）。
 - `load.watchDebounceMs`：Skills 监视器事件的防抖时间（毫秒）（默认：250）。
