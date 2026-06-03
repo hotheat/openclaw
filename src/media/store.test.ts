@@ -101,14 +101,27 @@ describe("media store", () => {
     });
   });
 
-  it("cleans old media files in first-level subdirectories", async () => {
+  it("does not clean old media files in subdirectories by default", async () => {
+    await withTempStore(async (store) => {
+      const saved = await store.saveMediaBuffer(Buffer.from("nested"), "text/plain", "inbound");
+      const past = Date.now() - 10_000;
+      await fs.utimes(saved.path, past / 1000, past / 1000);
+
+      await store.cleanOldMedia(1);
+
+      const savedStat = await fs.stat(saved.path);
+      expect(savedStat.isFile()).toBe(true);
+    });
+  });
+
+  it("cleans old media files in subdirectories when recursive", async () => {
     await withTempStore(async (store) => {
       const saved = await store.saveMediaBuffer(Buffer.from("nested"), "text/plain", "inbound");
       const inboundDir = path.dirname(saved.path);
       const past = Date.now() - 10_000;
       await fs.utimes(saved.path, past / 1000, past / 1000);
 
-      await store.cleanOldMedia(1);
+      await store.cleanOldMedia(1, { recursive: true });
 
       await expect(fs.stat(saved.path)).rejects.toThrow();
       const inboundStat = await fs.stat(inboundDir);

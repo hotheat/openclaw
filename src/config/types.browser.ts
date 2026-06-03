@@ -26,6 +26,14 @@ export type BrowserSsrFPolicyConfig = {
    */
   hostnameAllowlist?: string[];
 };
+export type BrowserPlaywrightRecoveryConfig = {
+  /** Enable gateway maintenance reaping for stale OpenClaw playwright-cli sessions. Default: false. */
+  enabled?: boolean;
+  /** Sweep interval as a duration string. Default: 30m. */
+  interval?: string;
+  /** Minimum age before an owned or OpenClaw-workspace playwright-cli session is eligible for reaping. Default: 2h. */
+  staleAfter?: string;
+};
 export type BrowserConfig = {
   enabled?: boolean;
   /** If false, disable browser act:evaluate (arbitrary JS). Default: true */
@@ -54,6 +62,8 @@ export type BrowserConfig = {
   snapshotDefaults?: BrowserSnapshotDefaults;
   /** SSRF policy for browser navigation/open-tab operations. */
   ssrfPolicy?: BrowserSsrFPolicyConfig;
+  /** Gateway maintenance recovery for stale playwright-cli browser sessions. */
+  playwrightRecovery?: BrowserPlaywrightRecoveryConfig;
   /**
    * Additional Chrome launch arguments.
    * Useful for stealth flags, window size overrides, or custom user-agent strings.

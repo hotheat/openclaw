@@ -5,10 +5,9 @@ import { getTailnetHostname } from "../infra/tailscale.js";
 import { logInfo } from "../logger.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { startMediaServer } from "./server.js";
-import { saveMediaSource } from "./store.js";
+import { MEDIA_DEFAULT_TTL_MS, saveMediaSource } from "./store.js";
 
 const DEFAULT_PORT = 42873;
-const TTL_MS = 2 * 60 * 1000;
 
 let mediaServer: import("http").Server | null = null;
 
@@ -42,9 +41,9 @@ export async function ensureMediaHosted(
   }
   if (needsServerStart && opts.startServer) {
     if (!mediaServer) {
-      mediaServer = await startMediaServer(port, TTL_MS, runtime);
+      mediaServer = await startMediaServer(port, MEDIA_DEFAULT_TTL_MS, runtime);
       logInfo(
-        `🦞 Started temporary media host on http://localhost:${port}/media/:id (TTL ${TTL_MS / 1000}s)`,
+        `🦞 Started temporary media host on http://localhost:${port}/media/:id (TTL ${MEDIA_DEFAULT_TTL_MS / 1000}s)`,
         runtime,
       );
       mediaServer.unref?.();

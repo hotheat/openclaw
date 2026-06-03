@@ -10,6 +10,7 @@ import { browserActionExamples, browserCoreExamples } from "./browser-cli-exampl
 import { registerBrowserExtensionCommands } from "./browser-cli-extension.js";
 import { registerBrowserInspectCommands } from "./browser-cli-inspect.js";
 import { registerBrowserManageCommands } from "./browser-cli-manage.js";
+import { registerBrowserPlaywrightCommands } from "./browser-cli-playwright.js";
 import type { BrowserParentOpts } from "./browser-cli-shared.js";
 import { registerBrowserStateCommands } from "./browser-cli-state.js";
 import { formatCliCommand } from "./command-format.js";
@@ -52,4 +53,5 @@ export function registerBrowserCli(program: Command) {
   registerBrowserActionObserveCommands(browser, parentOpts);
   registerBrowserDebugCommands(browser, parentOpts);
   registerBrowserStateCommands(browser, parentOpts);
+  registerBrowserPlaywrightCommands(browser, parentOpts);
 }

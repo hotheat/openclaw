@@ -5,9 +5,8 @@ import { danger } from "../globals.js";
 import { SafeOpenError, openFileWithinRoot } from "../infra/fs-safe.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { detectMime } from "./mime.js";
-import { cleanOldMedia, getMediaDir, MEDIA_MAX_BYTES } from "./store.js";
+import { cleanOldMedia, getMediaDir, MEDIA_DEFAULT_TTL_MS, MEDIA_MAX_BYTES } from "./store.js";
 
-const DEFAULT_TTL_MS = 2 * 60 * 1000;
 const MAX_MEDIA_ID_CHARS = 200;
 const MEDIA_ID_PATTERN = /^[\p{L}\p{N}._-]+$/u;
 const MAX_MEDIA_BYTES = MEDIA_MAX_BYTES;
@@ -27,7 +26,7 @@ const isValidMediaId = (id: string) => {
 
 export function attachMediaRoutes(
   app: Express,
-  ttlMs = DEFAULT_TTL_MS,
+  ttlMs = MEDIA_DEFAULT_TTL_MS,
   _runtime: RuntimeEnv = defaultRuntime,
 ) {
   const mediaDir = getMediaDir();
@@ -90,13 +89,13 @@ export function attachMediaRoutes(
 
   // periodic cleanup
   setInterval(() => {
-    void cleanOldMedia(ttlMs);
+    void cleanOldMedia(ttlMs, { recursive: true, pruneEmptyDirs: true });
   }, ttlMs).unref();
 }
 
 export async function startMediaServer(
   port: number,
-  ttlMs = DEFAULT_TTL_MS,
+  ttlMs = MEDIA_DEFAULT_TTL_MS,
   runtime: RuntimeEnv = defaultRuntime,
 ): Promise<Server> {
   const app = express();

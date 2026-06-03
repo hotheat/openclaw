@@ -1,4 +1,7 @@
+import { reapPlaywrightSessions } from "../cli/browser-playwright-recovery.js";
+import { parseDurationMs } from "../cli/parse-duration.js";
 import type { HealthSummary } from "../commands/health.js";
+import { cleanOldMedia } from "../media/store.js";
 import { abortChatRunById, type ChatAbortControllerEntry } from "./chat-abort.js";
 import type { ChatRunEntry } from "./server-chat.js";
 import {
@@ -10,6 +13,49 @@ import {
 import type { DedupeEntry } from "./server-shared.js";
 import { formatError } from "./server-utils.js";
 import { setBroadcastHealthUpdate } from "./server/health-state.js";
+
+const MEDIA_CLEANUP_INTERVAL_MS = 60 * 60_000;
+
+type MaintenanceLogger = {
+  info: (msg: string, meta?: Record<string, unknown>) => void;
+  warn: (msg: string, meta?: Record<string, unknown>) => void;
+};
+
+export type PlaywrightRecoveryMaintenanceConfig = {
+  enabled: boolean;
+  intervalMs: number;
+  staleAfterMs: number;
+};
+
+export function resolvePlaywrightRecoveryMaintenanceConfig(
+  config:
+    | {
+        enabled?: boolean;
+        interval?: string;
+        staleAfter?: string;
+      }
+    | undefined,
+  deps: {
+    platform?: NodeJS.Platform;
+    log?: MaintenanceLogger;
+  } = {},
+): PlaywrightRecoveryMaintenanceConfig {
+  const intervalMs = parseDurationMs(config?.interval ?? "30m");
+  const staleAfterMs = parseDurationMs(config?.staleAfter ?? "2h");
+  const requestedEnabled = config?.enabled === true;
+  const platform = deps.platform ?? process.platform;
+  const enabled = requestedEnabled && platform === "linux";
+  if (requestedEnabled && !enabled) {
+    deps.log?.warn("playwright recovery disabled on unsupported platform", {
+      platform,
+    });
+  }
+  return {
+    enabled,
+    intervalMs,
+    staleAfterMs,
+  };
+}
 
 export function startGatewayMaintenanceTimers(params: {
   broadcast: (
@@ -25,6 +71,10 @@ export function startGatewayMaintenanceTimers(params: {
   getHealthVersion: () => number;
   refreshGatewayHealthSnapshot: (opts?: { probe?: boolean }) => Promise<HealthSummary>;
   logHealth: { error: (msg: string) => void };
+  logMediaCleanup?: MaintenanceLogger;
+  logPlaywrightRecovery?: MaintenanceLogger;
+  mediaCleanupTtlMs?: number;
+  playwrightRecovery?: PlaywrightRecoveryMaintenanceConfig;
   dedupe: Map<string, DedupeEntry>;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   chatRunState: { abortedRuns: Map<string, number> };
@@ -41,6 +91,8 @@ export function startGatewayMaintenanceTimers(params: {
   tickInterval: ReturnType<typeof setInterval>;
   healthInterval: ReturnType<typeof setInterval>;
   dedupeCleanup: ReturnType<typeof setInterval>;
+  mediaCleanup: ReturnType<typeof setInterval> | null;
+  playwrightRecoveryInterval: ReturnType<typeof setInterval> | null;
 } {
   setBroadcastHealthUpdate((snap: HealthSummary) => {
     params.broadcast("health", snap, {
@@ -129,5 +181,73 @@ export function startGatewayMaintenanceTimers(params: {
     }
   }, 60_000);
 
-  return { tickInterval, healthInterval, dedupeCleanup };
+  let mediaCleanupRunning = false;
+  const runMediaCleanup = () => {
+    if (!params.mediaCleanupTtlMs || mediaCleanupRunning) {
+      return;
+    }
+    mediaCleanupRunning = true;
+    void cleanOldMedia(params.mediaCleanupTtlMs, {
+      recursive: true,
+      pruneEmptyDirs: true,
+    })
+      .catch((err) => {
+        params.logMediaCleanup?.warn("media cleanup failed", {
+          error: formatError(err),
+        });
+      })
+      .finally(() => {
+        mediaCleanupRunning = false;
+      });
+  };
+  const mediaCleanup =
+    typeof params.mediaCleanupTtlMs === "number" && params.mediaCleanupTtlMs > 0
+      ? setInterval(runMediaCleanup, MEDIA_CLEANUP_INTERVAL_MS)
+      : null;
+  runMediaCleanup();
+
+  let playwrightRecoveryRunning = false;
+  const runPlaywrightRecovery = () => {
+    const config = params.playwrightRecovery;
+    if (!config?.enabled || playwrightRecoveryRunning) {
+      return;
+    }
+    playwrightRecoveryRunning = true;
+    void reapPlaywrightSessions({
+      staleAfterMs: config.staleAfterMs,
+      dryRun: false,
+      force: true,
+    })
+      .then((result) => {
+        params.logPlaywrightRecovery?.info("playwright recovery completed", {
+          staleAfterMs: result.staleAfterMs,
+          eligibleCount: result.eligibleCount,
+          targetCount: result.targets.length,
+          reapedCount: result.targets.filter((target) => target.remainingPids.length === 0).length,
+          targetedChromeCount: result.targetedChromeCount,
+          targetedCrashpadCount: result.targetedCrashpadCount,
+          ok: result.ok,
+        });
+      })
+      .catch((err) => {
+        params.logPlaywrightRecovery?.warn("playwright recovery failed", {
+          error: formatError(err),
+        });
+      })
+      .finally(() => {
+        playwrightRecoveryRunning = false;
+      });
+  };
+  const playwrightRecoveryInterval =
+    params.playwrightRecovery?.enabled && params.playwrightRecovery.intervalMs > 0
+      ? setInterval(runPlaywrightRecovery, params.playwrightRecovery.intervalMs)
+      : null;
+
+  return {
+    tickInterval,
+    healthInterval,
+    dedupeCleanup,
+    mediaCleanup,
+    playwrightRecoveryInterval,
+  };
 }

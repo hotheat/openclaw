@@ -16,7 +16,7 @@ vi.mock("./store.js", async (importOriginal) => {
   };
 });
 
-const { startMediaServer } = await import("./server.js");
+const { attachMediaRoutes, startMediaServer } = await import("./server.js");
 const { MEDIA_MAX_BYTES } = await import("./store.js");
 
 async function waitForFileRemoval(filePath: string, maxTicks = 1000) {
@@ -72,6 +72,30 @@ describe("media server", () => {
     const res = await fetch(mediaUrl("old"));
     expect(res.status).toBe(410);
     await expect(fs.stat(file)).rejects.toThrow();
+  });
+
+  it("runs periodic cleanup recursively", async () => {
+    cleanOldMedia.mockClear();
+    let intervalCallback: (() => void) | undefined;
+    const intervalHandle = { unref: vi.fn() };
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation((callback) => {
+      intervalCallback = callback as () => void;
+      return intervalHandle as unknown as ReturnType<typeof setInterval>;
+    });
+    const app = { get: vi.fn() };
+
+    try {
+      attachMediaRoutes(app as never, 1_234);
+      intervalCallback?.();
+      await Promise.resolve();
+
+      expect(cleanOldMedia).toHaveBeenCalledWith(1_234, {
+        recursive: true,
+        pruneEmptyDirs: true,
+      });
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it.each([

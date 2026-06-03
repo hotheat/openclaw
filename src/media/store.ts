@@ -12,8 +12,8 @@ import { detectMime, extensionForMime } from "./mime.js";
 
 const resolveMediaDir = () => path.join(resolveConfigDir(), "media");
 export const MEDIA_MAX_BYTES = 5 * 1024 * 1024; // 5MB default
+export const MEDIA_DEFAULT_TTL_MS = 2 * 60 * 1000; // 2 minutes
 const MAX_BYTES = MEDIA_MAX_BYTES;
-const DEFAULT_TTL_MS = 2 * 60 * 1000; // 2 minutes
 type RequestImpl = typeof httpRequest;
 type ResolvePinnedHostnameImpl = typeof resolvePinnedHostname;
 
@@ -85,7 +85,10 @@ export async function ensureMediaDir() {
   return mediaDir;
 }
 
-export async function cleanOldMedia(ttlMs = DEFAULT_TTL_MS) {
+export async function cleanOldMedia(
+  ttlMs = MEDIA_DEFAULT_TTL_MS,
+  opts?: { recursive?: boolean; pruneEmptyDirs?: boolean },
+) {
   const mediaDir = await ensureMediaDir();
   const entries = await fs.readdir(mediaDir).catch(() => []);
   const now = Date.now();
@@ -96,6 +99,12 @@ export async function cleanOldMedia(ttlMs = DEFAULT_TTL_MS) {
         const full = path.join(dir, entry);
         const stat = await fs.stat(full).catch(() => null);
         if (!stat || !stat.isFile()) {
+          if (stat?.isDirectory() && opts?.recursive) {
+            await removeExpiredFilesInDir(full);
+            if (opts.pruneEmptyDirs) {
+              await fs.rmdir(full).catch(() => {});
+            }
+          }
           return;
         }
         if (now - stat.mtimeMs > ttlMs) {
@@ -113,7 +122,13 @@ export async function cleanOldMedia(ttlMs = DEFAULT_TTL_MS) {
         return;
       }
       if (stat.isDirectory()) {
+        if (!opts?.recursive) {
+          return;
+        }
         await removeExpiredFilesInDir(full);
+        if (opts?.pruneEmptyDirs) {
+          await fs.rmdir(full).catch(() => {});
+        }
         return;
       }
       if (stat.isFile() && now - stat.mtimeMs > ttlMs) {

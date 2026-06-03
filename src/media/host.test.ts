@@ -12,7 +12,10 @@ const mocks = vi.hoisted(() => ({
 const { saveMediaSource, getTailnetHostname, ensurePortAvailable, startMediaServer, logInfo } =
   mocks;
 
-vi.mock("./store.js", () => ({ saveMediaSource }));
+vi.mock("./store.js", async () => {
+  const actual = await vi.importActual<typeof import("./store.js")>("./store.js");
+  return { ...actual, saveMediaSource };
+});
 vi.mock("../infra/tailscale.js", () => ({ getTailnetHostname }));
 vi.mock("../infra/ports.js", async () => {
   const actual = await vi.importActual<typeof import("../infra/ports.js")>("../infra/ports.js");

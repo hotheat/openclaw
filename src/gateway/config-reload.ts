@@ -59,6 +59,7 @@ const BASE_RELOAD_RULES: ReloadRule[] = [
   },
   { prefix: "agent.heartbeat", kind: "hot", actions: ["restart-heartbeat"] },
   { prefix: "cron", kind: "hot", actions: ["restart-cron"] },
+  { prefix: "browser.playwrightRecovery", kind: "restart" },
   {
     prefix: "browser",
     kind: "hot",

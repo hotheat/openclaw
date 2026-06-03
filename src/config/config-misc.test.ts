@@ -204,6 +204,43 @@ describe("gateway.channelHealthCheckMinutes", () => {
   });
 });
 
+describe("browser.playwrightRecovery", () => {
+  it("accepts gateway playwright recovery settings", () => {
+    const res = validateConfigObject({
+      browser: {
+        playwrightRecovery: {
+          enabled: true,
+          interval: "30m",
+          staleAfter: "2h",
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
+  it("rejects invalid gateway playwright recovery durations", () => {
+    const res = validateConfigObject({
+      browser: {
+        playwrightRecovery: {
+          interval: "soon",
+          staleAfter: "later",
+        },
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues.map((issue) => issue.path)).toContain(
+        "browser.playwrightRecovery.interval",
+      );
+      expect(res.issues.map((issue) => issue.path)).toContain(
+        "browser.playwrightRecovery.staleAfter",
+      );
+    }
+  });
+});
+
 describe("cron webhook schema", () => {
   it("accepts cron.webhookToken and legacy cron.webhook", () => {
     const res = OpenClawSchema.safeParse({

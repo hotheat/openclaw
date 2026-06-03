@@ -40,6 +40,7 @@ import {
 import { scheduleGatewayUpdateCheck } from "../infra/update-startup.js";
 import { startDiagnosticHeartbeat, stopDiagnosticHeartbeat } from "../logging/diagnostic.js";
 import { createSubsystemLogger, runtimeForLogger } from "../logging/subsystem.js";
+import { MEDIA_DEFAULT_TTL_MS } from "../media/store.js";
 import { getGlobalHookRunner, runGlobalGatewayStopSafely } from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
@@ -63,7 +64,10 @@ import { createGatewayCloseHandler } from "./server-close.js";
 import { buildGatewayCronService } from "./server-cron.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
 import { applyGatewayLaneConcurrency } from "./server-lanes.js";
-import { startGatewayMaintenanceTimers } from "./server-maintenance.js";
+import {
+  resolvePlaywrightRecoveryMaintenanceConfig,
+  startGatewayMaintenanceTimers,
+} from "./server-maintenance.js";
 import { GATEWAY_EVENTS, listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
 import { createExecApprovalHandlers } from "./server-methods/exec-approval.js";
@@ -101,6 +105,8 @@ const logDiscovery = log.child("discovery");
 const logTailscale = log.child("tailscale");
 const logChannels = log.child("channels");
 const logBrowser = log.child("browser");
+const logPlaywrightRecovery = logBrowser.child("playwright-recovery");
+const logMediaCleanup = log.child("media-cleanup");
 const logHealth = log.child("health");
 const logCron = log.child("cron");
 const logReload = log.child("reload");
@@ -481,23 +487,34 @@ export async function startGatewayServer(
   let tickInterval = noopInterval();
   let healthInterval = noopInterval();
   let dedupeCleanup = noopInterval();
+  let mediaCleanup: ReturnType<typeof setInterval> | null = null;
+  let playwrightRecoveryInterval: ReturnType<typeof setInterval> | null = null;
   if (!minimalTestGateway) {
-    ({ tickInterval, healthInterval, dedupeCleanup } = startGatewayMaintenanceTimers({
-      broadcast,
-      nodeSendToAllSubscribed,
-      getPresenceVersion,
-      getHealthVersion,
-      refreshGatewayHealthSnapshot,
-      logHealth,
-      dedupe,
-      chatAbortControllers,
-      chatRunState,
-      chatRunBuffers,
-      chatDeltaSentAt,
-      removeChatRun,
-      agentRunSeq,
-      nodeSendToSession,
-    }));
+    const playwrightRecovery = resolvePlaywrightRecoveryMaintenanceConfig(
+      cfgAtStart.browser?.playwrightRecovery,
+      { log: logPlaywrightRecovery },
+    );
+    ({ tickInterval, healthInterval, dedupeCleanup, mediaCleanup, playwrightRecoveryInterval } =
+      startGatewayMaintenanceTimers({
+        broadcast,
+        nodeSendToAllSubscribed,
+        getPresenceVersion,
+        getHealthVersion,
+        refreshGatewayHealthSnapshot,
+        logHealth,
+        logMediaCleanup,
+        logPlaywrightRecovery,
+        mediaCleanupTtlMs: MEDIA_DEFAULT_TTL_MS,
+        playwrightRecovery,
+        dedupe,
+        chatAbortControllers,
+        chatRunState,
+        chatRunBuffers,
+        chatDeltaSentAt,
+        removeChatRun,
+        agentRunSeq,
+        nodeSendToSession,
+      }));
   }
 
   const agentUnsub = minimalTestGateway
@@ -747,6 +764,8 @@ export async function startGatewayServer(
     tickInterval,
     healthInterval,
     dedupeCleanup,
+    mediaCleanup,
+    playwrightRecoveryInterval,
     agentUnsub,
     heartbeatUnsub,
     chatRunState,

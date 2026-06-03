@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseDurationMs } from "../cli/parse-duration.js";
 import { ToolsSchema } from "./zod-schema.agent-runtime.js";
 import { AgentsSchema, AudioSchema, BindingsSchema, BroadcastSchema } from "./zod-schema.agents.js";
 import { ApprovalsSchema } from "./zod-schema.approvals.js";
@@ -19,6 +20,35 @@ const BrowserSnapshotDefaultsSchema = z
     mode: z.literal("efficient").optional(),
   })
   .strict()
+  .optional();
+
+const BrowserPlaywrightRecoverySchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    interval: z.string().optional(),
+    staleAfter: z.string().optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    for (const key of ["interval", "staleAfter"] as const) {
+      const raw = val[key];
+      if (raw === undefined) {
+        continue;
+      }
+      try {
+        const ms = parseDurationMs(raw);
+        if (ms <= 0) {
+          throw new Error("duration must be positive");
+        }
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: "invalid duration (use ms, s, m, h, d)",
+        });
+      }
+    }
+  })
   .optional();
 
 const NodeHostSchema = z
@@ -229,6 +259,7 @@ export const OpenClawSchema = z
         noSandbox: z.boolean().optional(),
         attachOnly: z.boolean().optional(),
         defaultProfile: z.string().optional(),
+        playwrightRecovery: BrowserPlaywrightRecoverySchema,
         snapshotDefaults: BrowserSnapshotDefaultsSchema,
         ssrfPolicy: z
           .object({

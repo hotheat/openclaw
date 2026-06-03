@@ -183,6 +183,14 @@ export const FIELD_HELP: Record<string, string> = {
     'Per-profile browser driver mode: "clawd" or "extension" depending on connection/runtime strategy. Use the driver that matches your browser control stack to avoid protocol mismatches.',
   "browser.profiles.*.color":
     "Per-profile accent color for visual differentiation in dashboards and browser-related UI hints. Use distinct colors for high-signal operator recognition of active profiles.",
+  "browser.playwrightRecovery":
+    "Gateway maintenance settings for reclaiming stale OpenClaw playwright-cli browser sessions. Keep disabled unless this host runs long-lived Playwright CLI automation.",
+  "browser.playwrightRecovery.enabled":
+    "Enables gateway-managed stale playwright-cli session recovery. The reaper targets OpenClaw-named sessions, explicitly marked sessions, and stale daemon sessions running from OpenClaw workspace directories. It respects keep-open leases.",
+  "browser.playwrightRecovery.interval":
+    "Sweep interval for gateway-managed Playwright recovery as a duration string, for example 30m. Use a conservative cadence to avoid noisy process scans.",
+  "browser.playwrightRecovery.staleAfter":
+    "Minimum stale age before a matching playwright-cli session is eligible for recovery, for example 6h. Keep this longer than normal interactive sessions.",
   "browser.evaluateEnabled":
     "Enables browser-side evaluate helpers for runtime script evaluation capabilities where supported. Keep disabled unless your workflows require evaluate semantics beyond snapshots/navigation.",
   "browser.snapshotDefaults":
