@@ -7,6 +7,7 @@ import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { SESSION_LABEL_MAX_LENGTH } from "../sessions/session-label.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
+import { isDeliverableMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
@@ -23,7 +24,7 @@ import {
 
 export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
-export const SUBAGENT_COMPLETION_DELIVERIES = ["auto", "parent"] as const;
+export const SUBAGENT_COMPLETION_DELIVERIES = ["auto", "parent", "direct"] as const;
 export type SubagentCompletionDelivery = (typeof SUBAGENT_COMPLETION_DELIVERIES)[number];
 
 export type SpawnSubagentParams = {
@@ -212,7 +213,10 @@ export async function spawnSubagentDirect(
         ? params.cleanup
         : "keep";
   const expectsCompletionMessage = params.expectsCompletionMessage !== false;
-  const completionDelivery = params.completionDelivery === "parent" ? "parent" : undefined;
+  const completionDelivery =
+    params.completionDelivery === "parent" || params.completionDelivery === "direct"
+      ? params.completionDelivery
+      : undefined;
   const requesterOrigin = normalizeDeliveryContext({
     channel: ctx.agentChannel,
     accountId: ctx.agentAccountId,
@@ -244,6 +248,19 @@ export async function spawnSubagentDirect(
   });
 
   const callerDepth = getSubagentDepthFromSessionStore(requesterInternalKey, { cfg });
+  if (
+    completionDelivery === "direct" &&
+    callerDepth < 1 &&
+    (!requesterOrigin?.channel ||
+      !isDeliverableMessageChannel(requesterOrigin.channel) ||
+      !requesterOrigin.to)
+  ) {
+    return {
+      status: "error",
+      error:
+        'completionDelivery="direct" requires a deliverable agentChannel and agentTo in the current tool context.',
+    };
+  }
   const maxSpawnDepth =
     cfg.agents?.defaults?.subagents?.maxSpawnDepth ?? DEFAULT_SUBAGENT_MAX_SPAWN_DEPTH;
   if (callerDepth >= maxSpawnDepth) {

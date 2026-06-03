@@ -867,7 +867,10 @@ export function registerSubagentRun(params: {
     task: params.task,
     cleanup: params.cleanup,
     expectsCompletionMessage: params.expectsCompletionMessage,
-    completionDelivery: params.completionDelivery === "parent" ? "parent" : undefined,
+    completionDelivery:
+      params.completionDelivery === "parent" || params.completionDelivery === "direct"
+        ? params.completionDelivery
+        : undefined,
     spawnMode,
     label: params.label,
     sessionLabel: params.sessionLabel,

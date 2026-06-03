@@ -211,4 +211,82 @@ describe("openclaw-tools: subagents (sessions_spawn allowlist)", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.completionDelivery).toBe("parent");
   });
+
+  it("stores direct completion delivery preference for same-agent runs", async () => {
+    mockAcceptedSpawn(5500);
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+
+    const result = await tool.execute("call-direct-delivery", {
+      task: "do thing",
+      completionDelivery: "direct",
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-1",
+    });
+    const runs = listSubagentRunsForRequester("agent:main:main");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.completionDelivery).toBe("direct");
+  });
+
+  it("rejects direct completion delivery without a deliverable target", async () => {
+    mockAcceptedSpawn(5600);
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "feishu",
+    });
+
+    const result = await tool.execute("call-direct-delivery-no-target", {
+      task: "do thing",
+      completionDelivery: "direct",
+    });
+
+    expect(result.details).toMatchObject({
+      status: "error",
+    });
+    const details = result.details as { error?: unknown };
+    expect(String(details.error)).toContain("agentTo");
+    expect(callGatewayMock).not.toHaveBeenCalled();
+    const runs = listSubagentRunsForRequester("agent:main:main");
+    expect(runs).toHaveLength(0);
+  });
+
+  it("allows direct completion delivery from nested requester sessions without an external target", async () => {
+    setSessionsSpawnConfigOverride({
+      session: {
+        mainKey: "main",
+        scope: "per-sender",
+      },
+      agents: {
+        defaults: {
+          subagents: {
+            maxSpawnDepth: 2,
+          },
+        },
+      },
+    });
+    mockAcceptedSpawn(5700);
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:subagent:orchestrator",
+      agentChannel: "feishu",
+    });
+
+    const result = await tool.execute("call-nested-direct-delivery", {
+      task: "do nested thing",
+      completionDelivery: "direct",
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-1",
+    });
+    const runs = listSubagentRunsForRequester("agent:main:subagent:orchestrator");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.completionDelivery).toBe("direct");
+  });
 });

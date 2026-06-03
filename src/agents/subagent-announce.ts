@@ -752,6 +752,17 @@ async function sendSubagentAnnounceDirectly(params: {
       typeof completionDirectOrigin?.to === "string" ? completionDirectOrigin.to.trim() : "";
     const hasCompletionDirectTarget =
       !params.requesterIsSubagent && Boolean(completionChannel) && Boolean(completionTo);
+    if (
+      params.expectsCompletionMessage &&
+      params.completionDelivery === "direct" &&
+      !params.requesterIsSubagent &&
+      (!hasCompletionDirectTarget || !params.completionMessage?.trim())
+    ) {
+      return {
+        delivered: false,
+        path: "direct",
+      };
+    }
 
     if (
       params.expectsCompletionMessage &&
@@ -760,8 +771,9 @@ async function sendSubagentAnnounceDirectly(params: {
       params.completionMessage?.trim()
     ) {
       const forceBoundSessionDirectDelivery =
-        params.spawnMode === "session" &&
-        (params.completionRouteMode === "bound" || params.completionRouteMode === "hook");
+        params.completionDelivery === "direct" ||
+        (params.spawnMode === "session" &&
+          (params.completionRouteMode === "bound" || params.completionRouteMode === "hook"));
       let shouldSendCompletionDirectly = true;
       if (!forceBoundSessionDirectDelivery) {
         let activeDescendantRuns = 0;
@@ -922,6 +934,9 @@ async function deliverSubagentAnnouncement(params: {
   if (direct.delivered || !params.expectsCompletionMessage) {
     return direct;
   }
+  if (params.completionDelivery === "direct") {
+    return direct;
+  }
 
   // If completion path failed direct delivery, try queueing as a fallback so the
   // report can still be delivered once the requester session is idle.
@@ -1054,19 +1069,27 @@ function buildAnnounceReplyInstruction(params: {
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentCompletionDelivery;
 }): string {
+  const parentDeliveryCheck =
+    params.expectsCompletionMessage &&
+    params.completionDelivery === "parent" &&
+    !params.requesterIsSubagent
+      ? [
+          " This completion was routed through you for parent-side delivery checks.",
+          " If the result or the relevant skill instructions explicitly say a generated artifact should be delivered, and that artifact path exists in the current workspace, call the `message` tool to send it before replying.",
+          " Treat a ready final/export path, a delivery manifest that asks the parent to send, a failed child-send status with a verified artifact, or a direct user request for the file as delivery signals.",
+          " Do not auto-send arbitrary log, draft, diagnostic, intermediate, or failed-verification paths.",
+          ` If the \`message\` tool already sent the user-facing update or file, reply ONLY: ${SILENT_REPLY_TOKEN}.`,
+        ].join("")
+      : "";
   if (params.remainingActiveSubagentRuns > 0) {
     const activeRunsLabel = params.remainingActiveSubagentRuns === 1 ? "run" : "runs";
-    return `There are still ${params.remainingActiveSubagentRuns} active subagent ${activeRunsLabel} for this session. If they are part of the same workflow, wait for the remaining results before sending a user update. If they are unrelated, respond normally using only the result above.`;
+    return `There are still ${params.remainingActiveSubagentRuns} active subagent ${activeRunsLabel} for this session. If they are part of the same workflow, wait for the remaining results before sending a user update. If they are unrelated, respond normally using only the result above.${parentDeliveryCheck}`;
   }
   if (params.requesterIsSubagent) {
     return `Convert this completion into a concise internal orchestration update for your parent agent in your own words. Keep this internal context private (don't mention system/log/stats/session details or announce type). If this result is duplicate or no update is needed, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
   }
   if (params.expectsCompletionMessage) {
-    const parentCheck =
-      params.completionDelivery === "parent"
-        ? " This completion was routed through you for parent-side delivery checks; perform any required file/tool delivery before replying."
-        : "";
-    return `A completed ${params.announceType} is ready for user delivery.${parentCheck} Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
+    return `A completed ${params.announceType} is ready for user delivery.${parentDeliveryCheck} Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type).`;
   }
   return `A completed ${params.announceType} is ready for user delivery. Convert the result above into your normal assistant voice and send that user-facing update now. Keep this internal context private (don't mention system/log/stats/session details or announce type), and do not copy the system message verbatim. Reply ONLY: ${SILENT_REPLY_TOKEN} if this exact result was already delivered to the user in this same turn.`;
 }

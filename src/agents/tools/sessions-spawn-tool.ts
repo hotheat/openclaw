@@ -66,7 +66,7 @@ const SessionsSpawnToolSchema = Type.Object({
   }),
   completionDelivery: optionalStringEnum(SUBAGENT_COMPLETION_DELIVERIES, {
     description:
-      "auto may deliver the completion directly to the bound channel. parent forces completion through the requester session so the parent can run post-completion checks or tool-mediated delivery.",
+      "auto may deliver the completion directly to the bound channel. direct requires direct completion delivery when a target is available. parent forces completion through the requester session so the parent can run post-completion checks or tool-mediated delivery.",
   }),
 });
 
@@ -100,7 +100,9 @@ export function createSessionsSpawnTool(opts?: {
       const cleanup =
         params.cleanup === "keep" || params.cleanup === "delete" ? params.cleanup : "keep";
       const completionDelivery =
-        params.completionDelivery === "parent" || params.completionDelivery === "auto"
+        params.completionDelivery === "parent" ||
+        params.completionDelivery === "auto" ||
+        params.completionDelivery === "direct"
           ? params.completionDelivery
           : undefined;
       // Back-compat: older callers used timeoutSeconds for this tool.

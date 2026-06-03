@@ -14,6 +14,12 @@
 - Codex-local engineering notes: `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md`.
 - Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
 - Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
+- Feishu researcher export delivery:
+  - For completion-mode subagents, `subagent_ended` is deliberately deferred until `runSubagentAnnounceFlow()` delivers the completion announcement to the parent session. Refs: `src/agents/subagent-registry.steer-restart.test.ts:168`, `src/agents/subagent-announce.ts:1054`.
+  - Do not assume `subagent_ended` has run before the parent agent handles the completion System Message or calls `message`.
+  - `feishu-researcher-export-mirror` listens to `subagent_ended`; it can mirror researcher exports into the Feishu agent workspace after parent delivery, but it is not a reliable pre-send staging step.
+  - Feishu file delivery must be made safe synchronously in `feishu-file-outbox-router` during `before_tool_call(message)`: resolve `artifacts/exports/feishu/...` from the current Feishu workspace or researcher workspace, derive the current Feishu peer when possible, stage to the peer outbox, and rewrite `filePath` before Feishu sender reads it.
+  - If a `message(filePath=...)` call reaches Feishu sender with the original relative export path, local media safety can reject it with `Local media path is not under an allowed directory`.
 - Installers served from `https://openclaw.ai/*`: live in the sibling repo `../openclaw.ai` (`public/install.sh`, `public/install-cli.sh`, `public/install.ps1`).
 - Messaging channels: always consider **all** built-in + extension channels when refactoring shared logic (routing, allowlists, pairing, command gating, onboarding, docs).
   - Core channel docs: `docs/channels/`
