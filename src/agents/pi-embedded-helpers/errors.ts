@@ -703,6 +703,19 @@ function isJsonApiInternalServerError(raw: string): boolean {
   return value.includes('"type":"api_error"') && value.includes("internal server error");
 }
 
+function isProviderProcessingRequestError(raw: string): boolean {
+  if (!raw) {
+    return false;
+  }
+  const value = raw.toLowerCase();
+  if (!value.includes("an error occurred while processing your request")) {
+    return false;
+  }
+  const hasRetryGuidance = value.includes("retry your request") || value.includes("try again");
+  const hasProviderRequestId = value.includes("request id") || /request[_-]?id/i.test(raw);
+  return hasRetryGuidance && hasProviderRequestId;
+}
+
 export function parseImageDimensionError(raw: string): {
   maxDimensionPx?: number;
   messageIndex?: number;
@@ -812,6 +825,9 @@ export function classifyFailoverReason(raw: string): FailoverReason | null {
     return "timeout";
   }
   if (isJsonApiInternalServerError(raw)) {
+    return "timeout";
+  }
+  if (isProviderProcessingRequestError(raw)) {
     return "timeout";
   }
   if (isRateLimitErrorMessage(raw)) {

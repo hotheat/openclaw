@@ -5,6 +5,12 @@ import { withTempDownloadPath, type ClawdbotConfig } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
+import {
+  bytesToMbCeil,
+  FeishuMediaLimitError,
+  type FeishuMediaLimitConfig,
+  resolveFeishuOutboundLimitBytes,
+} from "./media-limits.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { assertFeishuMessageApiSuccess, toFeishuSendResult } from "./send-result.js";
 import { resolveReceiveIdType, normalizeFeishuTarget } from "./targets.js";
@@ -159,6 +165,88 @@ export type SendMediaResult = {
   messageId: string;
   chatId: string;
 };
+
+function assertOutboundMediaWithinLimit(params: {
+  buffer: Buffer;
+  kind: "image" | "file";
+  config?: FeishuMediaLimitConfig;
+}): void {
+  const limitBytes = resolveFeishuOutboundLimitBytes({
+    config: params.config,
+    kind: params.kind,
+  });
+  if (params.buffer.byteLength <= limitBytes) {
+    return;
+  }
+  throw new FeishuMediaLimitError({
+    direction: "outbound",
+    kind: params.kind,
+    limitMb: bytesToMbCeil(limitBytes),
+    actualMb: bytesToMbCeil(params.buffer.byteLength),
+  });
+}
+
+function isImageFileName(fileName: string): boolean {
+  const ext = path.extname(fileName).toLowerCase();
+  return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
+}
+
+function resolveNameHintForMediaSource(params: {
+  mediaUrl?: string;
+  fileName?: string;
+}): string | undefined {
+  const fileName = params.fileName?.trim();
+  if (fileName) {
+    return fileName;
+  }
+  const mediaUrl = params.mediaUrl?.trim();
+  if (!mediaUrl) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(mediaUrl);
+    return path.basename(parsed.pathname) || undefined;
+  } catch {
+    return path.basename(mediaUrl) || undefined;
+  }
+}
+
+function resolveOutboundMediaKindHint(params: {
+  mediaUrl?: string;
+  fileName?: string;
+}): "image" | "file" | undefined {
+  const name = resolveNameHintForMediaSource(params);
+  if (!name || !path.extname(name)) {
+    return undefined;
+  }
+  return isImageFileName(name) ? "image" : "file";
+}
+
+function isMaxBytesMediaLoadError(err: unknown): boolean {
+  if (typeof err === "object" && err !== null && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (code === "max_bytes") {
+      return true;
+    }
+  }
+  return /\bmaxBytes\b/i.test(String(err));
+}
+
+function maybeCreateOutboundLoadLimitError(params: {
+  err: unknown;
+  kind: "image" | "file";
+  limitBytes: number;
+}): FeishuMediaLimitError | null {
+  if (!isMaxBytesMediaLoadError(params.err)) {
+    return null;
+  }
+  return new FeishuMediaLimitError({
+    direction: "outbound",
+    kind: params.kind,
+    limitMb: bytesToMbCeil(params.limitBytes),
+    cause: params.err,
+  });
+}
 
 /**
  * Upload an image to Feishu and get an image_key for sending.
@@ -406,33 +494,59 @@ export async function sendMediaFeishu(params: {
   if (!account.configured) {
     throw new Error(`Feishu account "${account.accountId}" not configured`);
   }
-  const mediaMaxBytes = (account.config?.mediaMaxMb ?? 30) * 1024 * 1024;
-
   let buffer: Buffer;
   let name: string;
+  let loadedKind: "image" | undefined;
 
   if (mediaBuffer) {
     buffer = mediaBuffer;
     name = fileName ?? "file";
   } else if (mediaUrl) {
-    const loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
-      maxBytes: mediaMaxBytes,
-      optimizeImages: false,
+    const remoteKind = resolveOutboundMediaKindHint({ mediaUrl, fileName });
+    const loadKind = remoteKind ?? "file";
+    const remoteMaxBytes = resolveFeishuOutboundLimitBytes({
+      config: account.config,
+      kind: loadKind,
     });
+    let loaded: Awaited<ReturnType<ReturnType<typeof getFeishuRuntime>["media"]["loadWebMedia"]>>;
+    try {
+      loaded = await getFeishuRuntime().media.loadWebMedia(mediaUrl, {
+        maxBytes: remoteMaxBytes,
+        optimizeImages: false,
+      });
+    } catch (err) {
+      throw (
+        maybeCreateOutboundLoadLimitError({
+          err,
+          kind: loadKind,
+          limitBytes: remoteMaxBytes,
+        }) ?? err
+      );
+    }
     buffer = loaded.buffer;
     name = fileName ?? loaded.fileName ?? "file";
+    loadedKind = loaded.kind === "image" ? "image" : undefined;
   } else {
     throw new Error("Either mediaUrl or mediaBuffer must be provided");
   }
 
-  // Determine if it's an image based on extension
-  const ext = path.extname(name).toLowerCase();
-  const isImage = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
+  // Determine if it's an image from response metadata or filename extension.
+  const isImage = loadedKind === "image" || isImageFileName(name);
 
   if (isImage) {
+    assertOutboundMediaWithinLimit({
+      buffer,
+      kind: "image",
+      config: account.config,
+    });
     const { imageKey } = await uploadImageFeishu({ cfg, image: buffer, accountId });
     return sendImageFeishu({ cfg, to, imageKey, replyToMessageId, accountId });
   } else {
+    assertOutboundMediaWithinLimit({
+      buffer,
+      kind: "file",
+      config: account.config,
+    });
     const fileType = detectFileType(name);
     const { fileKey } = await uploadFileFeishu({
       cfg,

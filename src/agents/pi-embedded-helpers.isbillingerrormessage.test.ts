@@ -399,4 +399,11 @@ describe("classifyFailoverReason", () => {
       ),
     ).toBe("timeout");
   });
+  it("classifies provider processing request-id errors as timeout", () => {
+    const raw =
+      "An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID f85a51a8-1572-4eac-9153-a5bf54405333 in your message.";
+
+    expect(classifyFailoverReason(raw)).toBe("timeout");
+    expect(isFailoverErrorMessage(raw)).toBe(true);
+  });
 });

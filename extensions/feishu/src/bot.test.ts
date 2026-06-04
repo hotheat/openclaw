@@ -432,4 +432,105 @@ describe("handleFeishuMessage command authorization", () => {
       }),
     );
   });
+
+  it("replies with the configured inbound media limit when an attachment is too large", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockSaveMediaBuffer.mockRejectedValueOnce(new Error("Media exceeds 100MB limit"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          inboundMediaMaxMb: 100,
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-large-file-inbound",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "file",
+        content: JSON.stringify({
+          file_key: "file_large_payload",
+          file_name: "large.pptx",
+        }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockSendMessageFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "user:ou-sender",
+        text: "文件超过入站上限 100MB，请压缩后重发。",
+        replyToMessageId: "msg-large-file-inbound",
+        accountId: "default",
+      }),
+    );
+    expect(mockFinalizeInboundContext).not.toHaveBeenCalled();
+    expect(mockDispatchReplyFromConfig).not.toHaveBeenCalled();
+  });
+
+  it("dispatches post text when all embedded images exceed the inbound media limit", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockSaveMediaBuffer.mockRejectedValueOnce(new Error("Media exceeds 100MB limit"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          mediaMaxMb: 100,
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-post-large-image",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "post",
+        content: JSON.stringify({
+          title: "Post title",
+          content: [
+            [
+              { tag: "text", text: "Please analyze this post." },
+              { tag: "img", image_key: "img_v3_large_payload" },
+            ],
+          ],
+        }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockSendMessageFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "user:ou-sender",
+        text: "图片超过入站上限 100MB，请压缩后重发。",
+        replyToMessageId: "msg-post-large-image",
+        accountId: "default",
+      }),
+    );
+    expect(mockFinalizeInboundContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        BodyForAgent: "Post title\n\nPlease analyze this post.",
+        RawBody: "Post title\n\nPlease analyze this post.",
+        CommandBody: "Post title\n\nPlease analyze this post.",
+      }),
+    );
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
 });

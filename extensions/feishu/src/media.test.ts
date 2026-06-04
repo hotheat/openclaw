@@ -10,6 +10,7 @@ const resolveReceiveIdTypeMock = vi.hoisted(() => vi.fn());
 const loadWebMediaMock = vi.hoisted(() => vi.fn());
 
 const fileCreateMock = vi.hoisted(() => vi.fn());
+const imageCreateMock = vi.hoisted(() => vi.fn());
 const imageGetMock = vi.hoisted(() => vi.fn());
 const messageCreateMock = vi.hoisted(() => vi.fn());
 const messageResourceGetMock = vi.hoisted(() => vi.fn());
@@ -36,6 +37,7 @@ vi.mock("./runtime.js", () => ({
   }),
 }));
 
+import { FeishuMediaLimitError } from "./media-limits.js";
 import { downloadImageFeishu, downloadMessageResourceFeishu, sendMediaFeishu } from "./media.js";
 
 function expectPathIsolatedToTmpRoot(pathValue: string, key: string): void {
@@ -70,6 +72,7 @@ describe("sendMediaFeishu msg_type routing", () => {
           create: fileCreateMock,
         },
         image: {
+          create: imageCreateMock,
           get: imageGetMock,
         },
         message: {
@@ -85,6 +88,11 @@ describe("sendMediaFeishu msg_type routing", () => {
     fileCreateMock.mockResolvedValue({
       code: 0,
       data: { file_key: "file_key_1" },
+    });
+
+    imageCreateMock.mockResolvedValue({
+      code: 0,
+      data: { image_key: "image_key_1" },
     });
 
     messageCreateMock.mockResolvedValue({
@@ -169,6 +177,202 @@ describe("sendMediaFeishu msg_type routing", () => {
         data: expect.objectContaining({ msg_type: "file" }),
       }),
     );
+  });
+
+  it("rejects outbound files above Feishu's 30MB upload limit", async () => {
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundFileMaxMb: 30 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await expect(
+      sendMediaFeishu({
+        cfg: {} as any,
+        to: "user:ou_target",
+        mediaBuffer: Buffer.alloc(31 * 1024 * 1024),
+        fileName: "large.pptx",
+      }),
+    ).rejects.toMatchObject({
+      name: "FeishuMediaLimitError",
+      message: "文件超过飞书发送上限 30MB，当前约 31MB，请压缩后再发送。",
+    } satisfies Partial<FeishuMediaLimitError>);
+
+    expect(fileCreateMock).not.toHaveBeenCalled();
+    expect(messageCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects outbound images above Feishu's 10MB upload limit", async () => {
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundImageMaxMb: 10 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await expect(
+      sendMediaFeishu({
+        cfg: {} as any,
+        to: "user:ou_target",
+        mediaBuffer: Buffer.alloc(11 * 1024 * 1024),
+        fileName: "large.png",
+      }),
+    ).rejects.toMatchObject({
+      name: "FeishuMediaLimitError",
+      message: "图片超过飞书发送上限 10MB，当前约 11MB，请压缩后再发送。",
+    } satisfies Partial<FeishuMediaLimitError>);
+
+    expect(fileCreateMock).not.toHaveBeenCalled();
+    expect(messageCreateMock).not.toHaveBeenCalled();
+  });
+
+  it("passes outboundFileMaxMb to remote media loading", async () => {
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundFileMaxMb: 30 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaUrl: "https://example.com/report.pdf",
+      fileName: "report.pdf",
+    });
+
+    expect(loadWebMediaMock).toHaveBeenCalledWith(
+      "https://example.com/report.pdf",
+      expect.objectContaining({
+        maxBytes: 30 * 1024 * 1024,
+      }),
+    );
+  });
+
+  it("passes outboundImageMaxMb to remote image loading", async () => {
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundFileMaxMb: 30, outboundImageMaxMb: 10 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaUrl: "https://example.com/photo.png",
+      fileName: "photo.png",
+    });
+
+    expect(loadWebMediaMock).toHaveBeenCalledWith(
+      "https://example.com/photo.png",
+      expect.objectContaining({
+        maxBytes: 10 * 1024 * 1024,
+      }),
+    );
+  });
+
+  it("uses the file cap for remote media with unknown type before response metadata is known", async () => {
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundFileMaxMb: 30, outboundImageMaxMb: 10 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaUrl: "https://example.com/download",
+    });
+
+    expect(loadWebMediaMock).toHaveBeenCalledWith(
+      "https://example.com/download",
+      expect.objectContaining({
+        maxBytes: 30 * 1024 * 1024,
+      }),
+    );
+  });
+
+  it("allows extensionless remote documents above the image cap and below the file cap", async () => {
+    const document = Buffer.alloc(11 * 1024 * 1024);
+    loadWebMediaMock.mockImplementationOnce(async (_url, options?: { maxBytes?: number }) => {
+      if (options?.maxBytes !== undefined && document.byteLength > options.maxBytes) {
+        throw Object.assign(new Error(`payload exceeds maxBytes ${options.maxBytes}`), {
+          code: "max_bytes",
+        });
+      }
+      return {
+        buffer: document,
+        fileName: "download.pdf",
+        kind: "document",
+        contentType: "application/pdf",
+      };
+    });
+    resolveFeishuAccountMock.mockReturnValueOnce({
+      configured: true,
+      accountId: "main",
+      config: { outboundFileMaxMb: 30, outboundImageMaxMb: 10 },
+      appId: "app_id",
+      appSecret: "app_secret",
+      domain: "feishu",
+    });
+
+    await sendMediaFeishu({
+      cfg: {} as any,
+      to: "user:ou_target",
+      mediaUrl: "https://example.com/download?id=report",
+    });
+
+    expect(loadWebMediaMock).toHaveBeenCalledWith(
+      "https://example.com/download?id=report",
+      expect.objectContaining({
+        maxBytes: 30 * 1024 * 1024,
+      }),
+    );
+    expect(fileCreateMock).toHaveBeenCalledTimes(1);
+    expect(imageCreateMock).not.toHaveBeenCalled();
+    expect(messageCreateMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          msg_type: "file",
+        }),
+      }),
+    );
+  });
+
+  it("wraps remote image fetch size failures as Feishu image limit errors", async () => {
+    const err = Object.assign(new Error("payload exceeds maxBytes 10485760"), {
+      code: "max_bytes",
+    });
+    loadWebMediaMock.mockRejectedValueOnce(err);
+
+    await expect(
+      sendMediaFeishu({
+        cfg: {} as any,
+        to: "user:ou_target",
+        mediaUrl: "https://example.com/large.png",
+        fileName: "large.png",
+      }),
+    ).rejects.toMatchObject({
+      name: "FeishuMediaLimitError",
+      message: "图片超过飞书发送上限 10MB，请压缩后再发送。",
+    } satisfies Partial<FeishuMediaLimitError>);
+
+    expect(imageCreateMock).not.toHaveBeenCalled();
+    expect(fileCreateMock).not.toHaveBeenCalled();
+    expect(messageCreateMock).not.toHaveBeenCalled();
   });
 
   it("uses msg_type=media when replying with mp4", async () => {

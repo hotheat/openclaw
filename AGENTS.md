@@ -69,7 +69,8 @@
 - Core build: `pnpm build`
 - Full checks: `pnpm check`
 - Main test suite: `pnpm test`
-- Do not proactively run `make test`; it can raise CPU and memory usage. Run it only when the user explicitly asks for it.
+- Default test scope: run only targeted tests for files or surfaces changed in the current task.
+- Do not proactively run full-suite test commands such as `make test`, `pnpm test`, or `pnpm test:fast`; they can raise CPU and memory usage. Ask the user first and run them only after explicit approval.
 - Fast unit slice: `pnpm test:fast`
 - Extension tests: `vitest run --config vitest.extensions.config.ts`
 - E2E slice: `pnpm test:e2e`

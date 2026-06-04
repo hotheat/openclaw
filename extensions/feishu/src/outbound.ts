@@ -1,4 +1,5 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
+import { isFeishuMediaLimitError } from "./media-limits.js";
 import { sendMediaFeishu } from "./media.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMessageFeishu } from "./send.js";
@@ -30,6 +31,9 @@ export const feishuOutbound: ChannelOutboundAdapter = {
         return { channel: "feishu", ...result };
       } catch (err) {
         console.error(`[feishu] sendMediaFeishu failed:`, err);
+        if (isFeishuMediaLimitError(err)) {
+          throw err;
+        }
         throw new Error("Feishu media send failed", { cause: err });
       }
     }

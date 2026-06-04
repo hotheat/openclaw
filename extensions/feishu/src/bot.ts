@@ -15,6 +15,11 @@ import { createFeishuClient } from "./client.js";
 import { tryRecordMessagePersistent } from "./dedup.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
 import { normalizeFeishuExternalKey } from "./external-keys.js";
+import {
+  maybeCreateInboundLimitError,
+  resolveFeishuInboundLimitBytes,
+  type FeishuMediaLimitError,
+} from "./media-limits.js";
 import { downloadMessageResourceFeishu } from "./media.js";
 import {
   escapeRegExp,
@@ -84,6 +89,11 @@ const PERMISSION_ERROR_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 type SenderNameResult = {
   name?: string;
   permissionError?: PermissionError;
+};
+
+type FeishuMediaResolveResult = {
+  mediaList: FeishuMediaInfo[];
+  limitErrors: FeishuMediaLimitError[];
 };
 
 async function resolveFeishuSenderName(params: {
@@ -348,23 +358,24 @@ async function resolveFeishuMediaList(params: {
   maxBytes: number;
   log?: (msg: string) => void;
   accountId?: string;
-}): Promise<FeishuMediaInfo[]> {
+}): Promise<FeishuMediaResolveResult> {
   const { cfg, messageId, messageType, content, maxBytes, log, accountId } = params;
 
   // Only process media message types (including post for embedded images)
   const mediaTypes = ["image", "file", "audio", "video", "sticker", "post"];
   if (!mediaTypes.includes(messageType)) {
-    return [];
+    return { mediaList: [], limitErrors: [] };
   }
 
   const out: FeishuMediaInfo[] = [];
+  const limitErrors: FeishuMediaLimitError[] = [];
   const core = getFeishuRuntime();
 
   // Handle post (rich text) messages with embedded images
   if (messageType === "post") {
     const { imageKeys } = parsePostContent(content);
     if (imageKeys.length === 0) {
-      return [];
+      return { mediaList: [], limitErrors: [] };
     }
 
     log?.(`feishu: post message contains ${imageKeys.length} embedded image(s)`);
@@ -400,17 +411,27 @@ async function resolveFeishuMediaList(params: {
 
         log?.(`feishu: downloaded embedded image ${imageKey}, saved to ${saved.path}`);
       } catch (err) {
-        log?.(`feishu: failed to download embedded image ${imageKey}: ${String(err)}`);
+        const limitError = maybeCreateInboundLimitError({
+          err,
+          kind: "image",
+          limitBytes: maxBytes,
+        });
+        if (limitError) {
+          limitErrors.push(limitError);
+        }
+        log?.(
+          `feishu: failed to download embedded image ${imageKey}: ${String(limitError ?? err)}`,
+        );
       }
     }
 
-    return out;
+    return { mediaList: out, limitErrors };
   }
 
   // Handle other media types
   const mediaKeys = parseMediaKeys(content, messageType);
   if (!mediaKeys.imageKey && !mediaKeys.fileKey) {
-    return [];
+    return { mediaList: [], limitErrors: [] };
   }
 
   try {
@@ -422,7 +443,7 @@ async function resolveFeishuMediaList(params: {
     // The image.get API is only for images uploaded via im/v1/images, not for message attachments
     const fileKey = mediaKeys.fileKey || mediaKeys.imageKey;
     if (!fileKey) {
-      return [];
+      return { mediaList: [], limitErrors: [] };
     }
 
     const resourceType = messageType === "image" ? "image" : "file";
@@ -459,10 +480,18 @@ async function resolveFeishuMediaList(params: {
 
     log?.(`feishu: downloaded ${messageType} media, saved to ${saved.path}`);
   } catch (err) {
-    log?.(`feishu: failed to download ${messageType} media: ${String(err)}`);
+    const limitError = maybeCreateInboundLimitError({
+      err,
+      kind: messageType === "image" ? "image" : "file",
+      limitBytes: maxBytes,
+    });
+    if (limitError) {
+      limitErrors.push(limitError);
+    }
+    log?.(`feishu: failed to download ${messageType} media: ${String(limitError ?? err)}`);
   }
 
-  return out;
+  return { mediaList: out, limitErrors };
 }
 
 /**
@@ -791,8 +820,8 @@ export async function handleFeishuMessage(params: {
     });
 
     // Resolve media from message
-    const mediaMaxBytes = (feishuCfg?.mediaMaxMb ?? 30) * 1024 * 1024; // 30MB default
-    const mediaList = await resolveFeishuMediaList({
+    const mediaMaxBytes = resolveFeishuInboundLimitBytes(feishuCfg);
+    const mediaResult = await resolveFeishuMediaList({
       cfg,
       messageId: ctx.messageId,
       messageType: event.message.message_type,
@@ -801,6 +830,28 @@ export async function handleFeishuMessage(params: {
       log,
       accountId: account.accountId,
     });
+    if (mediaResult.limitErrors.length > 0) {
+      const uniqueMessages = [...new Set(mediaResult.limitErrors.map((err) => err.message))];
+      const text = uniqueMessages.join("\n");
+      try {
+        await sendMessageFeishu({
+          cfg,
+          to: feishuTo,
+          text,
+          replyToMessageId: ctx.messageId,
+          accountId: account.accountId,
+        });
+      } catch (err) {
+        log(`feishu[${account.accountId}]: media limit reply failed: ${String(err)}`);
+      }
+      if (
+        mediaResult.mediaList.length === 0 &&
+        ["image", "file", "audio", "video", "sticker"].includes(event.message.message_type)
+      ) {
+        return;
+      }
+    }
+    const mediaList = mediaResult.mediaList;
     const mediaPayload = buildAgentMediaPayload(mediaList);
 
     // Fetch quoted/replied message content if parentId exists

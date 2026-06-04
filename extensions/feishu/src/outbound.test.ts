@@ -22,6 +22,7 @@ vi.mock("./runtime.js", () => ({
   }),
 }));
 
+import { FeishuMediaLimitError } from "./media-limits.js";
 import { feishuOutbound } from "./outbound.js";
 
 describe("feishuOutbound.sendMedia", () => {
@@ -56,5 +57,25 @@ describe("feishuOutbound.sendMedia", () => {
         text: "📎 /tmp/demo.zip",
       }),
     );
+  });
+
+  it("preserves media limit errors so users can see the exact limit", async () => {
+    const limitError = new FeishuMediaLimitError({
+      direction: "outbound",
+      kind: "file",
+      limitMb: 30,
+      actualMb: 31,
+    });
+    sendMediaFeishuMock.mockRejectedValueOnce(limitError);
+
+    await expect(
+      feishuOutbound.sendMedia?.({
+        cfg: {} as never,
+        to: "chat:oc_1",
+        text: "",
+        mediaUrl: "/tmp/large.pptx",
+        accountId: undefined,
+      } as never),
+    ).rejects.toBe(limitError);
   });
 });

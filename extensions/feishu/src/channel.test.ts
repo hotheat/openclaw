@@ -64,3 +64,37 @@ describe("feishuPlugin.agentPrompt.messageToolHints", () => {
     ).toBe(true);
   });
 });
+
+describe("feishuPlugin config schema", () => {
+  const mediaLimitKeys = [
+    "mediaMaxMb",
+    "inboundMediaMaxMb",
+    "outboundFileMaxMb",
+    "outboundImageMaxMb",
+  ];
+
+  it("rejects zero media limits consistently with runtime config validation", () => {
+    const properties = feishuPlugin.configSchema?.schema.properties as Record<
+      string,
+      Record<string, unknown>
+    >;
+
+    for (const key of mediaLimitKeys) {
+      expect(properties[key]).toMatchObject({ type: "number", exclusiveMinimum: 0 });
+      expect(properties[key]).not.toHaveProperty("minimum");
+    }
+  });
+
+  it("exposes media limit overrides on per-account configs", () => {
+    const properties = feishuPlugin.configSchema?.schema.properties as Record<string, unknown>;
+    const accountsSchema = properties.accounts as {
+      additionalProperties: { properties: Record<string, Record<string, unknown>> };
+    };
+    const accountProperties = accountsSchema.additionalProperties.properties;
+
+    for (const key of mediaLimitKeys) {
+      expect(accountProperties[key]).toMatchObject({ type: "number", exclusiveMinimum: 0 });
+      expect(accountProperties[key]).not.toHaveProperty("minimum");
+    }
+  });
+});
