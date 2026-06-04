@@ -126,6 +126,7 @@ const RUN_RETRY_ITERATIONS_PER_PROFILE = 8;
 const MIN_RUN_RETRY_ITERATIONS = 32;
 const MAX_RUN_RETRY_ITERATIONS = 160;
 const MAX_COMPLETION_CONTRACT_CONTINUATIONS = 2;
+const RATE_LIMIT_ASSISTANT_ERROR_FALLBACK_THRESHOLD = 2;
 
 function resolveMaxRunRetryIterations(profileCandidateCount: number): number {
   const scaled =
@@ -1201,8 +1202,25 @@ export async function runEmbeddedPiAgent(
             const rateLimitFailure = isRateLimitAssistantError(lastAssistant);
             const billingFailure = isBillingAssistantError(lastAssistant);
             const failoverFailure = isFailoverAssistantError(lastAssistant);
+            const hasUserFacingReply =
+              attempt.didSendViaMessagingTool ||
+              attempt.assistantTexts.some((text) => text.trim().length > 0);
+            const canUseAssistantErrorHistory =
+              lastAssistant?.stopReason === "error" || !hasUserFacingReply;
+            const rateLimitAssistantErrors = attempt.assistantErrors.filter((message) =>
+              isRateLimitAssistantError(message),
+            );
+            const shouldUseRateLimitHistory =
+              canUseAssistantErrorHistory &&
+              rateLimitAssistantErrors.length >= RATE_LIMIT_ASSISTANT_ERROR_FALLBACK_THRESHOLD;
+            const directAssistantFailoverMessage = failoverFailure ? lastAssistant : undefined;
+            const assistantFailoverMessage =
+              directAssistantFailoverMessage ??
+              (shouldUseRateLimitHistory
+                ? rateLimitAssistantErrors[rateLimitAssistantErrors.length - 1]
+                : undefined);
             const assistantFailoverReason = classifyFailoverReason(
-              lastAssistant?.errorMessage ?? "",
+              assistantFailoverMessage?.errorMessage ?? "",
             );
             const cloudCodeAssistFormatError = attempt.cloudCodeAssistFormatError;
             const imageDimensionError = parseImageDimensionError(lastAssistant?.errorMessage ?? "");
@@ -1229,7 +1247,8 @@ export async function runEmbeddedPiAgent(
             // Rotate on timeout to try another account/model path in this turn,
             // but exclude post-prompt compaction timeouts (model succeeded; no profile issue).
             const shouldRotate =
-              (!aborted && failoverFailure) || (timedOut && !timedOutDuringCompaction);
+              (!aborted && Boolean(assistantFailoverMessage)) ||
+              (timedOut && !timedOutDuringCompaction);
 
             if (shouldRotate) {
               if (lastProfileId) {
@@ -1261,15 +1280,21 @@ export async function runEmbeddedPiAgent(
 
               if (fallbackConfigured) {
                 // Prefer formatted error message (user-friendly) over raw errorMessage
+                const failoverErrorContext = resolveActiveErrorContext({
+                  lastAssistant: assistantFailoverMessage,
+                  provider: activeErrorContext.provider,
+                  model: activeErrorContext.model,
+                });
                 const message =
-                  (lastAssistant
-                    ? formatAssistantErrorText(lastAssistant, {
+                  (assistantFailoverMessage
+                    ? formatAssistantErrorText(assistantFailoverMessage, {
                         cfg: params.config,
                         sessionKey: params.sessionKey ?? params.sessionId,
-                        provider: activeErrorContext.provider,
-                        model: activeErrorContext.model,
+                        provider: failoverErrorContext.provider,
+                        model: failoverErrorContext.model,
                       })
                     : undefined) ||
+                  assistantFailoverMessage?.errorMessage?.trim() ||
                   lastAssistant?.errorMessage?.trim() ||
                   (timedOut
                     ? "LLM request timed out."
@@ -1288,8 +1313,8 @@ export async function runEmbeddedPiAgent(
                   (isTimeoutErrorMessage(message) ? 408 : undefined);
                 throw new FailoverError(message, {
                   reason: assistantFailoverReason ?? "unknown",
-                  provider: activeErrorContext.provider,
-                  model: activeErrorContext.model,
+                  provider: failoverErrorContext.provider,
+                  model: failoverErrorContext.model,
                   profileId: lastProfileId,
                   status,
                 });

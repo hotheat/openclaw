@@ -35,6 +35,7 @@ export function makeAttemptResult(
     assistantTexts: ["Hello!"],
     toolMetas: [],
     lastAssistant: undefined,
+    assistantErrors: [],
     messagesSnapshot: [],
     didSendViaMessagingTool: false,
     messagingToolSentTexts: [],

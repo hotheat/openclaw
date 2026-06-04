@@ -20,6 +20,7 @@ function makeAttemptResult(
     assistantTexts: [],
     toolMetas: [],
     lastAssistant: undefined,
+    assistantErrors: [],
     lastToolError: undefined,
     didSendViaMessagingTool: false,
     messagingToolSentTexts: [],

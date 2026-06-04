@@ -70,6 +70,7 @@ const makeAttempt = (overrides: Partial<EmbeddedRunAttemptResult>): EmbeddedRunA
   assistantTexts: [],
   toolMetas: [],
   lastAssistant: undefined,
+  assistantErrors: [],
   didSendViaMessagingTool: false,
   messagingToolSentTexts: [],
   messagingToolSentMediaUrls: [],
@@ -513,6 +514,171 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
       });
 
       expect(runEmbeddedAttemptMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("fails over after repeated assistant rate-limit errors even if the final error is generic", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir, {
+        usageStats: {
+          "openai:p1": { lastUsed: 1 },
+          "openai:p2": { lastUsed: 2, cooldownUntil: Date.now() + 60 * 60 * 1000 },
+        },
+      });
+      const firstRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: one)",
+      });
+      const secondRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: two)",
+        provider: "openrouter",
+        model: "deepseek-r1",
+      });
+
+      runEmbeddedAttemptMock.mockResolvedValueOnce(
+        makeAttempt({
+          assistantTexts: [],
+          assistantErrors: [firstRateLimit, secondRateLimit],
+          lastAssistant: buildAssistant({
+            stopReason: "error",
+            errorMessage: "Unknown error",
+          }),
+        }),
+      );
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:test",
+          sessionKey: "agent:test:rate-limit-history-failover",
+          sessionFile: path.join(workspaceDir, "session.jsonl"),
+          workspaceDir,
+          agentDir,
+          config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          authProfileIdSource: "auto",
+          timeoutMs: 5_000,
+          runId: "run:rate-limit-history-failover",
+        }),
+      ).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "rate_limit",
+        provider: "openrouter",
+        model: "deepseek-r1",
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not let repeated assistant rate-limit errors override a later classified error", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir, {
+        usageStats: {
+          "openai:p1": { lastUsed: 1 },
+          "openai:p2": { lastUsed: 2, cooldownUntil: Date.now() + 60 * 60 * 1000 },
+        },
+      });
+      const firstRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: one)",
+      });
+      const secondRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: two)",
+      });
+      const finalBilling = buildAssistant({
+        stopReason: "error",
+        errorMessage: "insufficient credits",
+      });
+
+      runEmbeddedAttemptMock.mockResolvedValueOnce(
+        makeAttempt({
+          assistantTexts: [],
+          assistantErrors: [firstRateLimit, secondRateLimit, finalBilling],
+          lastAssistant: finalBilling,
+        }),
+      );
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:test",
+          sessionKey: "agent:test:rate-limit-history-does-not-mask-billing",
+          sessionFile: path.join(workspaceDir, "session.jsonl"),
+          workspaceDir,
+          agentDir,
+          config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          authProfileIdSource: "auto",
+          timeoutMs: 5_000,
+          runId: "run:rate-limit-history-does-not-mask-billing",
+        }),
+      ).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "billing",
+        provider: "openai",
+        model: "mock-1",
+      });
+
+      const usageStats = await readUsageStats(agentDir);
+      expect(usageStats["openai:p1"]?.disabledReason).toBe("billing");
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not fail over when repeated assistant rate-limit errors recover to a final reply", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir, {
+        usageStats: {
+          "openai:p1": { lastUsed: 1 },
+          "openai:p2": { lastUsed: 2, cooldownUntil: Date.now() + 60 * 60 * 1000 },
+        },
+      });
+      const firstRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: one)",
+      });
+      const secondRateLimit = buildAssistant({
+        stopReason: "error",
+        errorMessage: "429 Too many pending requests, please retry later (request id: two)",
+      });
+      const finalReply = buildAssistant({
+        stopReason: "stop",
+        content: [{ type: "text", text: "ok" }],
+      });
+
+      runEmbeddedAttemptMock.mockResolvedValueOnce(
+        makeAttempt({
+          assistantTexts: ["ok"],
+          assistantErrors: [firstRateLimit, secondRateLimit],
+          lastAssistant: finalReply,
+        }),
+      );
+
+      const result = await runEmbeddedPiAgent({
+        sessionId: "session:test",
+        sessionKey: "agent:test:rate-limit-history-recovers",
+        sessionFile: path.join(workspaceDir, "session.jsonl"),
+        workspaceDir,
+        agentDir,
+        config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+        prompt: "hello",
+        provider: "openai",
+        model: "mock-1",
+        authProfileIdSource: "auto",
+        timeoutMs: 5_000,
+        runId: "run:rate-limit-history-recovers",
+      });
+
+      expect(result.payloads?.[0]?.text).toBe("ok");
+      const usageStats = await readUsageStats(agentDir);
+      expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
+      expect(usageStats["openai:p1"]?.disabledReason).toBeUndefined();
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { ImageContent } from "@mariozechner/pi-ai";
+import type { AssistantMessage, ImageContent } from "@mariozechner/pi-ai";
 import { streamSimple } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
@@ -988,6 +988,7 @@ export async function runEmbeddedAttempt(
       );
 
       let messagesSnapshot: AgentMessage[] = [];
+      let promptStartMessageCount = activeSession.messages.length;
       let sessionIdUsed = activeSession.sessionId;
       const onAbort = () => {
         const reason = params.abortSignal ? getAbortReason(params.abortSignal) : undefined;
@@ -1166,6 +1167,8 @@ export async function runEmbeddedAttempt(
               });
           }
 
+          promptStartMessageCount = activeSession.messages.length;
+
           // Only pass images option if there are actually images to pass
           // This avoids potential issues with models that don't expect the images parameter
           if (imageResult.images.length > 0) {
@@ -1326,6 +1329,9 @@ export async function runEmbeddedAttempt(
         .slice()
         .toReversed()
         .find((m) => m.role === "assistant");
+      const assistantErrors = messagesSnapshot
+        .slice(promptStartMessageCount)
+        .filter((m): m is AssistantMessage => m.role === "assistant" && m.stopReason === "error");
 
       const toolMetasNormalized = toolMetas
         .filter(
@@ -1370,6 +1376,7 @@ export async function runEmbeddedAttempt(
         assistantTexts,
         toolMetas: toolMetasNormalized,
         lastAssistant,
+        assistantErrors,
         lastToolError: getLastToolError?.(),
         didSendViaMessagingTool: didSendViaMessagingTool(),
         messagingToolSentTexts: getMessagingToolSentTexts(),
