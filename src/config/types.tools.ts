@@ -506,6 +506,12 @@ export type ToolsConfig = {
         /** Timeout in seconds for Firecrawl requests. */
         timeoutSeconds?: number;
       };
+      jinaReader?: {
+        /** Enable Jina Reader fallback after Firecrawl credit errors. */
+        enabled?: boolean;
+        /** Jina Reader API key (used when enabled; defaults to JINA_API_KEY env var). */
+        apiKey?: string;
+      };
     };
   };
   media?: MediaToolsConfig;

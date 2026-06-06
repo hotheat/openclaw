@@ -594,6 +594,10 @@ export const FIELD_HELP: Record<string, string> = {
   "tools.web.fetch.firecrawl.maxAgeMs":
     "Firecrawl maxAge (ms) for cached results when supported by the API.",
   "tools.web.fetch.firecrawl.timeoutSeconds": "Timeout in seconds for Firecrawl requests.",
+  "tools.web.fetch.jinaReader.enabled":
+    "Explicitly enable Jina Reader fallback after Firecrawl returns a credit error.",
+  "tools.web.fetch.jinaReader.apiKey":
+    "Jina Reader API key used when Jina Reader fallback is enabled (fallback: JINA_API_KEY env var).",
   models:
     "Model catalog root for provider definitions, merge/replace behavior, and optional Bedrock discovery integration. Keep provider definitions explicit and validated before relying on production failover paths.",
   "models.mode":

@@ -233,6 +233,8 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.web.fetch.firecrawl.onlyMainContent": "Firecrawl Main Content Only",
   "tools.web.fetch.firecrawl.maxAgeMs": "Firecrawl Cache Max Age (ms)",
   "tools.web.fetch.firecrawl.timeoutSeconds": "Firecrawl Timeout (sec)",
+  "tools.web.fetch.jinaReader.enabled": "Enable Jina Reader Fallback",
+  "tools.web.fetch.jinaReader.apiKey": "Jina Reader API Key",
   "gateway.controlUi.basePath": "Control UI Base Path",
   "gateway.controlUi.root": "Control UI Assets Root",
   "gateway.controlUi.allowedOrigins": "Control UI Allowed Origins",

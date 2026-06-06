@@ -50,6 +50,14 @@ function firecrawlError(): MockResponse {
   };
 }
 
+function firecrawlCreditError(): MockResponse {
+  return {
+    ok: false,
+    status: 402,
+    json: async () => ({ success: false, error: "Insufficient credits" }),
+  };
+}
+
 function scrapeResponse(
   markdown: string,
   url = "https://example.com/",
@@ -511,6 +519,109 @@ describe("web_fetch extraction fallbacks", () => {
     const details = result?.details as { extractor?: string; text?: string };
     expect(details.extractor).toBe("firecrawl");
     expect(details.text).toContain("firecrawl fallback");
+  });
+
+  it("falls through to Jina Reader when firecrawl returns 402", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    vi.stubEnv("JINA_API_KEY", "jina-test-key");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlCreditError()) as Promise<Response>;
+      }
+      if (url.startsWith("https://r.jina.ai/")) {
+        return Promise.resolve(
+          textResponse("# jina title\n\njina reader fallback", url, "text/markdown"),
+        ) as Promise<Response>;
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 403,
+        headers: makeHeaders({ "content-type": "text/html" }),
+        text: async () => "blocked",
+      } as Response);
+    });
+
+    const tool = createFetchTool({
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
+      jinaReader: { enabled: true },
+    });
+
+    const result = await tool?.execute?.("call", { url: "https://example.com/blocked-jina" });
+    const details = result?.details as { extractor?: string; text?: string; finalUrl?: string };
+    expect(details.extractor).toBe("jina-reader");
+    expect(details.finalUrl).toBe("https://example.com/blocked-jina");
+    expect(details.text).toContain("jina reader fallback");
+
+    const jinaCall = mockFetch.mock.calls.find(([input]) =>
+      requestUrl(input).startsWith("https://r.jina.ai/"),
+    );
+    expect(jinaCall?.[0]).toBe("https://r.jina.ai/https://example.com/blocked-jina");
+    expect(jinaCall?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer jina-test-key",
+    });
+  });
+
+  it("does not use Jina Reader for non-credit firecrawl errors", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    vi.stubEnv("JINA_API_KEY", "jina-test-key");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlError()) as Promise<Response>;
+      }
+      if (url.startsWith("https://r.jina.ai/")) {
+        return Promise.resolve(textResponse("unexpected jina")) as Promise<Response>;
+      }
+      return Promise.reject(new Error("network down"));
+    });
+
+    const tool = createFetchTool({
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
+      jinaReader: { enabled: true },
+    });
+
+    await expect(
+      tool?.execute?.("call", { url: "https://example.com/firecrawl-403" }),
+    ).rejects.toThrow(/firecrawl: Firecrawl fetch failed \(403\):/);
+    expect(
+      mockFetch.mock.calls.some(([input]) => requestUrl(input).startsWith("https://r.jina.ai/")),
+    ).toBe(false);
+  });
+
+  it("does not auto-enable Jina Reader from JINA_API_KEY alone", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    vi.stubEnv("JINA_API_KEY", "jina-test-key");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      if (url.includes("scrape.internal")) {
+        return Promise.resolve(scrapeErrorResponse()) as Promise<Response>;
+      }
+      if (url.includes("api.firecrawl.dev")) {
+        return Promise.resolve(firecrawlCreditError()) as Promise<Response>;
+      }
+      if (url.startsWith("https://r.jina.ai/")) {
+        return Promise.resolve(textResponse("unexpected jina")) as Promise<Response>;
+      }
+      return Promise.reject(new Error("network down"));
+    });
+
+    const tool = createFetchTool({
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
+    });
+
+    await expect(
+      tool?.execute?.("call", { url: "https://example.com/jina-env-only" }),
+    ).rejects.toThrow(/firecrawl: Firecrawl fetch failed \(402\):/);
+    expect(
+      mockFetch.mock.calls.some(([input]) => requestUrl(input).startsWith("https://r.jina.ai/")),
+    ).toBe(false);
   });
 
   it("uses scraping-get for 404 fallback responses", async () => {

@@ -195,6 +195,23 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts tools.web.fetch.jinaReader config", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            jinaReader: {
+              enabled: true,
+              apiKey: "test-jina-key",
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("rejects boolean tools.web.fetch.firecrawl selector syntax", () => {
     const res = validateConfigObject({
       tools: {
@@ -209,6 +226,23 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.issues[0]?.path).toBe("tools.web.fetch.firecrawl");
+    }
+  });
+
+  it("rejects boolean tools.web.fetch.jinaReader selector syntax", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            jinaReader: true,
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.issues[0]?.path).toBe("tools.web.fetch.jinaReader");
     }
   });
 });

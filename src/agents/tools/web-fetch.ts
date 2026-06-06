@@ -47,6 +47,7 @@ const DEFAULT_ERROR_MAX_CHARS = 4_000;
 const DEFAULT_ERROR_MAX_BYTES = 64_000;
 const DEFAULT_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev";
 const DEFAULT_FIRECRAWL_MAX_AGE_MS = 172_800_000;
+const DEFAULT_JINA_READER_BASE_URL = "https://r.jina.ai";
 const DEFAULT_SCRAPE_PATH = "/api/v1/scrape";
 const DEFAULT_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -83,6 +84,13 @@ type FirecrawlFetchConfig =
       onlyMainContent?: boolean;
       maxAgeMs?: number;
       timeoutSeconds?: number;
+    }
+  | undefined;
+
+type JinaReaderFetchConfig =
+  | {
+      enabled?: boolean;
+      apiKey?: string;
     }
   | undefined;
 
@@ -142,6 +150,17 @@ function resolveFirecrawlConfig(fetch?: WebFetchConfig): FirecrawlFetchConfig {
   return firecrawl as FirecrawlFetchConfig;
 }
 
+function resolveJinaReaderConfig(fetch?: WebFetchConfig): JinaReaderFetchConfig {
+  if (!fetch || typeof fetch !== "object") {
+    return undefined;
+  }
+  const jinaReader = "jinaReader" in fetch ? fetch.jinaReader : undefined;
+  if (!jinaReader || typeof jinaReader !== "object") {
+    return undefined;
+  }
+  return jinaReader as JinaReaderFetchConfig;
+}
+
 function resolveFirecrawlApiKey(firecrawl?: FirecrawlFetchConfig): string | undefined {
   const fromConfig =
     firecrawl && "apiKey" in firecrawl && typeof firecrawl.apiKey === "string"
@@ -153,6 +172,10 @@ function resolveFirecrawlApiKey(firecrawl?: FirecrawlFetchConfig): string | unde
 
 function resolveFirecrawlEnabled(params: { firecrawl?: FirecrawlFetchConfig }): boolean {
   return params.firecrawl?.enabled === true;
+}
+
+function resolveJinaReaderEnabled(params: { jinaReader?: JinaReaderFetchConfig }): boolean {
+  return params.jinaReader?.enabled === true;
 }
 
 function resolveFirecrawlBaseUrl(firecrawl?: FirecrawlFetchConfig): string {
@@ -188,6 +211,15 @@ function resolveFirecrawlMaxAgeMsOrDefault(firecrawl?: FirecrawlFetchConfig): nu
     return resolved;
   }
   return DEFAULT_FIRECRAWL_MAX_AGE_MS;
+}
+
+function resolveJinaReaderApiKey(jinaReader?: JinaReaderFetchConfig): string | undefined {
+  const fromConfig =
+    jinaReader && "apiKey" in jinaReader && typeof jinaReader.apiKey === "string"
+      ? normalizeSecretInput(jinaReader.apiKey)
+      : "";
+  const fromEnv = normalizeSecretInput(process.env.JINA_API_KEY);
+  return fromConfig || fromEnv || undefined;
 }
 
 function resolveScrapeBaseUrl(): string | undefined {
@@ -323,7 +355,7 @@ function toErrorMessage(error: unknown): string {
 }
 
 type RemoteFallbackError = {
-  label: "scraping-get" | "firecrawl";
+  label: "scraping-get" | "firecrawl" | "jina-reader";
   message: string;
 };
 
@@ -375,6 +407,40 @@ function buildFirecrawlWebFetchPayload(params: {
     tookMs: params.tookMs,
     text: wrapped.text,
     warning: wrapWebFetchField(params.firecrawl.warning),
+  };
+}
+
+function buildJinaReaderWebFetchPayload(params: {
+  jinaReader: Awaited<ReturnType<typeof fetchJinaReaderContent>>;
+  rawUrl: string;
+  finalUrlFallback: string;
+  statusFallback: number;
+  extractMode: ExtractMode;
+  maxChars: number;
+  tookMs: number;
+}): Record<string, unknown> {
+  const wrapped = wrapWebFetchContent(params.jinaReader.text, params.maxChars);
+  return {
+    url: params.rawUrl, // Keep raw for tool chaining
+    finalUrl: params.jinaReader.finalUrl || params.finalUrlFallback, // Keep raw
+    status: params.jinaReader.status ?? params.statusFallback,
+    contentType: "text/markdown", // Protocol metadata, don't wrap
+    title: undefined,
+    extractMode: params.extractMode,
+    extractor: "jina-reader",
+    externalContent: {
+      untrusted: true,
+      source: "web_fetch",
+      wrapped: true,
+    },
+    truncated: wrapped.truncated,
+    length: wrapped.wrappedLength,
+    rawLength: wrapped.rawLength, // Actual content length, not wrapped
+    wrappedLength: wrapped.wrappedLength,
+    fetchedAt: new Date().toISOString(),
+    tookMs: params.tookMs,
+    text: wrapped.text,
+    warning: undefined,
   };
 }
 
@@ -530,6 +596,26 @@ function normalizeContentType(value: string | null | undefined): string | undefi
   return trimmed || undefined;
 }
 
+class FirecrawlFetchError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "FirecrawlFetchError";
+  }
+}
+
+function shouldTryJinaReaderAfterFirecrawlError(error: unknown): boolean {
+  return error instanceof FirecrawlFetchError && error.status === 402;
+}
+
+function resolveJinaReaderEndpoint(params: { baseUrl?: string; url: string }): string {
+  const baseUrl = (params.baseUrl ?? DEFAULT_JINA_READER_BASE_URL).trim();
+  const normalizedBase = baseUrl.replace(/\/+$/, "");
+  return `${normalizedBase}/${params.url}`;
+}
+
 export async function fetchFirecrawlContent(params: {
   url: string;
   extractMode: ExtractMode;
@@ -585,8 +671,9 @@ export async function fetchFirecrawlContent(params: {
 
   if (!res.ok || payload?.success === false) {
     const detail = payload?.error ?? "";
-    throw new Error(
+    throw new FirecrawlFetchError(
       `Firecrawl fetch failed (${res.status}): ${wrapWebContent(detail || res.statusText, "web_fetch")}`.trim(),
+      res.status,
     );
   }
 
@@ -604,6 +691,42 @@ export async function fetchFirecrawlContent(params: {
     finalUrl: data.metadata?.sourceURL,
     status: data.metadata?.statusCode,
     warning: payload?.warning,
+  };
+}
+
+export async function fetchJinaReaderContent(params: {
+  url: string;
+  extractMode: ExtractMode;
+  apiKey: string;
+  timeoutSeconds: number;
+}): Promise<{
+  text: string;
+  finalUrl?: string;
+  status?: number;
+}> {
+  await assertScrapeTargetAllowed(params.url);
+
+  const endpoint = resolveJinaReaderEndpoint({ url: params.url });
+  const res = await fetch(endpoint, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${params.apiKey}`,
+      Accept: "text/markdown, text/plain;q=0.9, */*;q=0.8",
+    },
+    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+  });
+
+  const rawText = await res.text().catch(() => "");
+  if (!res.ok || rawText.trim().length === 0) {
+    const wrappedDetail = wrapWebFetchContent(rawText || res.statusText, DEFAULT_ERROR_MAX_CHARS);
+    throw new Error(`Jina Reader fetch failed (${res.status}): ${wrappedDetail.text}`);
+  }
+
+  const text = params.extractMode === "text" ? markdownToText(rawText) : rawText;
+  return {
+    text,
+    finalUrl: params.url,
+    status: res.status,
   };
 }
 
@@ -678,12 +801,18 @@ type FirecrawlRuntimeParams = {
   firecrawlTimeoutSeconds: number;
 };
 
+type JinaReaderRuntimeParams = {
+  jinaReaderEnabled: boolean;
+  jinaReaderApiKey?: string;
+};
+
 type ScrapeRuntimeParams = {
   scrapeEnabled: boolean;
   scrapeBaseUrl?: string;
 };
 
 type WebFetchRuntimeParams = FirecrawlRuntimeParams &
+  JinaReaderRuntimeParams &
   ScrapeRuntimeParams & {
     url: string;
     extractMode: ExtractMode;
@@ -721,6 +850,59 @@ function toFirecrawlContentParams(
     storeInCache: params.firecrawlStoreInCache,
     timeoutSeconds: params.firecrawlTimeoutSeconds,
   };
+}
+
+function toJinaReaderContentParams(
+  params: JinaReaderRuntimeParams & {
+    url: string;
+    extractMode: ExtractMode;
+    timeoutSeconds: number;
+  },
+): Parameters<typeof fetchJinaReaderContent>[0] | null {
+  if (!params.jinaReaderApiKey) {
+    return null;
+  }
+  if (!params.jinaReaderEnabled) {
+    return null;
+  }
+  return {
+    url: params.url,
+    extractMode: params.extractMode,
+    apiKey: params.jinaReaderApiKey,
+    timeoutSeconds: params.timeoutSeconds,
+  };
+}
+
+async function maybeFetchJinaReaderWebFetchPayload(
+  params: WebFetchRuntimeParams & {
+    urlToFetch: string;
+    finalUrlFallback: string;
+    statusFallback: number;
+    cacheKey: string;
+    tookMs: number;
+  },
+): Promise<Record<string, unknown> | null> {
+  const jinaReaderParams = toJinaReaderContentParams({
+    ...params,
+    url: params.urlToFetch,
+    extractMode: params.extractMode,
+  });
+  if (!jinaReaderParams) {
+    return null;
+  }
+
+  const jinaReader = await fetchJinaReaderContent(jinaReaderParams);
+  const payload = buildJinaReaderWebFetchPayload({
+    jinaReader,
+    rawUrl: params.url,
+    finalUrlFallback: params.finalUrlFallback,
+    statusFallback: params.statusFallback,
+    extractMode: params.extractMode,
+    maxChars: params.maxChars,
+    tookMs: params.tookMs,
+  });
+  writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
+  return payload;
 }
 
 async function maybeFetchFirecrawlWebFetchPayload(
@@ -819,6 +1001,19 @@ async function maybeFetchFallbackWebFetchPayload(
       }
     } catch (error) {
       errors.push({ label: "firecrawl", message: toErrorMessage(error) });
+      if (shouldTryJinaReaderAfterFirecrawlError(error)) {
+        try {
+          const payload = await maybeFetchJinaReaderWebFetchPayload({
+            ...params,
+            tookMs: Date.now() - params.startedAt,
+          });
+          if (payload) {
+            return { payload, errors };
+          }
+        } catch (jinaReaderError) {
+          errors.push({ label: "jina-reader", message: toErrorMessage(jinaReaderError) });
+        }
+      }
     }
   }
 
@@ -1169,6 +1364,9 @@ export function createWebFetchTool(options?: {
     firecrawl?.timeoutSeconds ?? fetch?.timeoutSeconds,
     DEFAULT_TIMEOUT_SECONDS,
   );
+  const jinaReader = resolveJinaReaderConfig(fetch);
+  const jinaReaderEnabled = resolveJinaReaderEnabled({ jinaReader });
+  const jinaReaderApiKey = resolveJinaReaderApiKey(jinaReader);
   const userAgent =
     (fetch && "userAgent" in fetch && typeof fetch.userAgent === "string" && fetch.userAgent) ||
     DEFAULT_FETCH_USER_AGENT;
@@ -1209,6 +1407,8 @@ export function createWebFetchTool(options?: {
         firecrawlProxy: "auto",
         firecrawlStoreInCache: true,
         firecrawlTimeoutSeconds,
+        jinaReaderEnabled,
+        jinaReaderApiKey,
       });
       return jsonResult(result);
     },

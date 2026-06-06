@@ -289,6 +289,13 @@ export const ToolsWebFetchSchema = z
       })
       .strict()
       .optional(),
+    jinaReader: z
+      .object({
+        enabled: z.boolean().optional(),
+        apiKey: z.string().optional().register(sensitive),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .optional();
