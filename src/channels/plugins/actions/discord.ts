@@ -104,11 +104,15 @@ export const discordMessageActions: ChannelMessageActionAdapter = {
     const action = typeof args.action === "string" ? args.action.trim() : "";
     if (action === "sendMessage") {
       const to = typeof args.to === "string" ? args.to : undefined;
-      return to ? { to } : null;
+      const threadId =
+        typeof args.threadId === "string" || typeof args.threadId === "number"
+          ? args.threadId
+          : undefined;
+      return to ? { to, threadId } : null;
     }
     if (action === "threadReply") {
       const channelId = typeof args.channelId === "string" ? args.channelId.trim() : "";
-      return channelId ? { to: `channel:${channelId}` } : null;
+      return channelId ? { to: `channel:${channelId}`, threadId: channelId } : null;
     }
     return null;
   },

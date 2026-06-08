@@ -308,7 +308,13 @@ export function extractMessagingToolSend(
     const providerId = providerHint ? normalizeChannelId(providerHint) : null;
     const provider = providerId ?? (providerHint ? providerHint.toLowerCase() : "message");
     const to = normalizeTargetForProvider(provider, toRaw);
-    return to ? { tool: toolName, provider, accountId, to } : undefined;
+    const threadId =
+      typeof args.threadId === "string" || typeof args.threadId === "number"
+        ? args.threadId
+        : typeof args.messageThreadId === "string" || typeof args.messageThreadId === "number"
+          ? args.messageThreadId
+          : undefined;
+    return to ? { tool: toolName, provider, accountId, to, threadId } : undefined;
   }
   const providerId = normalizeChannelId(toolName);
   if (!providerId) {
@@ -326,6 +332,7 @@ export function extractMessagingToolSend(
         provider: providerId,
         accountId: extracted.accountId ?? accountId,
         to,
+        threadId: extracted.threadId ?? undefined,
       }
     : undefined;
 }

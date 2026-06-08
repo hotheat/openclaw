@@ -57,5 +57,11 @@ export function extractSlackToolSend(args: Record<string, unknown>): ChannelTool
     return null;
   }
   const accountId = typeof args.accountId === "string" ? args.accountId.trim() : undefined;
-  return { to, accountId };
+  const threadId =
+    typeof args.threadId === "string" || typeof args.threadId === "number"
+      ? args.threadId
+      : typeof args.threadTs === "string" || typeof args.threadTs === "number"
+        ? args.threadTs
+        : undefined;
+  return { to, accountId, threadId };
 }

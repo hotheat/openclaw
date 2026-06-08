@@ -76,7 +76,7 @@ import {
 
 function matchesMessagingToolDeliveryTarget(
   target: MessagingToolSend,
-  delivery: { channel?: string; to?: string; accountId?: string },
+  delivery: { channel?: string; to?: string; accountId?: string; threadId?: string | number },
 ): boolean {
   if (!delivery.channel || !delivery.to || !target.to) {
     return false;
@@ -89,7 +89,15 @@ function matchesMessagingToolDeliveryTarget(
   if (target.accountId && delivery.accountId && target.accountId !== delivery.accountId) {
     return false;
   }
-  return target.to === delivery.to;
+  if (target.to !== delivery.to) {
+    return false;
+  }
+  const targetThreadId = target.threadId != null ? String(target.threadId).trim() : "";
+  const deliveryThreadId = delivery.threadId != null ? String(delivery.threadId).trim() : "";
+  if (targetThreadId || deliveryThreadId) {
+    return targetThreadId === deliveryThreadId;
+  }
+  return true;
 }
 
 function resolveCronDeliveryBestEffort(job: CronJob): boolean {
@@ -510,6 +518,8 @@ export async function runCronIsolatedAgentTurn(params: {
           agentId,
           messageChannel,
           agentAccountId: resolvedDelivery.accountId,
+          messageTo: resolvedDelivery.to,
+          messageThreadId: resolvedDelivery.threadId,
           sessionFile,
           agentDir,
           workspaceDir,
@@ -630,6 +640,7 @@ export async function runCronIsolatedAgentTurn(params: {
         channel: resolvedDelivery.channel,
         to: resolvedDelivery.to,
         accountId: resolvedDelivery.accountId,
+        threadId: resolvedDelivery.threadId,
       }),
     );
 

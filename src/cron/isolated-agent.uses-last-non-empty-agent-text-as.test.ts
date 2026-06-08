@@ -199,6 +199,34 @@ describe("runCronIsolatedAgentTurn", () => {
     });
   });
 
+  it("passes resolved delivery target to runEmbeddedPiAgent", async () => {
+    await withTempHome(async (home) => {
+      const { res } = await runCronTurn(home, {
+        jobPayload: DEFAULT_AGENT_TURN_PAYLOAD,
+        storeEntries: {
+          "agent:main:main": {
+            sessionId: "main-session",
+            updatedAt: Date.now(),
+            lastProvider: "telegram",
+            lastChannel: "telegram",
+            lastAccountId: "default",
+            lastTo: "123456",
+          },
+        },
+      });
+
+      expect(res.status).toBe("ok");
+      const call = vi.mocked(runEmbeddedPiAgent).mock.calls.at(-1)?.[0] as {
+        messageChannel?: string;
+        messageTo?: string;
+        agentAccountId?: string;
+      };
+      expect(call?.messageChannel).toBe("telegram");
+      expect(call?.messageTo).toBe("123456");
+      expect(call?.agentAccountId).toBe("default");
+    });
+  });
+
   it("appends current time after the cron header line", async () => {
     await withTempHome(async (home) => {
       await runCronTurn(home, {

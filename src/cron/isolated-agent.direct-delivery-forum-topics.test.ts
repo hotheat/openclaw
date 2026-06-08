@@ -24,13 +24,17 @@ function createCliDeps(overrides: Partial<CliDeps> = {}): CliDeps {
   };
 }
 
-function mockAgentPayloads(payloads: Array<Record<string, unknown>>) {
+function mockAgentPayloads(
+  payloads: Array<Record<string, unknown>>,
+  overrides: Partial<Awaited<ReturnType<typeof runEmbeddedPiAgent>>> = {},
+) {
   vi.mocked(runEmbeddedPiAgent).mockResolvedValue({
     payloads,
     meta: {
       durationMs: 5,
       agentMeta: { sessionId: "s", provider: "p", model: "m" },
     },
+    ...overrides,
   });
 }
 
@@ -66,6 +70,111 @@ describe("runCronIsolatedAgentTurn forum topic delivery", () => {
       expect(deps.sendMessageTelegram).toHaveBeenCalledWith(
         "123",
         "forum message",
+        expect.objectContaining({
+          messageThreadId: 42,
+        }),
+      );
+    });
+  });
+
+  it("does not dedup a topic target when the agent only sent to the parent chat", async () => {
+    await withTempCronHome(async (home) => {
+      const storePath = await writeSessionStore(home, { lastProvider: "webchat", lastTo: "" });
+      const deps = createCliDeps();
+      mockAgentPayloads([{ text: "forum fallback" }], {
+        didSendViaMessagingTool: true,
+        messagingToolSentTargets: [{ tool: "message", provider: "telegram", to: "123" }],
+      });
+
+      const res = await runCronIsolatedAgentTurn({
+        cfg: makeCfg(home, storePath, {
+          channels: { telegram: { botToken: "t-1" } },
+        }),
+        deps,
+        job: {
+          ...makeJob({ kind: "agentTurn", message: "do it" }),
+          delivery: { mode: "announce", channel: "telegram", to: "123:topic:42" },
+        },
+        message: "do it",
+        sessionKey: "cron:job-1",
+        lane: "cron",
+      });
+
+      expect(res.status).toBe("ok");
+      expect(res.delivered).toBe(true);
+      expect(deps.sendMessageTelegram).toHaveBeenCalledTimes(1);
+      expect(deps.sendMessageTelegram).toHaveBeenCalledWith(
+        "123",
+        "forum fallback",
+        expect.objectContaining({
+          messageThreadId: 42,
+        }),
+      );
+    });
+  });
+
+  it("dedups a topic target when the messaging tool sent to the same topic", async () => {
+    await withTempCronHome(async (home) => {
+      const storePath = await writeSessionStore(home, { lastProvider: "webchat", lastTo: "" });
+      const deps = createCliDeps();
+      mockAgentPayloads([{ text: "already sent" }], {
+        didSendViaMessagingTool: true,
+        messagingToolSentTargets: [
+          { tool: "message", provider: "telegram", to: "123", threadId: 42 },
+        ],
+      });
+
+      const res = await runCronIsolatedAgentTurn({
+        cfg: makeCfg(home, storePath, {
+          channels: { telegram: { botToken: "t-1" } },
+        }),
+        deps,
+        job: {
+          ...makeJob({ kind: "agentTurn", message: "do it" }),
+          delivery: { mode: "announce", channel: "telegram", to: "123:topic:42" },
+        },
+        message: "do it",
+        sessionKey: "cron:job-1",
+        lane: "cron",
+      });
+
+      expect(res.status).toBe("ok");
+      expect(res.delivered).toBe(true);
+      expect(deps.sendMessageTelegram).not.toHaveBeenCalled();
+    });
+  });
+
+  it("does not dedup a topic target when the agent sent to another chat with the same topic id", async () => {
+    await withTempCronHome(async (home) => {
+      const storePath = await writeSessionStore(home, { lastProvider: "webchat", lastTo: "" });
+      const deps = createCliDeps();
+      mockAgentPayloads([{ text: "forum fallback" }], {
+        didSendViaMessagingTool: true,
+        messagingToolSentTargets: [
+          { tool: "message", provider: "telegram", to: "123", threadId: 42 },
+        ],
+      });
+
+      const res = await runCronIsolatedAgentTurn({
+        cfg: makeCfg(home, storePath, {
+          channels: { telegram: { botToken: "t-1" } },
+        }),
+        deps,
+        job: {
+          ...makeJob({ kind: "agentTurn", message: "do it" }),
+          delivery: { mode: "announce", channel: "telegram", to: "456:topic:42" },
+        },
+        message: "do it",
+        sessionKey: "cron:job-1",
+        lane: "cron",
+      });
+
+      expect(res.status).toBe("ok");
+      expect(res.delivered).toBe(true);
+      expect(deps.sendMessageTelegram).toHaveBeenCalledTimes(1);
+      expect(deps.sendMessageTelegram).toHaveBeenCalledWith(
+        "456",
+        "forum fallback",
         expect.objectContaining({
           messageThreadId: 42,
         }),
