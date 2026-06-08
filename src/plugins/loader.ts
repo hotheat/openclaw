@@ -169,6 +169,7 @@ function createPluginRecord(params: {
     commands: [],
     httpHandlers: 0,
     hookCount: 0,
+    agentTraceSinks: 0,
     configSchema: params.configSchema,
     configUiHints: undefined,
     configJsonSchema: undefined,

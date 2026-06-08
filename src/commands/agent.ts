@@ -182,6 +182,7 @@ function runAgentAttempt(params: {
     abortSignal: params.opts.abortSignal,
     extraSystemPrompt: params.opts.extraSystemPrompt,
     inputProvenance: params.opts.inputProvenance,
+    traceParent: params.opts.traceParent,
     streamParams: params.opts.streamParams,
     agentDir: params.agentDir,
     onAgentEvent: params.onAgentEvent,

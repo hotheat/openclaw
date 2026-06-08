@@ -169,6 +169,19 @@ export type DiagnosticsOtelConfig = {
   flushIntervalMs?: number;
 };
 
+export type DiagnosticsLangfuseCaptureMode = "safe" | "llm_text" | "full";
+
+export type DiagnosticsLangfuseConfig = {
+  enabled?: boolean;
+  host?: string;
+  publicKey?: string;
+  secretKey?: string;
+  serviceName?: string;
+  captureMode?: DiagnosticsLangfuseCaptureMode;
+  flushIntervalMs?: number;
+  timeoutMs?: number;
+};
+
 export type DiagnosticsCacheTraceConfig = {
   enabled?: boolean;
   filePath?: string;
@@ -182,6 +195,7 @@ export type DiagnosticsConfig = {
   /** Optional ad-hoc diagnostics flags (e.g. "telegram.http"). */
   flags?: string[];
   otel?: DiagnosticsOtelConfig;
+  langfuse?: DiagnosticsLangfuseConfig;
   cacheTrace?: DiagnosticsCacheTraceConfig;
 };
 

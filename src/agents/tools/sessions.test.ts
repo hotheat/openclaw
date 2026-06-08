@@ -19,6 +19,7 @@ vi.mock("../../config/config.js", async (importOriginal) => {
   };
 });
 
+import { runWithToolTraceParent } from "../tracing/context.js";
 import { createSessionsListTool } from "./sessions-list-tool.js";
 import { createSessionsSendTool } from "./sessions-send-tool.js";
 
@@ -219,5 +220,41 @@ describe("sessions_send gating", () => {
     expect(callGatewayMock).toHaveBeenCalledTimes(1);
     expect(callGatewayMock.mock.calls[0]?.[0]).toMatchObject({ method: "sessions.list" });
     expect(result.details).toMatchObject({ status: "forbidden" });
+  });
+
+  it("forwards the active tool trace parent to nested agent sends", async () => {
+    const traceParent = {
+      parentTraceId: "trace-id",
+      parentRunId: "parent-run",
+      parentSessionKey: "agent:main:main",
+      parentObservationId: "tool-observation-id",
+    };
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const call = request as { method?: string };
+      if (call.method === "sessions.list") {
+        return { sessions: [{ key: "agent:main:child" }] };
+      }
+      if (call.method === "agent") {
+        return { runId: "child-run" };
+      }
+      return {};
+    });
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "whatsapp",
+    });
+
+    await runWithToolTraceParent(traceParent, async () => {
+      await tool.execute("tool-call-1", {
+        sessionKey: "agent:main:child",
+        message: "hi",
+        timeoutSeconds: 0,
+      });
+    });
+
+    const agentCall = callGatewayMock.mock.calls
+      .map((call) => call[0] as { method?: string; params?: unknown })
+      .find((call) => call.method === "agent");
+    expect(agentCall?.params).toMatchObject({ traceParent });
   });
 });

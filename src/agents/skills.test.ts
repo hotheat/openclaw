@@ -9,6 +9,7 @@ import {
   applySkillEnvOverridesFromSnapshot,
   buildWorkspaceSkillCommandSpecs,
   buildWorkspaceSkillsPrompt,
+  buildWorkspaceSkillsTraceSummary,
   buildWorkspaceSkillSnapshot,
   loadWorkspaceSkillEntries,
 } from "./skills.js";
@@ -147,6 +148,50 @@ describe("buildWorkspaceSkillCommandSpecs", () => {
     );
     const cmd = commands.find((entry) => entry.skillName === "tool-dispatch");
     expect(cmd?.dispatch).toEqual({ kind: "tool", toolName: "sessions_send", argMode: "raw" });
+  });
+});
+
+describe("buildWorkspaceSkillsTraceSummary", () => {
+  it("summarizes available skills without including SKILL.md content", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "pdf-generator"),
+      name: "pdf-generator",
+      description: "Render markdown or HTML as PDF",
+      body: "# secret implementation\nRun internal command",
+    });
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "hidden"),
+      name: "hidden",
+      description: "Hidden skill",
+      frontmatterExtra: "disable-model-invocation: true",
+    });
+
+    const entries = loadWorkspaceSkillEntries(workspaceDir, resolveTestSkillDirs(workspaceDir));
+    const summary = buildWorkspaceSkillsTraceSummary({
+      workspaceDir,
+      entries,
+      config: {},
+    });
+
+    expect(summary.output).toMatchObject({
+      availableCount: 2,
+      promptCount: 1,
+      skills: expect.arrayContaining([
+        expect.objectContaining({
+          name: "pdf-generator",
+          source: "openclaw-workspace",
+          includedInPrompt: true,
+        }),
+        expect.objectContaining({
+          name: "hidden",
+          source: "openclaw-workspace",
+          includedInPrompt: false,
+        }),
+      ]),
+    });
+    expect(JSON.stringify(summary)).not.toContain("secret implementation");
+    expect(JSON.stringify(summary)).not.toContain("Run internal command");
   });
 });
 

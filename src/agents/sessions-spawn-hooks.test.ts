@@ -8,6 +8,7 @@ import {
   setSessionsSpawnConfigOverride,
 } from "./openclaw-tools.subagents.sessions-spawn.test-harness.js";
 import { resetSubagentRegistryForTests } from "./subagent-registry.js";
+import { runWithAgentTraceRun } from "./tracing/context.js";
 
 const hookRunnerMocks = vi.hoisted(() => ({
   hasSubagentEndedHook: true,
@@ -97,6 +98,7 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
   });
 
   it("runs subagent_spawning and emits subagent_spawned with requester metadata", async () => {
+    const recordSubagentLifecycle = vi.fn();
     const tool = await getSessionsSpawnTool({
       agentSessionKey: "main",
       agentChannel: "discord",
@@ -105,11 +107,13 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
       agentThreadId: 456,
     });
 
-    const result = await tool.execute("call", {
-      task: "do thing",
-      label: "research",
-      runTimeoutSeconds: 1,
-      thread: true,
+    const result = await runWithAgentTraceRun({ recordSubagentLifecycle }, async () => {
+      return await tool.execute("call", {
+        task: "do thing",
+        label: "research",
+        runTimeoutSeconds: 1,
+        thread: true,
+      });
     });
 
     expect(result.details).toMatchObject({ status: "accepted", runId: "run-1" });
@@ -158,6 +162,29 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
       requesterSessionKey: "main",
       childSessionKey: event.childSessionKey,
     });
+    expect(recordSubagentLifecycle).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        phase: "spawning",
+        childSessionKey: event.childSessionKey,
+        requesterSessionKey: "main",
+        agentId: "main",
+        label: "research",
+        mode: "session",
+      }),
+    );
+    expect(recordSubagentLifecycle).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        phase: "spawned",
+        runId: "run-1",
+        childSessionKey: event.childSessionKey,
+        requesterSessionKey: "main",
+        agentId: "main",
+        label: "research",
+        mode: "session",
+      }),
+    );
   });
 
   it("emits subagent_spawned with threadRequested=false when not requested", async () => {
@@ -353,6 +380,48 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
       deleteTranscript: true,
       emitLifecycleHooks: false,
     });
+  });
+
+  it("emits terminal trace lifecycle when non-thread agent start fails", async () => {
+    const recordSubagentLifecycle = vi.fn();
+    mockAgentStartFailure();
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "main",
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+
+    const result = await runWithAgentTraceRun({ recordSubagentLifecycle }, async () => {
+      return await tool.execute("call7b", {
+        task: "do thing",
+        runTimeoutSeconds: 1,
+      });
+    });
+
+    expect(result.details).toMatchObject({ status: "error" });
+    const details = result.details as { childSessionKey?: string; runId?: string };
+    expect(recordSubagentLifecycle).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        phase: "spawning",
+        childSessionKey: details.childSessionKey,
+        requesterSessionKey: "main",
+        agentId: "main",
+        mode: "run",
+      }),
+    );
+    expect(recordSubagentLifecycle).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        phase: "ended",
+        runId: details.runId,
+        childSessionKey: details.childSessionKey,
+        requesterSessionKey: "main",
+        mode: "run",
+        outcome: "error",
+        error: "Session failed to start",
+      }),
+    );
   });
 
   it("falls back to sessions.delete cleanup when subagent_ended hook is unavailable", async () => {

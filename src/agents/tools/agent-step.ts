@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { callGateway } from "../../gateway/call.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
+import { getCurrentAgentTraceParent, getCurrentToolTraceParent } from "../tracing/context.js";
 import { extractAssistantText, stripToolMessages } from "./sessions-helpers.js";
 
 export async function readLatestAssistantReply(params: {
@@ -58,6 +59,7 @@ export async function runAgentStep(params: {
         sourceChannel: params.sourceChannel,
         sourceTool: params.sourceTool ?? "sessions_send",
       },
+      traceParent: getCurrentToolTraceParent() ?? getCurrentAgentTraceParent(),
     },
     timeoutMs: 10_000,
   });

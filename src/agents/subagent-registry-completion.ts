@@ -9,6 +9,7 @@ import {
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { recordSubagentLifecycleTraceEvent } from "./tracing/context.js";
 
 export function runOutcomesEqual(
   a: SubagentRunOutcome | undefined,
@@ -85,6 +86,15 @@ export async function emitSubagentEndedHookOnce(params: {
         },
       );
     }
+    await recordSubagentLifecycleTraceEvent({
+      phase: "ended",
+      runId: params.entry.runId,
+      childSessionKey: params.entry.childSessionKey,
+      requesterSessionKey: params.entry.requesterSessionKey,
+      mode: params.entry.spawnMode,
+      outcome: params.outcome,
+      error: params.error,
+    });
     params.entry.endedHookEmittedAt = Date.now();
     params.persist();
     return true;

@@ -6,6 +6,8 @@ import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { pollUntil } from "../../test/helpers/poll.js";
 import type { OpenClawConfig } from "../config/config.js";
+import { createEmptyPluginRegistry } from "../plugins/registry.js";
+import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 
 function createMockUsage(input: number, output: number) {
   return {
@@ -430,6 +432,118 @@ describe("runEmbeddedPiAgent", () => {
 
     expect(await waitForEmbeddedPiRunEnd(sessionId, 50)).toBe(true);
     expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+  });
+
+  it("ends trace runs when setup fails after trace start", async () => {
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const endTraceRun = vi.fn();
+    registry.agentTraceSinks.push({
+      pluginId: "trace-test",
+      source: "trace-test",
+      sink: {
+        startRun: () => ({ end: endTraceRun }),
+      },
+    });
+    setActivePluginRegistry(registry);
+
+    try {
+      const sessionFile = nextSessionFile();
+      const cfg: OpenClawConfig = {
+        ...makeOpenAiConfig(["mock-1"]),
+        agents: {
+          defaults: {
+            securityPolicyPath: tempRoot,
+          },
+        },
+      };
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:trace-setup-fails",
+          sessionKey: nextSessionKey(),
+          sessionFile,
+          workspaceDir,
+          config: cfg,
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          timeoutMs: 5_000,
+          agentDir,
+          runId: nextRunId("trace-setup-fails"),
+          enqueue: immediateEnqueue,
+        }),
+      ).rejects.toThrow(/runtime security policy/i);
+
+      expect(endTraceRun).toHaveBeenCalledTimes(1);
+      expect(endTraceRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringMatching(/runtime security policy/i),
+        }),
+      );
+    } finally {
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
+  });
+
+  it("measures successful trace run duration from run start", { timeout: 90_000 }, async () => {
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const generationEnd = vi.fn();
+    const endTraceRun = vi.fn();
+    let now = 1_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => {
+      now += 1_000;
+      return now;
+    });
+
+    registry.agentTraceSinks.push({
+      pluginId: "trace-test",
+      source: "trace-test",
+      sink: {
+        startRun: async () => {
+          for (let i = 0; i < 10; i += 1) {
+            Date.now();
+          }
+          return {
+            startGeneration: () => ({ end: generationEnd }),
+            end: endTraceRun,
+          };
+        },
+      },
+    });
+    setActivePluginRegistry(registry);
+
+    try {
+      const sessionFile = nextSessionFile();
+      const cfg = makeOpenAiConfig(["mock-1"]);
+
+      await runEmbeddedPiAgent({
+        sessionId: "session:trace-success-duration",
+        sessionKey: nextSessionKey(),
+        sessionFile,
+        workspaceDir,
+        config: cfg,
+        prompt: "hello",
+        provider: "openai",
+        model: "mock-1",
+        timeoutMs: 5_000,
+        agentDir,
+        runId: nextRunId("trace-success-duration"),
+        enqueue: immediateEnqueue,
+      });
+
+      const generationDuration = generationEnd.mock.calls[0]?.[0]?.durationMs;
+      const runDuration = endTraceRun.mock.calls[0]?.[0]?.durationMs;
+      expect(generationDuration).toEqual(expect.any(Number));
+      expect(runDuration).toEqual(expect.any(Number));
+      expect(runDuration).toBeGreaterThan(generationDuration + 5_000);
+      expect(endTraceRun).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    } finally {
+      dateNow.mockRestore();
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
   });
 
   it("aborts pending runs that are waiting on the global lane", async () => {

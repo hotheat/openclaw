@@ -9,6 +9,7 @@ import {
   INTERNAL_MESSAGE_CHANNEL,
 } from "../../utils/message-channel.js";
 import { AGENT_LANE_NESTED } from "../lanes.js";
+import { getCurrentAgentTraceParent, getCurrentToolTraceParent } from "../tracing/context.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
@@ -233,6 +234,7 @@ export function createSessionsSendTool(opts?: {
           sourceChannel: opts?.agentChannel,
           sourceTool: "sessions_send",
         },
+        traceParent: getCurrentToolTraceParent() ?? getCurrentAgentTraceParent(),
       };
       const requesterSessionKey = opts?.agentSessionKey;
       const requesterChannel = opts?.agentChannel;

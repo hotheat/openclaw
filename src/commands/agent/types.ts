@@ -1,4 +1,5 @@
 import type { ClientToolDefinition } from "../../agents/pi-embedded-runner/run/params.js";
+import type { AgentTraceParent } from "../../agents/tracing/types.js";
 import type { ChannelOutboundTargetMode } from "../../channels/plugins/types.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 
@@ -74,6 +75,7 @@ export type AgentCommandOpts = {
   runId?: string;
   extraSystemPrompt?: string;
   inputProvenance?: InputProvenance;
+  traceParent?: AgentTraceParent;
   /** Per-call stream param overrides (best-effort). */
   streamParams?: AgentStreamParams;
 };

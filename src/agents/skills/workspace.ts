@@ -455,6 +455,28 @@ type WorkspaceSkillBuildOptions = {
   eligibility?: SkillEligibilityContext;
 };
 
+export type WorkspaceSkillsTraceSummary = {
+  input: {
+    skillFilter?: string[];
+    snapshotVersion?: number;
+  };
+  output: {
+    availableCount: number;
+    promptCount: number;
+    promptChars: number;
+    sourceCounts: Record<string, number>;
+    skills: Array<{
+      name: string;
+      source: string;
+      includedInPrompt: boolean;
+      descriptionChars?: number;
+      primaryEnv?: string;
+      requiredEnvCount?: number;
+      always?: boolean;
+    }>;
+  };
+};
+
 function resolveWorkspaceSkillPromptState(
   workspaceDir: string,
   opts?: WorkspaceSkillBuildOptions,
@@ -490,6 +512,91 @@ function resolveWorkspaceSkillPromptState(
     .filter(Boolean)
     .join("\n");
   return { eligible, prompt, resolvedSkills };
+}
+
+function countBySource(skills: Array<{ source: string }>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const skill of skills) {
+    counts[skill.source] = (counts[skill.source] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export function buildWorkspaceSkillsTraceSummary(params: {
+  workspaceDir: string;
+  skillsSnapshot?: SkillSnapshot;
+  entries?: SkillEntry[];
+  config?: OpenClawConfig;
+  skillFilter?: string[];
+  eligibility?: SkillEligibilityContext;
+}): WorkspaceSkillsTraceSummary {
+  const skillFilter =
+    params.skillsSnapshot?.skillFilter ?? normalizeSkillFilter(params.skillFilter);
+  if (params.skillsSnapshot) {
+    const resolvedByName = new Map(
+      (params.skillsSnapshot.resolvedSkills ?? []).map((skill) => [skill.name, skill]),
+    );
+    const skills = params.skillsSnapshot.skills.map((skill) => {
+      const resolved = resolvedByName.get(skill.name);
+      return {
+        name: skill.name,
+        source: resolved?.source ?? "snapshot",
+        includedInPrompt: true,
+        descriptionChars: resolved?.description?.length,
+        primaryEnv: skill.primaryEnv,
+        requiredEnvCount: skill.requiredEnv?.length,
+      };
+    });
+    return {
+      input: {
+        ...(skillFilter === undefined ? {} : { skillFilter }),
+        ...(params.skillsSnapshot.version === undefined
+          ? {}
+          : { snapshotVersion: params.skillsSnapshot.version }),
+      },
+      output: {
+        availableCount: skills.length,
+        promptCount: skills.length,
+        promptChars: params.skillsSnapshot.prompt.length,
+        sourceCounts: countBySource(skills),
+        skills,
+      },
+    };
+  }
+
+  const skillEntries = params.entries ?? loadSkillEntries(params.workspaceDir, params);
+  const eligible = filterSkillEntries(skillEntries, params.config, skillFilter, params.eligibility);
+  const promptEntries = eligible.filter(
+    (entry) => entry.invocation?.disableModelInvocation !== true,
+  );
+  const { skillsForPrompt } = applySkillsPromptLimits({
+    skills: promptEntries.map((entry) => entry.skill),
+    config: params.config,
+  });
+  const includedNames = new Set(skillsForPrompt.map((skill) => skill.name));
+  const prompt = formatSkillsForPrompt(compactSkillPaths(skillsForPrompt));
+  const skills = eligible.map((entry) => ({
+    name: entry.skill.name,
+    source: entry.skill.source,
+    includedInPrompt: includedNames.has(entry.skill.name),
+    descriptionChars: entry.skill.description?.length,
+    primaryEnv: entry.metadata?.primaryEnv,
+    requiredEnvCount: entry.metadata?.requires?.env?.length,
+    always: entry.metadata?.always,
+  }));
+
+  return {
+    input: {
+      ...(skillFilter === undefined ? {} : { skillFilter }),
+    },
+    output: {
+      availableCount: eligible.length,
+      promptCount: skillsForPrompt.length,
+      promptChars: prompt.length,
+      sourceCounts: countBySource(skills),
+      skills,
+    },
+  };
 }
 
 export function resolveSkillsPromptForRun(params: {

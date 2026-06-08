@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { recordSubagentLifecycleTraceEvent, runWithAgentTraceRun } from "./tracing/context.js";
 
 const lifecycleMocks = vi.hoisted(() => ({
   getGlobalHookRunner: vi.fn(),
@@ -74,6 +75,39 @@ describe("emitSubagentEndedHookOnce", () => {
     expect(lifecycleMocks.runSubagentEnded).toHaveBeenCalledTimes(1);
     expect(typeof params.entry.endedHookEmittedAt).toBe("number");
     expect(params.persist).toHaveBeenCalledTimes(1);
+  });
+
+  it("records subagent ended lifecycle on the registered trace run", async () => {
+    const recordSubagentLifecycle = vi.fn();
+    await runWithAgentTraceRun({ recordSubagentLifecycle }, async () => {
+      await recordSubagentLifecycleTraceEvent({
+        phase: "spawned",
+        runId: "run-1",
+        childSessionKey: "agent:main:subagent:child-1",
+        requesterSessionKey: "agent:main:main",
+      });
+    });
+    recordSubagentLifecycle.mockClear();
+    lifecycleMocks.getGlobalHookRunner.mockReturnValue({
+      hasHooks: () => false,
+      runSubagentEnded: lifecycleMocks.runSubagentEnded,
+    });
+
+    const params = createEmitParams({
+      outcome: "ok",
+    });
+    const emitted = await emitSubagentEndedHookOnce(params);
+
+    expect(emitted).toBe(true);
+    expect(recordSubagentLifecycle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "ended",
+        runId: "run-1",
+        childSessionKey: "agent:main:subagent:child-1",
+        requesterSessionKey: "agent:main:main",
+        outcome: "ok",
+      }),
+    );
   });
 
   it("returns false when runId is blank", async () => {

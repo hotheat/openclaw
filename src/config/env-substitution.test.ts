@@ -22,6 +22,26 @@ describe("resolveConfigEnvVars", () => {
       const result = resolveConfigEnvVars({ key: "${FOO}:${FOO}" }, { FOO: "bar" });
       expect(result).toEqual({ key: "bar:bar" });
     });
+
+    it("uses default value when env var with default is missing", () => {
+      const result = resolveConfigEnvVars(
+        { diagnostics: { langfuse: { captureMode: "${LANGFUSE__CAPTURE_MODE:-llm_text}" } } },
+        {},
+      );
+      expect(result).toEqual({
+        diagnostics: { langfuse: { captureMode: "llm_text" } },
+      });
+    });
+
+    it("uses env value when env var with default is present", () => {
+      const result = resolveConfigEnvVars(
+        { diagnostics: { langfuse: { captureMode: "${LANGFUSE__CAPTURE_MODE:-llm_text}" } } },
+        { LANGFUSE__CAPTURE_MODE: "full" },
+      );
+      expect(result).toEqual({
+        diagnostics: { langfuse: { captureMode: "full" } },
+      });
+    });
   });
 
   describe("nested structures", () => {

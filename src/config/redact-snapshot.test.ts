@@ -926,14 +926,24 @@ describe("realredactConfigSnapshot_real", () => {
           },
         ],
       },
+      diagnostics: {
+        langfuse: {
+          publicKey: "pk-live-langfuse-key",
+          secretKey: "sk-live-langfuse-key",
+        },
+      },
     });
 
     const result = redactConfigSnapshot(snapshot, hints);
     const config = result.config as typeof snapshot.config;
     expect(config.agents.defaults.memorySearch.remote.apiKey).toBe(REDACTED_SENTINEL);
     expect(config.agents.list[0].memorySearch.remote.apiKey).toBe(REDACTED_SENTINEL);
+    expect(config.diagnostics.langfuse.publicKey).toBe(REDACTED_SENTINEL);
+    expect(config.diagnostics.langfuse.secretKey).toBe(REDACTED_SENTINEL);
     const restored = restoreRedactedValues(result.config, snapshot.config, hints);
     expect(restored.agents.defaults.memorySearch.remote.apiKey).toBe("1234");
     expect(restored.agents.list[0].memorySearch.remote.apiKey).toBe("6789");
+    expect(restored.diagnostics.langfuse.publicKey).toBe("pk-live-langfuse-key");
+    expect(restored.diagnostics.langfuse.secretKey).toBe("sk-live-langfuse-key");
   });
 });

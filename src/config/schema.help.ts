@@ -29,6 +29,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Diagnostics controls for targeted tracing, telemetry export, and cache inspection during debugging. Keep baseline diagnostics minimal in production and enable deeper signals only when investigating issues.",
   "diagnostics.otel":
     "OpenTelemetry export settings for traces, metrics, and logs emitted by gateway components. Use this when integrating with centralized observability backends and distributed tracing pipelines.",
+  "diagnostics.langfuse":
+    "Langfuse agent trace export settings for run, generation, tool, and subagent observation trees. Use this when structured LLM debugging is more useful than generic telemetry spans.",
   "diagnostics.cacheTrace":
     "Cache-trace logging settings for observing cache decisions and payload context in embedded runs. Enable this temporarily for debugging and disable afterward to reduce sensitive log footprint.",
   logging:
@@ -401,6 +403,22 @@ export const FIELD_HELP: Record<string, string> = {
     "Trace sampling rate (0-1) controlling how much trace traffic is exported to observability backends. Lower rates reduce overhead/cost, while higher rates improve debugging fidelity.",
   "diagnostics.otel.flushIntervalMs":
     "Interval in milliseconds for periodic telemetry flush from buffers to the collector. Increase to reduce export chatter, or lower for faster visibility during active incident response.",
+  "diagnostics.langfuse.enabled":
+    "Enables native Langfuse trace export for agent runs. Keep disabled until host and keys are configured, because enabled mode validates credentials during plugin startup.",
+  "diagnostics.langfuse.host":
+    "Base URL for the Langfuse deployment, for example an internal or local Langfuse host. Use an env-backed value so runtime config stays portable across gateway hosts.",
+  "diagnostics.langfuse.publicKey":
+    "Langfuse public key used by the trace client. Keep this env-backed and paired with the matching secret key from the same Langfuse project.",
+  "diagnostics.langfuse.secretKey":
+    "Langfuse secret key used by the trace client. Always keep this env-backed or otherwise secret-managed; never commit a real project secret in config files.",
+  "diagnostics.langfuse.serviceName":
+    "Service name attached to Langfuse trace metadata so multiple OpenClaw gateways can be separated in the same project. Use a stable deployment-level name.",
+  "diagnostics.langfuse.captureMode":
+    'Controls payload fidelity: "safe" records structure and summaries, "llm_text" also records model text, and "full" records full tool payloads after masking.',
+  "diagnostics.langfuse.flushIntervalMs":
+    "Interval in milliseconds for buffered Langfuse trace flushes. Increase to reduce write frequency, or lower when actively debugging trace latency.",
+  "diagnostics.langfuse.timeoutMs":
+    "Timeout in milliseconds for Langfuse startup checks and export calls. Keep this bounded so trace backend problems do not stall gateway operation.",
   "diagnostics.cacheTrace.enabled":
     "Log cache trace snapshots for embedded agent runs (default: false).",
   "diagnostics.cacheTrace.filePath":

@@ -3,6 +3,7 @@ import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Command } from "commander";
 import type { AuthProfileCredential, OAuthCredential } from "../agents/auth-profiles/types.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
+import type { AgentTraceSink } from "../agents/tracing/types.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
 import type { ChannelDock } from "../channels/dock.js";
 import type { ChannelId, ChannelPlugin } from "../channels/plugins/types.js";
@@ -18,6 +19,22 @@ import type { PluginRuntime } from "./runtime/types.js";
 
 export type { PluginRuntime } from "./runtime/types.js";
 export type { AnyAgentTool } from "../agents/tools/common.js";
+export type {
+  AgentTraceCaptureMode,
+  AgentTraceGenerationEndEvent,
+  AgentTraceGenerationStartEvent,
+  AgentTraceObservationHandle,
+  AgentTraceParent,
+  AgentTraceRunEndEvent,
+  AgentTraceRunHandle,
+  AgentTraceRunStartEvent,
+  AgentTraceSink,
+  AgentTraceSpanEvent,
+  AgentTraceSubagentLifecycleEvent,
+  AgentTraceToolEndEvent,
+  AgentTraceToolStartEvent,
+  AgentTraceUsage,
+} from "../agents/tracing/types.js";
 
 export type PluginLogger = {
   debug?: (message: string) => void;
@@ -267,6 +284,7 @@ export type OpenClawPluginApi = {
   registerGatewayMethod: (method: string, handler: GatewayRequestHandler) => void;
   registerCli: (registrar: OpenClawPluginCliRegistrar, opts?: { commands?: string[] }) => void;
   registerService: (service: OpenClawPluginService) => void;
+  registerAgentTraceSink: (sink: AgentTraceSink) => void;
   registerProvider: (provider: ProviderPlugin) => void;
   /**
    * Register a custom command that bypasses the LLM agent.

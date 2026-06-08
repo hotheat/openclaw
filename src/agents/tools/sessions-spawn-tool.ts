@@ -89,7 +89,7 @@ export function createSessionsSpawnTool(opts?: {
     description:
       "Spawn a sub-agent in its own isolated session for complex, long-running, parallelizable, or multi-step work. Use it for tasks with multiple deliverables, long runtimes, or delegated background execution.",
     parameters: SessionsSpawnToolSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const task = readStringParam(params, "task", { required: true });
       const label = typeof params.label === "string" ? params.label.trim() : "";
@@ -131,6 +131,7 @@ export function createSessionsSpawnTool(opts?: {
           cleanup,
           expectsCompletionMessage: true,
           completionDelivery,
+          toolCallId,
         },
         {
           agentSessionKey: opts?.agentSessionKey,

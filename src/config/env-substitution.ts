@@ -2,6 +2,7 @@
  * Environment variable substitution for config values.
  *
  * Supports `${VAR_NAME}` syntax in string values, substituted at config load time.
+ * Supports `${VAR_NAME:-default}` to use a default when the env var is unset or empty.
  * - Only uppercase env vars are matched: `[A-Z_][A-Z0-9_]*`
  * - Escape with `$${}` to output literal `${}`
  * - Missing env vars throw `MissingEnvVarError` with context
@@ -37,8 +38,22 @@ export class MissingEnvVarError extends Error {
 }
 
 type EnvToken =
-  | { kind: "escaped"; name: string; end: number }
-  | { kind: "substitution"; name: string; end: number };
+  | { kind: "escaped"; name: string; raw: string; end: number }
+  | { kind: "substitution"; name: string; defaultValue?: string; end: number };
+
+function parseEnvExpression(
+  expression: string,
+): { name: string; defaultValue?: string } | undefined {
+  const defaultSeparator = expression.indexOf(":-");
+  const name = defaultSeparator === -1 ? expression : expression.slice(0, defaultSeparator);
+  if (!ENV_VAR_NAME_PATTERN.test(name)) {
+    return undefined;
+  }
+  if (defaultSeparator === -1) {
+    return { name };
+  }
+  return { name, defaultValue: expression.slice(defaultSeparator + 2) };
+}
 
 function parseEnvTokenAt(value: string, index: number): EnvToken | null {
   if (value[index] !== "$") {
@@ -53,9 +68,10 @@ function parseEnvTokenAt(value: string, index: number): EnvToken | null {
     const start = index + 3;
     const end = value.indexOf("}", start);
     if (end !== -1) {
-      const name = value.slice(start, end);
-      if (ENV_VAR_NAME_PATTERN.test(name)) {
-        return { kind: "escaped", name, end };
+      const raw = value.slice(start, end);
+      const parsed = parseEnvExpression(raw);
+      if (parsed) {
+        return { kind: "escaped", name: parsed.name, raw, end };
       }
     }
   }
@@ -65,9 +81,9 @@ function parseEnvTokenAt(value: string, index: number): EnvToken | null {
     const start = index + 2;
     const end = value.indexOf("}", start);
     if (end !== -1) {
-      const name = value.slice(start, end);
-      if (ENV_VAR_NAME_PATTERN.test(name)) {
-        return { kind: "substitution", name, end };
+      const parsed = parseEnvExpression(value.slice(start, end));
+      if (parsed) {
+        return { kind: "substitution", ...parsed, end };
       }
     }
   }
@@ -91,13 +107,18 @@ function substituteString(value: string, env: NodeJS.ProcessEnv, configPath: str
 
     const token = parseEnvTokenAt(value, i);
     if (token?.kind === "escaped") {
-      chunks.push(`\${${token.name}}`);
+      chunks.push(`\${${token.raw}}`);
       i = token.end;
       continue;
     }
     if (token?.kind === "substitution") {
       const envValue = env[token.name];
       if (envValue === undefined || envValue === "") {
+        if (token.defaultValue !== undefined) {
+          chunks.push(token.defaultValue);
+          i = token.end;
+          continue;
+        }
         throw new MissingEnvVarError(token.name, configPath);
       }
       chunks.push(envValue);

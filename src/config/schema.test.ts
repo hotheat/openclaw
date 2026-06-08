@@ -10,6 +10,8 @@ describe("config schema", () => {
     expect(schema.properties?.$schema).toBeUndefined();
     expect(res.uiHints.gateway?.label).toBe("Gateway");
     expect(res.uiHints["gateway.auth.token"]?.sensitive).toBe(true);
+    expect(res.uiHints["diagnostics.langfuse.publicKey"]?.sensitive).toBe(true);
+    expect(res.uiHints["diagnostics.langfuse.secretKey"]?.sensitive).toBe(true);
     expect(res.version).toBeTruthy();
     expect(res.generatedAt).toBeTruthy();
   });

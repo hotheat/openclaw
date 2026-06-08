@@ -5,6 +5,7 @@ vi.mock("../../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
 }));
 
+import { runWithToolTraceParent } from "../tracing/context.js";
 import { readLatestAssistantReply } from "./agent-step.js";
 
 describe("readLatestAssistantReply", () => {
@@ -45,5 +46,52 @@ describe("readLatestAssistantReply", () => {
     const result = await readLatestAssistantReply({ sessionKey: "agent:main:child" });
 
     expect(result).toBe("older output");
+  });
+});
+
+describe("runAgentStep", () => {
+  beforeEach(() => {
+    callGatewayMock.mockClear();
+  });
+
+  it("forwards the active tool trace parent to nested agent steps", async () => {
+    const traceParent = {
+      parentTraceId: "trace-id",
+      parentRunId: "parent-run",
+      parentSessionKey: "agent:main:main",
+      parentObservationId: "tool-observation-id",
+    };
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const call = request as { method?: string };
+      if (call.method === "agent") {
+        return { runId: "child-run" };
+      }
+      if (call.method === "agent.wait") {
+        return { status: "ok" };
+      }
+      if (call.method === "chat.history") {
+        return {
+          messages: [{ role: "assistant", content: [{ type: "text", text: "done" }] }],
+        };
+      }
+      return {};
+    });
+    const { runAgentStep } = await import("./agent-step.js");
+
+    await runWithToolTraceParent(traceParent, async () => {
+      await runAgentStep({
+        sessionKey: "agent:main:child",
+        message: "continue",
+        extraSystemPrompt: "step",
+        timeoutMs: 1000,
+        sourceSessionKey: "agent:main:main",
+        sourceChannel: "whatsapp",
+      });
+    });
+
+    const agentCall = callGatewayMock.mock.calls
+      .map((call) => call[0] as { method?: string; params?: unknown })
+      .find((call) => call.method === "agent");
+    expect(agentCall?.params).toMatchObject({ traceParent });
   });
 });

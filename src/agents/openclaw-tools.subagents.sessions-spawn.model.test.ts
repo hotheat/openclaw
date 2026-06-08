@@ -7,8 +7,11 @@ import {
   resetSessionsSpawnConfigOverride,
   setSessionsSpawnConfigOverride,
 } from "./openclaw-tools.subagents.sessions-spawn.test-harness.js";
+import { handleToolExecutionStart } from "./pi-embedded-subscribe.handlers.tools.js";
+import type { ToolHandlerContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { resetSubagentRegistryForTests } from "./subagent-registry.js";
 import { SUBAGENT_SPAWN_ACCEPTED_NOTE } from "./subagent-spawn.js";
+import { runWithAgentTraceParent, runWithToolTraceParent } from "./tracing/context.js";
 
 const callGatewayMock = getCallGatewayMock();
 type GatewayCall = { method?: string; params?: unknown };
@@ -59,6 +62,37 @@ function mockPatchAndSingleAgentRun(params: { calls: GatewayCall[]; runId: strin
     }
     return {};
   });
+}
+
+function createToolHandlerContext(): ToolHandlerContext {
+  return {
+    params: {
+      runId: "stale-run",
+    },
+    state: {
+      toolMetaById: new Map(),
+      toolMetas: [],
+      toolSummaryById: new Set(),
+      pendingMessagingTargets: new Map(),
+      pendingMessagingTexts: new Map(),
+      pendingMessagingMediaUrls: new Map(),
+      messagingToolSentTexts: [],
+      messagingToolSentTextsNormalized: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      successfulCronAdds: 0,
+    },
+    log: {
+      debug: () => undefined,
+      warn: () => undefined,
+    },
+    flushBlockReplyBuffer: () => undefined,
+    shouldEmitToolResult: () => false,
+    shouldEmitToolOutput: () => false,
+    emitToolSummary: () => undefined,
+    emitToolOutput: () => undefined,
+    trimMessagingToolSent: () => undefined,
+  };
 }
 
 async function expectSpawnUsesConfiguredModel(params: {
@@ -135,6 +169,66 @@ describe("openclaw-tools: subagents (sessions_spawn model + thinking)", () => {
     expect(patchCall?.params).toMatchObject({
       key: expect.stringContaining("subagent:"),
       model: "claude-haiku-4-5",
+    });
+  });
+
+  it("sessions_spawn forwards the active tool observation as trace parent", async () => {
+    const calls: GatewayCall[] = [];
+    mockPatchAndSingleAgentRun({ calls, runId: "child-run" });
+    const toolTraceParent = {
+      parentTraceId: "trace-id",
+      parentRunId: "parent-run",
+      parentSessionKey: "agent:main:main",
+      parentObservationId: "tool-observation-id",
+    };
+
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "discord",
+    });
+    await runWithToolTraceParent(toolTraceParent, async () => {
+      await tool.execute("tool-call-1", { task: "do thing" });
+    });
+
+    const agentCall = calls.find((call) => call.method === "agent");
+    expect(agentCall?.params).toMatchObject({
+      traceParent: {
+        parentTraceId: "trace-id",
+        parentRunId: "parent-run",
+        parentSessionKey: "agent:main:main",
+        parentObservationId: "tool-observation-id",
+      },
+    });
+  });
+
+  it("sessions_spawn ignores stale subscription trace state outside the active tool execution context", async () => {
+    const calls: GatewayCall[] = [];
+    mockPatchAndSingleAgentRun({ calls, runId: "child-run" });
+
+    await handleToolExecutionStart(createToolHandlerContext(), {
+      type: "tool_execution_start",
+      toolName: "sessions_spawn",
+      toolCallId: "tool-call-1",
+      args: { task: "stale" },
+    });
+
+    const runTraceParent = {
+      parentTraceId: "current-trace",
+      parentRunId: "current-run",
+      parentSessionKey: "agent:main:main",
+      parentObservationId: "current-run-observation",
+    };
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "discord",
+    });
+    await runWithAgentTraceParent(runTraceParent, async () => {
+      await tool.execute("tool-call-1", { task: "do thing" });
+    });
+
+    const agentCall = calls.find((call) => call.method === "agent");
+    expect(agentCall?.params).toMatchObject({
+      traceParent: runTraceParent,
     });
   });
 

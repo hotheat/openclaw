@@ -8,6 +8,7 @@ import type { ExecElevatedDefaults, ExecToolDefaults } from "../../bash-tools.js
 import type { BlockReplyPayload } from "../../pi-embedded-payloads.js";
 import type { BlockReplyChunking, ToolResultFormat } from "../../pi-embedded-subscribe.js";
 import type { SkillSnapshot } from "../../skills.js";
+import type { AgentTraceParent } from "../../tracing/types.js";
 
 // Simplified tool definition for client-provided tools (OpenResponses hosted tools)
 export type ClientToolDefinition = {
@@ -99,6 +100,7 @@ export type RunEmbeddedPiAgentParams = {
   enqueue?: typeof enqueueCommand;
   extraSystemPrompt?: string;
   inputProvenance?: InputProvenance;
+  traceParent?: AgentTraceParent;
   streamParams?: AgentStreamParams;
   ownerNumbers?: string[];
   enforceFinalTag?: boolean;

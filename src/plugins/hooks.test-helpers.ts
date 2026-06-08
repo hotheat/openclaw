@@ -21,5 +21,8 @@ export function createMockPluginRegistry(
     services: [],
     providers: [],
     commands: [],
+    channels: [],
+    agentTraceSinks: [],
+    diagnostics: [],
   } as unknown as PluginRegistry;
 }

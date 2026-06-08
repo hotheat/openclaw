@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { listAgentIds } from "../../agents/agent-scope.js";
+import { normalizeAgentTraceParent } from "../../agents/tracing/context.js";
+import type { AgentTraceParent } from "../../agents/tracing/types.js";
 import { BARE_SESSION_RESET_PROMPT } from "../../auto-reply/reply/session-reset-prompt.js";
 import { agentCommand } from "../../commands/agent.js";
 import { loadConfig } from "../../config/config.js";
@@ -195,6 +197,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       label?: string;
       spawnedBy?: string;
       inputProvenance?: InputProvenance;
+      traceParent?: AgentTraceParent;
     };
     const cfg = loadConfig();
     const idem = request.idempotencyKey;
@@ -208,6 +211,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     let spawnedByValue =
       typeof request.spawnedBy === "string" ? request.spawnedBy.trim() : undefined;
     const inputProvenance = normalizeInputProvenance(request.inputProvenance);
+    const traceParent = normalizeAgentTraceParent(request.traceParent);
     const cached = context.dedupe.get(`agent:${idem}`);
     if (cached) {
       respond(cached.ok, cached.payload, cached.error, {
@@ -589,6 +593,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         lane: request.lane,
         extraSystemPrompt: request.extraSystemPrompt,
         inputProvenance,
+        traceParent,
       },
       defaultRuntime,
       context.deps,

@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { AnyAgentTool } from "../agents/tools/common.js";
+import type { AgentTraceSink } from "../agents/tracing/types.js";
 import type { ChannelDock } from "../channels/dock.js";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import type {
@@ -94,6 +95,12 @@ export type PluginCommandRegistration = {
   source: string;
 };
 
+export type PluginAgentTraceSinkRegistration = {
+  pluginId: string;
+  sink: AgentTraceSink;
+  source: string;
+};
+
 export type PluginRecord = {
   id: string;
   name: string;
@@ -116,6 +123,7 @@ export type PluginRecord = {
   commands: string[];
   httpHandlers: number;
   hookCount: number;
+  agentTraceSinks: number;
   configSchema: boolean;
   configUiHints?: Record<string, PluginConfigUiHint>;
   configJsonSchema?: Record<string, unknown>;
@@ -134,6 +142,7 @@ export type PluginRegistry = {
   cliRegistrars: PluginCliRegistration[];
   services: PluginServiceRegistration[];
   commands: PluginCommandRegistration[];
+  agentTraceSinks: PluginAgentTraceSinkRegistration[];
   diagnostics: PluginDiagnostic[];
 };
 
@@ -157,6 +166,7 @@ export function createEmptyPluginRegistry(): PluginRegistry {
     cliRegistrars: [],
     services: [],
     commands: [],
+    agentTraceSinks: [],
     diagnostics: [],
   };
 }
@@ -414,6 +424,24 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     });
   };
 
+  const registerAgentTraceSink = (record: PluginRecord, sink: AgentTraceSink) => {
+    if (!sink || typeof sink.startRun !== "function") {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: "agent trace sink registration missing startRun",
+      });
+      return;
+    }
+    record.agentTraceSinks += 1;
+    registry.agentTraceSinks.push({
+      pluginId: record.id,
+      sink,
+      source: record.source,
+    });
+  };
+
   const registerCommand = (record: PluginRecord, command: OpenClawPluginCommandDefinition) => {
     const name = command.name.trim();
     if (!name) {
@@ -496,6 +524,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       registerGatewayMethod: (method, handler) => registerGatewayMethod(record, method, handler),
       registerCli: (registrar, opts) => registerCli(record, registrar, opts),
       registerService: (service) => registerService(record, service),
+      registerAgentTraceSink: (sink) => registerAgentTraceSink(record, sink),
       registerCommand: (command) => registerCommand(record, command),
       resolvePath: (input: string) => resolveUserPath(input),
       on: (hookName, handler, opts) => registerTypedHook(record, hookName, handler, opts),
@@ -512,6 +541,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     registerGatewayMethod,
     registerCli,
     registerService,
+    registerAgentTraceSink,
     registerCommand,
     registerHook,
     registerTypedHook,

@@ -21,6 +21,11 @@ import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "./tools/sessions-helpers.js";
+import {
+  getCurrentAgentTraceParent,
+  getCurrentToolTraceParent,
+  recordSubagentLifecycleTraceEvent,
+} from "./tracing/context.js";
 
 export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
@@ -39,6 +44,7 @@ export type SpawnSubagentParams = {
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentCompletionDelivery;
+  toolCallId?: string;
 };
 
 export type SpawnSubagentContext = {
@@ -302,6 +308,40 @@ export async function spawnSubagentDirect(
   const childDepth = callerDepth + 1;
   const spawnedByKey = requesterInternalKey;
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
+  let lifecycleStarted = false;
+  let lifecycleEnded = false;
+  const emitLifecycleSpawning = async () => {
+    if (lifecycleStarted) {
+      return;
+    }
+    lifecycleStarted = true;
+    await recordSubagentLifecycleTraceEvent({
+      phase: "spawning",
+      childSessionKey,
+      requesterSessionKey: requesterInternalKey,
+      agentId: targetAgentId,
+      label: label || undefined,
+      mode: spawnMode,
+    });
+  };
+  const emitLifecycleEndedError = async (params: { runId?: string; error: string }) => {
+    if (!lifecycleStarted || lifecycleEnded) {
+      return;
+    }
+    lifecycleEnded = true;
+    await recordSubagentLifecycleTraceEvent({
+      phase: "ended",
+      runId: params.runId,
+      childSessionKey,
+      requesterSessionKey: requesterInternalKey,
+      agentId: targetAgentId,
+      label: label || undefined,
+      mode: spawnMode,
+      outcome: "error",
+      error: params.error,
+    });
+  };
+  await emitLifecycleSpawning();
   const resolvedModel = resolveSubagentSpawnModelSelection({
     cfg,
     agentId: targetAgentId,
@@ -319,9 +359,11 @@ export async function spawnSubagentDirect(
     if (!normalized) {
       const { provider, model } = splitModelRef(resolvedModel);
       const hint = formatThinkingLevels(provider, model);
+      const error = `Invalid thinking level "${thinkingCandidateRaw}". Use one of: ${hint}.`;
+      await emitLifecycleEndedError({ error });
       return {
         status: "error",
-        error: `Invalid thinking level "${thinkingCandidateRaw}". Use one of: ${hint}.`,
+        error,
       };
     }
     thinkingOverride = normalized;
@@ -335,6 +377,7 @@ export async function spawnSubagentDirect(
   } catch (err) {
     const messageText =
       err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+    await emitLifecycleEndedError({ error: messageText });
     return {
       status: "error",
       error: messageText,
@@ -353,6 +396,7 @@ export async function spawnSubagentDirect(
     } catch (err) {
       const messageText =
         err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+      await emitLifecycleEndedError({ error: messageText });
       return {
         status: "error",
         error: messageText,
@@ -373,6 +417,7 @@ export async function spawnSubagentDirect(
     } catch (err) {
       const messageText =
         err instanceof Error ? err.message : typeof err === "string" ? err : "error";
+      await emitLifecycleEndedError({ error: messageText });
       return {
         status: "error",
         error: messageText,
@@ -405,6 +450,7 @@ export async function spawnSubagentDirect(
       } catch {
         // Best-effort cleanup only.
       }
+      await emitLifecycleEndedError({ error: bindResult.error });
       return {
         status: "error",
         error: bindResult.error,
@@ -455,6 +501,7 @@ export async function spawnSubagentDirect(
         groupId: ctx.agentGroupId ?? undefined,
         groupChannel: ctx.agentGroupChannel ?? undefined,
         groupSpace: ctx.agentGroupSpace ?? undefined,
+        traceParent: getCurrentToolTraceParent() ?? getCurrentAgentTraceParent(),
       },
       timeoutMs: 10_000,
     });
@@ -462,6 +509,7 @@ export async function spawnSubagentDirect(
       childRunId = response.runId;
     }
   } catch (err) {
+    await emitLifecycleEndedError({ runId: childRunId, error: "Session failed to start" });
     if (threadBindingReady) {
       const hasEndedHook = hookRunner?.hasHooks("subagent_ended") === true;
       let endedHookEmitted = false;
@@ -558,6 +606,15 @@ export async function spawnSubagentDirect(
       // Spawn should still return accepted if spawn lifecycle hooks fail.
     }
   }
+  await recordSubagentLifecycleTraceEvent({
+    phase: "spawned",
+    runId: childRunId,
+    childSessionKey,
+    requesterSessionKey: requesterInternalKey,
+    agentId: targetAgentId,
+    label: label || undefined,
+    mode: spawnMode,
+  });
 
   return {
     status: "accepted",

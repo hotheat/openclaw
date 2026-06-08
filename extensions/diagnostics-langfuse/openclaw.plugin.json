@@ -1,0 +1,10 @@
+{
+  "id": "diagnostics-langfuse",
+  "name": "Diagnostics Langfuse",
+  "description": "Export native agent traces to Langfuse",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

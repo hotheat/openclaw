@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { REDACTED_SENTINEL } from "../config/redact-snapshot.js";
 import {
   connectOk,
   installGatewayTestHooks,
@@ -15,6 +16,17 @@ installGatewayTestHooks({ scope: "suite" });
 
 let server: Awaited<ReturnType<typeof startServerWithClient>>["server"];
 let ws: Awaited<ReturnType<typeof startServerWithClient>>["ws"];
+
+type LangfuseConfigPayload = Record<string, unknown> & {
+  config?: {
+    diagnostics?: {
+      langfuse?: {
+        publicKey?: string;
+        secretKey?: string;
+      };
+    };
+  };
+};
 
 beforeAll(async () => {
   const started = await startServerWithClient(undefined, { controlUiEnabled: true });
@@ -35,6 +47,30 @@ describe("gateway config methods", () => {
     });
     expect(res.ok).toBe(false);
     expect(res.error?.message ?? "").toContain("raw must be an object");
+  });
+
+  it("redacts Langfuse keys from config.set and config.get responses", async () => {
+    const raw = JSON.stringify({
+      diagnostics: {
+        langfuse: {
+          enabled: true,
+          host: "http://localhost:3005",
+          publicKey: "pk-live-langfuse-key",
+          secretKey: "sk-live-langfuse-key",
+          captureMode: "safe",
+        },
+      },
+    });
+
+    const setRes = await rpcReq<LangfuseConfigPayload>(ws, "config.set", { raw });
+    expect(setRes.ok).toBe(true);
+    expect(setRes.payload?.config?.diagnostics?.langfuse?.publicKey).toBe(REDACTED_SENTINEL);
+    expect(setRes.payload?.config?.diagnostics?.langfuse?.secretKey).toBe(REDACTED_SENTINEL);
+
+    const getRes = await rpcReq<LangfuseConfigPayload>(ws, "config.get", {});
+    expect(getRes.ok).toBe(true);
+    expect(getRes.payload?.config?.diagnostics?.langfuse?.publicKey).toBe(REDACTED_SENTINEL);
+    expect(getRes.payload?.config?.diagnostics?.langfuse?.secretKey).toBe(REDACTED_SENTINEL);
   });
 });
 

@@ -14,6 +14,7 @@ import { resolveChannelCapabilities } from "../../../config/channel-capabilities
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
+import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import type {
   PluginHookAgentContext,
   PluginHookBeforeAgentStartResult,
@@ -69,6 +70,7 @@ import { detectRuntimeShell } from "../../shell-utils.js";
 import {
   applySkillEnvOverrides,
   applySkillEnvOverridesFromSnapshot,
+  buildWorkspaceSkillsTraceSummary,
   loadWorkspaceSkillEntries,
   resolveSkillsPromptForRun,
 } from "../../skills.js";
@@ -76,6 +78,14 @@ import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../tool-fs-policy.js";
+import {
+  resolveCurrentAgentTraceParent,
+  runWithAgentTraceParent,
+  runWithAgentTraceRun,
+} from "../../tracing/context.js";
+import { createAgentTraceRunEndOnce, createAgentTraceRunner } from "../../tracing/runner.js";
+import { wrapToolsWithAgentTracing } from "../../tracing/tools.js";
+import type { AgentTraceObservationHandle, AgentTraceRunHandle } from "../../tracing/types.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
@@ -314,6 +324,8 @@ export async function runEmbeddedAttempt(
   await fs.mkdir(effectiveWorkspace, { recursive: true });
 
   let restoreSkillEnv: (() => void) | undefined;
+  let traceRunStartedAt: number | undefined;
+  let endTraceRunOnFailure: ReturnType<typeof createAgentTraceRunEndOnce> | undefined;
   process.chdir(effectiveWorkspace);
   try {
     const shouldLoadSkillEntries = !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
@@ -359,6 +371,54 @@ export async function runEmbeddedAttempt(
       config: params.config,
       agentId: params.agentId,
     });
+    const activePluginRegistry = getActivePluginRegistry();
+    const traceRunner =
+      activePluginRegistry && activePluginRegistry.agentTraceSinks.length > 0
+        ? createAgentTraceRunner(activePluginRegistry, { warn: (message) => log.warn(message) })
+        : undefined;
+    traceRunStartedAt = Date.now();
+    const traceRun: AgentTraceRunHandle | undefined = await traceRunner?.startRun({
+      runId: params.runId,
+      sessionId: params.sessionId,
+      sessionKey: params.sessionKey,
+      agentId: sessionAgentId,
+      channel: params.messageChannel ?? params.messageProvider,
+      messageProvider: params.messageProvider,
+      lane: params.lane,
+      provider: params.provider,
+      model: params.modelId,
+      workspaceDir: effectiveWorkspace,
+      spawnedBy: params.spawnedBy,
+      inputProvenance: params.inputProvenance,
+      traceParent: params.traceParent,
+      startedAt: traceRunStartedAt,
+    });
+    const skillsTraceSummary = buildWorkspaceSkillsTraceSummary({
+      workspaceDir: effectiveWorkspace,
+      skillsSnapshot: params.skillsSnapshot,
+      entries: shouldLoadSkillEntries ? skillEntries : undefined,
+      config: params.config,
+    });
+    await traceRun?.recordSpan?.({
+      name: "openclaw.skills.resolve",
+      input: skillsTraceSummary.input,
+      output: skillsTraceSummary.output,
+      metadata: {
+        availableCount: skillsTraceSummary.output.availableCount,
+        promptCount: skillsTraceSummary.output.promptCount,
+        promptChars: skillsTraceSummary.output.promptChars,
+      },
+      startedAt: traceRunStartedAt,
+      endedAt: Date.now(),
+    });
+    const endTraceRunOnce = createAgentTraceRunEndOnce(traceRun);
+    endTraceRunOnFailure = endTraceRunOnce;
+    const currentTraceParent = resolveCurrentAgentTraceParent({
+      traceRun,
+      currentRunId: params.runId,
+      currentSessionKey: params.sessionKey ?? params.sessionId,
+      inheritedParent: params.traceParent,
+    });
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
     const toolsRaw = params.disableTools
@@ -402,7 +462,10 @@ export async function runEmbeddedAttempt(
             params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
           disableMessageTool: params.disableMessageTool,
         });
-    const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider });
+    const tools = wrapToolsWithAgentTracing({
+      tools: sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider }),
+      traceRun,
+    });
     const allowedToolNames = collectAllowedToolNames({
       tools,
       clientTools: params.clientTools,
@@ -1019,8 +1082,11 @@ export async function runEmbeddedAttempt(
 
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
+      let generationTrace: AgentTraceObservationHandle | undefined;
+      let promptTraceStartedAt: number | undefined;
       try {
         const promptStartedAt = Date.now();
+        promptTraceStartedAt = promptStartedAt;
 
         // Run before_prompt_build hooks to allow plugins to inject prompt context.
         // Legacy compatibility: before_agent_start is also checked for context fields.
@@ -1168,14 +1234,32 @@ export async function runEmbeddedAttempt(
           }
 
           promptStartMessageCount = activeSession.messages.length;
+          const startedGenerationTrace = await traceRun?.startGeneration?.({
+            provider: params.provider,
+            model: params.modelId,
+            systemPrompt: systemPromptText,
+            prompt: effectivePrompt,
+            historyMessages: activeSession.messages,
+            imagesCount: imageResult.images.length,
+            startedAt: promptStartedAt,
+          });
+          if (startedGenerationTrace) {
+            generationTrace = startedGenerationTrace;
+          }
 
           // Only pass images option if there are actually images to pass
           // This avoids potential issues with models that don't expect the images parameter
-          if (imageResult.images.length > 0) {
-            await abortable(activeSession.prompt(effectivePrompt, { images: imageResult.images }));
-          } else {
-            await abortable(activeSession.prompt(effectivePrompt));
-          }
+          await runWithAgentTraceRun(traceRun, async () => {
+            await runWithAgentTraceParent(currentTraceParent, async () => {
+              if (imageResult.images.length > 0) {
+                await abortable(
+                  activeSession.prompt(effectivePrompt, { images: imageResult.images }),
+                );
+                return;
+              }
+              await abortable(activeSession.prompt(effectivePrompt));
+            });
+          });
         } catch (err) {
           promptError = err;
           promptErrorSource = "prompt";
@@ -1365,6 +1449,24 @@ export async function runEmbeddedAttempt(
           });
       }
 
+      await generationTrace?.end({
+        assistantTexts,
+        lastAssistant,
+        usage: getUsageTotals(),
+        error: promptError ? describeUnknownError(promptError) : undefined,
+        durationMs:
+          promptTraceStartedAt != null ? Math.max(0, Date.now() - promptTraceStartedAt) : undefined,
+        endedAt: Date.now(),
+      });
+
+      await endTraceRunOnce({
+        success: !aborted && !promptError,
+        error: promptError ? describeUnknownError(promptError) : undefined,
+        durationMs:
+          traceRunStartedAt != null ? Math.max(0, Date.now() - traceRunStartedAt) : undefined,
+        endedAt: Date.now(),
+      });
+
       return {
         aborted,
         timedOut,
@@ -1408,6 +1510,15 @@ export async function runEmbeddedAttempt(
       session?.dispose();
       await sessionLock.release();
     }
+  } catch (err) {
+    await endTraceRunOnFailure?.({
+      success: false,
+      error: describeUnknownError(err),
+      durationMs:
+        traceRunStartedAt != null ? Math.max(0, Date.now() - traceRunStartedAt) : undefined,
+      endedAt: Date.now(),
+    });
+    throw err;
   } finally {
     restoreSkillEnv?.();
     process.chdir(prevCwd);

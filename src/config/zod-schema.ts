@@ -203,6 +203,21 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        langfuse: z
+          .object({
+            enabled: z.boolean().optional(),
+            host: z.string().optional(),
+            publicKey: z.string().optional().register(sensitive),
+            secretKey: z.string().optional().register(sensitive),
+            serviceName: z.string().optional(),
+            captureMode: z
+              .union([z.literal("safe"), z.literal("llm_text"), z.literal("full")])
+              .optional(),
+            flushIntervalMs: z.number().int().nonnegative().optional(),
+            timeoutMs: z.number().int().nonnegative().optional(),
+          })
+          .strict()
+          .optional(),
         cacheTrace: z
           .object({
             enabled: z.boolean().optional(),

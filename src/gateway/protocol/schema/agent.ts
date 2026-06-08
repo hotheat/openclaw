@@ -86,6 +86,17 @@ export const AgentParamsSchema = Type.Object(
         { additionalProperties: false },
       ),
     ),
+    traceParent: Type.Optional(
+      Type.Object(
+        {
+          parentTraceId: Type.Optional(Type.String()),
+          parentRunId: Type.Optional(Type.String()),
+          parentSessionKey: Type.Optional(Type.String()),
+          parentObservationId: Type.Optional(Type.String()),
+        },
+        { additionalProperties: false },
+      ),
+    ),
     idempotencyKey: NonEmptyString,
     label: Type.Optional(SessionLabelString),
     spawnedBy: Type.Optional(Type.String()),
