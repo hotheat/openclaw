@@ -1,9 +1,11 @@
-import { listAgentIds } from "../agents/agent-scope.js";
+import { listAgentIds, resolveSessionAgentId } from "../agents/agent-scope.js";
+import { resolveAgentTimeoutMs } from "../agents/timeout.js";
 import { formatCliCommand } from "../cli/command-format.js";
 import type { CliDeps } from "../cli/deps.js";
 import { withProgress } from "../cli/progress.js";
 import { loadConfig } from "../config/config.js";
 import { callGateway, randomIdempotencyKey } from "../gateway/call.js";
+import { resolveSessionModelRef } from "../gateway/session-utils.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import {
@@ -53,15 +55,40 @@ export type AgentCliOpts = {
   local?: boolean;
 };
 
-function parseTimeoutSeconds(opts: { cfg: ReturnType<typeof loadConfig>; timeout?: string }) {
-  const raw =
-    opts.timeout !== undefined
-      ? Number.parseInt(String(opts.timeout), 10)
-      : (opts.cfg.agents?.defaults?.timeoutSeconds ?? 600);
+function parseTimeoutSeconds(timeout?: string): number | undefined {
+  if (timeout === undefined) {
+    return undefined;
+  }
+  const raw = Number.parseInt(String(timeout), 10);
   if (Number.isNaN(raw) || raw < 0) {
     throw new Error("--timeout must be a non-negative integer (seconds; 0 means no timeout)");
   }
   return raw;
+}
+
+function resolveGatewayAgentTimeout(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  sessionKey?: string;
+  sessionEntry?: Parameters<typeof resolveSessionModelRef>[1];
+  timeout?: string;
+}) {
+  const timeoutOverrideSeconds = parseTimeoutSeconds(params.timeout);
+  const agentId = resolveSessionAgentId({
+    sessionKey: params.sessionKey,
+    config: params.cfg,
+  });
+  const { provider } = resolveSessionModelRef(params.cfg, params.sessionEntry, agentId);
+  const runTimeoutMs = resolveAgentTimeoutMs({
+    cfg: params.cfg,
+    provider,
+    overrideSeconds: timeoutOverrideSeconds,
+  });
+  const timeoutSeconds = timeoutOverrideSeconds ?? Math.ceil(runTimeoutMs / 1000);
+  const gatewayTimeoutMs =
+    runTimeoutMs === NO_GATEWAY_TIMEOUT_MS
+      ? NO_GATEWAY_TIMEOUT_MS
+      : Math.min(NO_GATEWAY_TIMEOUT_MS, Math.max(10_000, runTimeoutMs + 30_000));
+  return { timeoutSeconds, gatewayTimeoutMs };
 }
 
 function formatPayloadForLog(payload: {
@@ -104,18 +131,19 @@ export async function agentViaGatewayCommand(opts: AgentCliOpts, runtime: Runtim
       );
     }
   }
-  const timeoutSeconds = parseTimeoutSeconds({ cfg, timeout: opts.timeout });
-  const gatewayTimeoutMs =
-    timeoutSeconds === 0
-      ? NO_GATEWAY_TIMEOUT_MS // no timeout (timer-safe max)
-      : Math.max(10_000, (timeoutSeconds + 30) * 1000);
-
-  const sessionKey = resolveSessionKeyForRequest({
+  const sessionResolution = resolveSessionKeyForRequest({
     cfg,
     agentId,
     to: opts.to,
     sessionId: opts.sessionId,
-  }).sessionKey;
+  });
+  const sessionKey = sessionResolution.sessionKey;
+  const { timeoutSeconds, gatewayTimeoutMs } = resolveGatewayAgentTimeout({
+    cfg,
+    sessionKey,
+    sessionEntry: sessionKey ? sessionResolution.sessionStore[sessionKey] : undefined,
+    timeout: opts.timeout,
+  });
 
   const channel = normalizeMessageChannel(opts.channel);
   const idempotencyKey = opts.runId?.trim() || randomIdempotencyKey();

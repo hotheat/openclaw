@@ -4,6 +4,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
+import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { resolveAgentIdFromSessionKey, type SessionEntry } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { logVerbose } from "../../globals.js";
@@ -137,6 +138,11 @@ export function createFollowupRunner(params: {
           ),
           run: (provider, model) => {
             const authProfile = resolveRunAuthProfile(queued.run, provider);
+            const attemptTimeoutMs = resolveAgentTimeoutMs({
+              cfg: queued.run.config,
+              provider,
+              overrideSeconds: queued.run.timeoutOverrideSeconds,
+            });
             return runEmbeddedPiAgent({
               sessionId: queued.run.sessionId,
               sessionKey: queued.run.sessionKey,
@@ -172,7 +178,7 @@ export function createFollowupRunner(params: {
               suppressToolErrorWarnings: opts?.suppressToolErrorWarnings,
               execOverrides: queued.run.execOverrides,
               bashElevated: queued.run.bashElevated,
-              timeoutMs: queued.run.timeoutMs,
+              timeoutMs: attemptTimeoutMs,
               runId,
               blockReplyBreak: queued.run.blockReplyBreak,
               onAgentEvent: (evt) => {

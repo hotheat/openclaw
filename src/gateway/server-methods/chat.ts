@@ -732,8 +732,11 @@ export const chatHandlers: GatewayRequestHandlers = {
     const rawSessionKey = p.sessionKey;
     const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const sessionDelivery = deliveryContextFromSession(entry);
+    const timeoutAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+    const { provider: timeoutProvider } = resolveSessionModelRef(cfg, entry, timeoutAgentId);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
+      provider: timeoutProvider,
       overrideMs: p.timeoutMs,
     });
     const now = Date.now();

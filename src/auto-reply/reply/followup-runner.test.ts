@@ -3,15 +3,26 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { loadSessionStore, saveSessionStore, type SessionEntry } from "../../config/sessions.js";
+import type { ModelProviderConfig } from "../../config/types.models.js";
 import type { FollowupRun } from "./queue.js";
 import { createMockTypingController } from "./test-helpers.js";
 
-const runEmbeddedPiAgentMock = vi.fn();
+type RunWithModelFallbackParams = {
+  provider: string;
+  model: string;
+  run: (provider: string, model: string) => Promise<unknown>;
+};
 
-vi.mock(
-  "../../agents/model-fallback.js",
-  async () => await import("../../test-utils/model-fallback.mock.js"),
-);
+const runEmbeddedPiAgentMock = vi.fn();
+const runWithModelFallbackMock = vi.fn(async (params: RunWithModelFallbackParams) => ({
+  result: await params.run(params.provider, params.model),
+  provider: params.provider,
+  model: params.model,
+}));
+
+vi.mock("../../agents/model-fallback.js", () => ({
+  runWithModelFallback: (params: RunWithModelFallbackParams) => runWithModelFallbackMock(params),
+}));
 
 vi.mock("../../agents/pi-embedded.js", () => ({
   runEmbeddedPiAgent: (params: unknown) => runEmbeddedPiAgentMock(params),
@@ -48,6 +59,22 @@ const baseQueuedRun = (messageProvider = "whatsapp"): FollowupRun =>
       blockReplyBreak: "message_end",
     },
   }) as FollowupRun;
+
+const resetAgentMocks = () => {
+  runEmbeddedPiAgentMock.mockReset();
+  runWithModelFallbackMock.mockReset();
+  runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => ({
+    result: await params.run(params.provider, params.model),
+    provider: params.provider,
+    model: params.model,
+  }));
+};
+
+const providerConfig = (timeoutSeconds: number): ModelProviderConfig => ({
+  baseUrl: "https://example.invalid/v1",
+  timeoutSeconds,
+  models: [],
+});
 
 function mockCompactionRun(params: {
   willRetry: boolean;
@@ -282,7 +309,7 @@ describe("createFollowupRunner messaging tool dedupe", () => {
 
 describe("createFollowupRunner agentDir forwarding", () => {
   it("passes queued run agentDir to runEmbeddedPiAgent", async () => {
-    runEmbeddedPiAgentMock.mockClear();
+    resetAgentMocks();
     const onBlockReply = vi.fn(async () => {});
     runEmbeddedPiAgentMock.mockResolvedValueOnce({
       payloads: [{ text: "hello world!" }],
@@ -308,5 +335,130 @@ describe("createFollowupRunner agentDir forwarding", () => {
     expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
     const call = runEmbeddedPiAgentMock.mock.calls.at(-1)?.[0] as { agentDir?: string };
     expect(call?.agentDir).toBe(agentDir);
+  });
+});
+
+describe("createFollowupRunner timeout resolution", () => {
+  it("uses provider-specific timeout for fallback attempts", async () => {
+    resetAgentMocks();
+    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => {
+      try {
+        await params.run(params.provider, params.model);
+      } catch {
+        return {
+          result: await params.run("deepinfra", "fallback-model"),
+          provider: "deepinfra",
+          model: "fallback-model",
+        };
+      }
+      throw new Error("expected primary attempt to fail");
+    });
+    runEmbeddedPiAgentMock
+      .mockRejectedValueOnce(new Error("primary timeout"))
+      .mockResolvedValueOnce({
+        payloads: [{ text: "fallback ok" }],
+        meta: {},
+      });
+    const onBlockReply = vi.fn(async () => {});
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+    const queued = baseQueuedRun();
+
+    await runner({
+      ...queued,
+      run: {
+        ...queued.run,
+        config: {
+          agents: {
+            defaults: {
+              timeoutSeconds: 1,
+            },
+          },
+          models: {
+            providers: {
+              anthropic: providerConfig(7),
+              deepinfra: providerConfig(42),
+            },
+          },
+        },
+      },
+    });
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(2);
+    expect(runEmbeddedPiAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      provider: "anthropic",
+      timeoutMs: 7_000,
+    });
+    expect(runEmbeddedPiAgentMock.mock.calls[1]?.[0]).toMatchObject({
+      provider: "deepinfra",
+      timeoutMs: 42_000,
+    });
+    expect(onBlockReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps explicit timeout override across fallback attempts", async () => {
+    resetAgentMocks();
+    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => {
+      try {
+        await params.run(params.provider, params.model);
+      } catch {
+        return {
+          result: await params.run("deepinfra", "fallback-model"),
+          provider: "deepinfra",
+          model: "fallback-model",
+        };
+      }
+      throw new Error("expected primary attempt to fail");
+    });
+    runEmbeddedPiAgentMock
+      .mockRejectedValueOnce(new Error("primary timeout"))
+      .mockResolvedValueOnce({
+        payloads: [{ text: "fallback ok" }],
+        meta: {},
+      });
+    const onBlockReply = vi.fn(async () => {});
+    const runner = createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+    const queued = baseQueuedRun();
+
+    await runner({
+      ...queued,
+      run: {
+        ...queued.run,
+        timeoutOverrideSeconds: 9,
+        config: {
+          agents: {
+            defaults: {
+              timeoutSeconds: 1,
+            },
+          },
+          models: {
+            providers: {
+              anthropic: providerConfig(7),
+              deepinfra: providerConfig(42),
+            },
+          },
+        },
+      },
+    });
+
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledTimes(2);
+    expect(runEmbeddedPiAgentMock.mock.calls[0]?.[0]).toMatchObject({
+      provider: "anthropic",
+      timeoutMs: 9_000,
+    });
+    expect(runEmbeddedPiAgentMock.mock.calls[1]?.[0]).toMatchObject({
+      provider: "deepinfra",
+      timeoutMs: 9_000,
+    });
+    expect(onBlockReply).toHaveBeenCalledTimes(1);
   });
 });

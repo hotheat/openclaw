@@ -96,6 +96,7 @@ type RunPreparedReplyParams = {
   defaultProvider: string;
   defaultModel: string;
   timeoutMs: number;
+  timeoutOverrideSeconds?: number;
   isNewSession: boolean;
   resetTriggered: boolean;
   systemSent: boolean;
@@ -489,6 +490,7 @@ export async function runPreparedReply(
         defaultLevel: resolvedElevatedLevel ?? "off",
       },
       timeoutMs,
+      timeoutOverrideSeconds: params.timeoutOverrideSeconds,
       blockReplyBreak: resolvedBlockStreamingBreak,
       ownerNumbers: command.ownerList.length > 0 ? command.ownerList : undefined,
       extraSystemPrompt: extraSystemPrompt || undefined,

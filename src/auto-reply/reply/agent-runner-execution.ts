@@ -12,6 +12,7 @@ import {
   sanitizeUserFacingText,
 } from "../../agents/pi-embedded-helpers.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
+import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import {
   resolveGroupSessionKey,
   resolveSessionTranscriptPath,
@@ -179,6 +180,11 @@ export async function runAgentTurnWithFallback(params: {
             model,
             thinkLevel: params.followupRun.run.thinkLevel,
           });
+          const attemptTimeoutMs = resolveAgentTimeoutMs({
+            cfg: params.followupRun.run.config,
+            provider,
+            overrideSeconds: params.followupRun.run.timeoutOverrideSeconds,
+          });
 
           if (isCliProvider(provider, params.followupRun.run.config)) {
             const startedAt = Date.now();
@@ -206,7 +212,7 @@ export async function runAgentTurnWithFallback(params: {
                   provider,
                   model,
                   thinkLevel: params.followupRun.run.thinkLevel,
-                  timeoutMs: params.followupRun.run.timeoutMs,
+                  timeoutMs: attemptTimeoutMs,
                   runId,
                   extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
                   ownerNumbers: params.followupRun.run.ownerNumbers,
@@ -281,6 +287,7 @@ export async function runAgentTurnWithFallback(params: {
             model,
             runId,
             authProfile,
+            timeoutMs: attemptTimeoutMs,
           });
           return runEmbeddedPiAgent({
             ...embeddedContext,

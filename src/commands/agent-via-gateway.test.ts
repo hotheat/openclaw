@@ -33,6 +33,7 @@ function mockConfig(storePath: string, overrides?: Partial<OpenClawConfig>) {
         timeoutSeconds: 600,
         ...overrides?.agents?.defaults,
       },
+      ...overrides?.agents,
     },
     session: {
       store: storePath,
@@ -40,6 +41,7 @@ function mockConfig(storePath: string, overrides?: Partial<OpenClawConfig>) {
       ...overrides?.session,
     },
     gateway: overrides?.gateway,
+    models: overrides?.models,
   });
 }
 
@@ -83,6 +85,43 @@ beforeEach(() => {
 });
 
 describe("agentCliCommand", () => {
+  it("uses provider-specific timeout for gateway wait when --timeout is omitted", async () => {
+    await withTempStore(
+      async () => {
+        mockGatewaySuccessReply();
+
+        await agentCliCommand({ message: "hi", to: "+1555" }, runtime);
+
+        expect(callGateway).toHaveBeenCalledTimes(1);
+        const request = vi.mocked(callGateway).mock.calls[0]?.[0] as {
+          params?: { timeout?: number };
+          timeoutMs?: number;
+        };
+        expect(request.params?.timeout).toBe(900);
+        expect(request.timeoutMs).toBe(930_000);
+      },
+      {
+        agents: {
+          defaults: {
+            timeoutSeconds: 60,
+            model: {
+              primary: "slow-provider/slow-model",
+            },
+          },
+        },
+        models: {
+          providers: {
+            "slow-provider": {
+              baseUrl: "https://example.invalid/v1",
+              timeoutSeconds: 900,
+              models: [],
+            },
+          },
+        },
+      },
+    );
+  });
+
   it("uses a timer-safe max gateway timeout when --timeout is 0", async () => {
     await withTempStore(async () => {
       mockGatewaySuccessReply();
@@ -93,6 +132,43 @@ describe("agentCliCommand", () => {
       const request = vi.mocked(callGateway).mock.calls[0]?.[0] as { timeoutMs?: number };
       expect(request.timeoutMs).toBe(2_147_000_000);
     });
+  });
+
+  it("keeps explicit --timeout ahead of provider-specific timeout", async () => {
+    await withTempStore(
+      async () => {
+        mockGatewaySuccessReply();
+
+        await agentCliCommand({ message: "hi", to: "+1555", timeout: "12" }, runtime);
+
+        expect(callGateway).toHaveBeenCalledTimes(1);
+        const request = vi.mocked(callGateway).mock.calls[0]?.[0] as {
+          params?: { timeout?: number };
+          timeoutMs?: number;
+        };
+        expect(request.params?.timeout).toBe(12);
+        expect(request.timeoutMs).toBe(42_000);
+      },
+      {
+        agents: {
+          defaults: {
+            timeoutSeconds: 60,
+            model: {
+              primary: "slow-provider/slow-model",
+            },
+          },
+        },
+        models: {
+          providers: {
+            "slow-provider": {
+              baseUrl: "https://example.invalid/v1",
+              timeoutSeconds: 900,
+              models: [],
+            },
+          },
+        },
+      },
+    );
   });
 
   it("uses gateway by default", async () => {

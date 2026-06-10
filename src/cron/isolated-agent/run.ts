@@ -374,6 +374,7 @@ export async function runCronIsolatedAgentTurn(params: {
 
   const timeoutMs = resolveAgentTimeoutMs({
     cfg: cfgWithAgentDefaults,
+    provider,
     overrideSeconds:
       params.job.payload.kind === "agentTurn" ? params.job.payload.timeoutSeconds : undefined,
   });
@@ -494,6 +495,12 @@ export async function runCronIsolatedAgentTurn(params: {
         if (abortSignal?.aborted) {
           throw new Error(abortReason());
         }
+        const attemptTimeoutMs = resolveAgentTimeoutMs({
+          cfg: cfgWithAgentDefaults,
+          provider: providerOverride,
+          overrideSeconds:
+            params.job.payload.kind === "agentTurn" ? params.job.payload.timeoutSeconds : undefined,
+        });
         if (isCliProvider(providerOverride, cfgWithAgentDefaults)) {
           const cliSessionId = getCliSessionId(cronSession.sessionEntry, providerOverride);
           return runCliAgent({
@@ -507,7 +514,7 @@ export async function runCronIsolatedAgentTurn(params: {
             provider: providerOverride,
             model: modelOverride,
             thinkLevel,
-            timeoutMs,
+            timeoutMs: attemptTimeoutMs,
             runId: cronSession.sessionEntry.sessionId,
             cliSessionId,
           });
@@ -533,7 +540,7 @@ export async function runCronIsolatedAgentTurn(params: {
           authProfileIdSource,
           thinkLevel,
           verboseLevel: resolvedVerboseLevel,
-          timeoutMs,
+          timeoutMs: attemptTimeoutMs,
           runId: cronSession.sessionEntry.sessionId,
           requireExplicitMessageTarget: true,
           disableMessageTool: deliveryRequested,

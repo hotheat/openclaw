@@ -102,6 +102,30 @@ describe("formatAssistantErrorText", () => {
     const msg = makeAssistantError("request ended without sending any chunks");
     expect(formatAssistantErrorText(msg)).toBe("LLM request timed out.");
   });
+
+  it("maps bare terminated tool-call interruptions to a timeout-oriented message", () => {
+    const msg = makeAssistantMessageFixture({
+      errorMessage: "terminated",
+      content: [
+        {
+          type: "toolCall",
+          id: "call_write",
+          name: "write",
+          arguments: { path: "/tmp/report.py" },
+        },
+      ],
+    });
+
+    expect(formatAssistantErrorText(msg)).toBe(
+      "LLM request timed out while assembling a tool call.",
+    );
+  });
+
+  it("does not expose bare terminated errors without context", () => {
+    const msg = makeAssistantError("terminated");
+
+    expect(formatAssistantErrorText(msg)).toBe("LLM request terminated before completing.");
+  });
 });
 
 describe("formatRawAssistantErrorForUi", () => {

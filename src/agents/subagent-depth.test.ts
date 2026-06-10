@@ -97,4 +97,64 @@ describe("resolveAgentTimeoutMs", () => {
     expect(resolveAgentTimeoutMs({ overrideSeconds: 9_999_999 })).toBe(2_147_000_000);
     expect(resolveAgentTimeoutMs({ overrideMs: 9_999_999_999 })).toBe(2_147_000_000);
   });
+
+  it("uses provider timeout before the global agent default", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          timeoutSeconds: 60,
+        },
+      },
+      models: {
+        providers: {
+          "qwen-openai": {
+            baseUrl: "http://127.0.0.1:8000/v1",
+            timeoutSeconds: 900,
+            models: [],
+          },
+        },
+      },
+    };
+
+    expect(resolveAgentTimeoutMs({ cfg, provider: "qwen-openai" })).toBe(900_000);
+  });
+
+  it("resolves provider timeout through normalized provider aliases", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          timeoutSeconds: 60,
+        },
+      },
+      models: {
+        providers: {
+          "qwen-portal": {
+            baseUrl: "http://127.0.0.1:8000/v1",
+            timeoutSeconds: 900,
+            models: [],
+          },
+        },
+      },
+    };
+
+    expect(resolveAgentTimeoutMs({ cfg, provider: "qwen" })).toBe(900_000);
+  });
+
+  it("keeps explicit timeout overrides above provider defaults", () => {
+    const cfg = {
+      models: {
+        providers: {
+          "qwen-openai": {
+            baseUrl: "http://127.0.0.1:8000/v1",
+            timeoutSeconds: 900,
+            models: [],
+          },
+        },
+      },
+    };
+
+    expect(resolveAgentTimeoutMs({ cfg, provider: "qwen-openai", overrideSeconds: 30 })).toBe(
+      30_000,
+    );
+  });
 });

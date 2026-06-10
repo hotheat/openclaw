@@ -699,6 +699,58 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
+  it("uses provider-specific timeout for fallback attempts", async () => {
+    const fallbackSpy = vi
+      .spyOn(modelFallbackModule, "runWithModelFallback")
+      .mockImplementationOnce(async ({ run }) => ({
+        result: await run("slow-proxy", "slow-model"),
+        provider: "slow-proxy",
+        model: "slow-model",
+        attempts: [
+          {
+            provider: "anthropic",
+            model: "claude",
+            error: "rate limit",
+            reason: "rate_limit",
+          },
+        ],
+      }));
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "ok" }],
+      meta: {},
+    });
+
+    const { run } = createMinimalRun({
+      runOverrides: {
+        config: {
+          models: {
+            providers: {
+              "slow-proxy": {
+                baseUrl: "http://127.0.0.1:8000/v1",
+                timeoutSeconds: 9,
+                models: [],
+              },
+            },
+          },
+        },
+        timeoutMs: 1_000,
+      },
+    });
+
+    try {
+      await run();
+
+      expect(state.runEmbeddedPiAgentMock).toHaveBeenCalledTimes(1);
+      expect(state.runEmbeddedPiAgentMock.mock.calls[0]?.[0]).toMatchObject({
+        provider: "slow-proxy",
+        model: "slow-model",
+        timeoutMs: 9_000,
+      });
+    } finally {
+      fallbackSpy.mockRestore();
+    }
+  });
+
   it("announces model fallback only once per active fallback state", async () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session",

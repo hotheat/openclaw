@@ -281,11 +281,6 @@ export async function agentCommand(
   ) {
     throw new Error("--timeout must be a non-negative integer (seconds; 0 means no timeout)");
   }
-  const timeoutMs = resolveAgentTimeoutMs({
-    cfg,
-    overrideSeconds: timeoutSecondsRaw,
-  });
-
   const sessionResolution = resolveSession({
     cfg,
     to: opts.to,
@@ -602,6 +597,11 @@ export async function agentCommand(
         run: (providerOverride, modelOverride) => {
           const isFallbackRetry = fallbackAttemptIndex > 0;
           fallbackAttemptIndex += 1;
+          const attemptTimeoutMs = resolveAgentTimeoutMs({
+            cfg,
+            provider: providerOverride,
+            overrideSeconds: timeoutSecondsRaw,
+          });
           return runAgentAttempt({
             providerOverride,
             modelOverride,
@@ -615,7 +615,7 @@ export async function agentCommand(
             body,
             isFallbackRetry,
             resolvedThinkLevel,
-            timeoutMs,
+            timeoutMs: attemptTimeoutMs,
             runId,
             opts,
             runContext,

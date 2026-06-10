@@ -156,6 +156,7 @@ export function buildEmbeddedRunBaseParams(params: {
   model: string;
   runId: string;
   authProfile: ReturnType<typeof resolveProviderScopedAuthProfile>;
+  timeoutMs?: number;
 }) {
   return {
     sessionFile: params.run.sessionFile,
@@ -175,7 +176,7 @@ export function buildEmbeddedRunBaseParams(params: {
     reasoningLevel: params.run.reasoningLevel,
     execOverrides: params.run.execOverrides,
     bashElevated: params.run.bashElevated,
-    timeoutMs: params.run.timeoutMs,
+    timeoutMs: params.timeoutMs ?? params.run.timeoutMs,
     runId: params.runId,
   };
 }

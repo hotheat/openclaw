@@ -23,6 +23,8 @@ export const BILLING_ERROR_USER_MESSAGE = formatBillingErrorMessage();
 const RATE_LIMIT_ERROR_USER_MESSAGE = "⚠️ API rate limit reached. Please try again later.";
 const OVERLOADED_ERROR_USER_MESSAGE =
   "The AI service is temporarily overloaded. Please try again in a moment.";
+const TOOL_CALL_TERMINATED_USER_MESSAGE = "LLM request timed out while assembling a tool call.";
+const TERMINATED_USER_MESSAGE = "LLM request terminated before completing.";
 
 function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
   if (isRateLimitErrorMessage(raw)) {
@@ -32,6 +34,16 @@ function formatRateLimitOrOverloadedErrorCopy(raw: string): string | undefined {
     return OVERLOADED_ERROR_USER_MESSAGE;
   }
   return undefined;
+}
+
+function isBareTerminatedError(raw: string): boolean {
+  return raw.trim().toLowerCase() === "terminated";
+}
+
+function hasToolCallContent(msg: AssistantMessage): boolean {
+  return Array.isArray(msg.content)
+    ? msg.content.some((block) => block?.type === "toolCall")
+    : false;
 }
 
 export function isContextOverflowError(errorMessage?: string): boolean {
@@ -464,6 +476,10 @@ export function formatAssistantErrorText(
       "Use /new to start a fresh session. " +
       "If this keeps happening, reset the session or delete the corrupted session transcript."
     );
+  }
+
+  if (isBareTerminatedError(raw)) {
+    return hasToolCallContent(msg) ? TOOL_CALL_TERMINATED_USER_MESSAGE : TERMINATED_USER_MESSAGE;
   }
 
   const invalidRequest = raw.match(/"type":"invalid_request_error".*?"message":"([^"]+)"/);
