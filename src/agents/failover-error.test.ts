@@ -10,10 +10,22 @@ describe("failover-error", () => {
   it("infers failover reason from HTTP status", () => {
     expect(resolveFailoverReasonFromError({ status: 402 })).toBe("billing");
     expect(resolveFailoverReasonFromError({ statusCode: "429" })).toBe("rate_limit");
+    expect(resolveFailoverReasonFromError({ status_code: 502 })).toBe("timeout");
     expect(resolveFailoverReasonFromError({ status: 403 })).toBe("auth");
     expect(resolveFailoverReasonFromError({ status: 408 })).toBe("timeout");
     expect(resolveFailoverReasonFromError({ status: 400 })).toBe("format");
     expect(resolveFailoverReasonFromError({ status: 503 })).toBe("timeout");
+  });
+
+  it("infers timeout from provider status_code text", () => {
+    expect(
+      resolveFailoverReasonFromError({
+        message: "status_code=502, Upstream service temporarily unavailable",
+      }),
+    ).toBe("timeout");
+    expect(
+      resolveFailoverReasonFromError("status_code=502, Upstream service temporarily unavailable"),
+    ).toBe("timeout");
   });
 
   it("infers format errors from error messages", () => {
@@ -64,6 +76,17 @@ describe("failover-error", () => {
     });
     expect(err?.reason).toBe("format");
     expect(err?.status).toBe(400);
+  });
+
+  it("coerces string provider status_code errors with metadata", () => {
+    const err = coerceToFailoverError("status_code=502, Upstream service temporarily unavailable", {
+      provider: "google",
+      model: "gemini-2.5-pro",
+    });
+    expect(err?.reason).toBe("timeout");
+    expect(err?.status).toBe(502);
+    expect(err?.provider).toBe("google");
+    expect(err?.model).toBe("gemini-2.5-pro");
   });
 
   it("describes non-Error values consistently", () => {

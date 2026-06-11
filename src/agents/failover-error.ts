@@ -3,6 +3,7 @@ import { classifyFailoverReason, type FailoverReason } from "./pi-embedded-helpe
 const TIMEOUT_HINT_RE =
   /timeout|timed out|deadline exceeded|context deadline exceeded|stop reason:\s*abort|reason:\s*abort|unhandled stop reason:\s*abort/i;
 const ABORT_TIMEOUT_RE = /request was aborted|request aborted/i;
+const STATUS_CODE_TEXT_RE = /\bstatus_code\s*[=:]\s*(\d{3})\b/i;
 
 export class FailoverError extends Error {
   readonly reason: FailoverReason;
@@ -59,18 +60,25 @@ export function resolveFailoverStatus(reason: FailoverReason): number | undefine
 }
 
 function getStatusCode(err: unknown): number | undefined {
-  if (!err || typeof err !== "object") {
-    return undefined;
+  if (err && typeof err === "object") {
+    const candidate =
+      (err as { status?: unknown; statusCode?: unknown }).status ??
+      (err as { statusCode?: unknown }).statusCode ??
+      (err as { status_code?: unknown }).status_code;
+    if (typeof candidate === "number") {
+      return candidate;
+    }
+    if (typeof candidate === "string" && /^\d+$/.test(candidate)) {
+      return Number(candidate);
+    }
   }
-  const candidate =
-    (err as { status?: unknown; statusCode?: unknown }).status ??
-    (err as { statusCode?: unknown }).statusCode;
-  if (typeof candidate === "number") {
-    return candidate;
+
+  const message = getErrorMessage(err);
+  const match = message.match(STATUS_CODE_TEXT_RE);
+  if (match) {
+    return Number(match[1]);
   }
-  if (typeof candidate === "string" && /^\d+$/.test(candidate)) {
-    return Number(candidate);
-  }
+
   return undefined;
 }
 
@@ -164,6 +172,9 @@ export function resolveFailoverReasonFromError(err: unknown): FailoverReason | n
     return "timeout";
   }
   if (status === 503) {
+    return "timeout";
+  }
+  if (status === 500 || status === 502) {
     return "timeout";
   }
   if (status === 400) {
