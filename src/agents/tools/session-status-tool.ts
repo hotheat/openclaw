@@ -154,6 +154,7 @@ async function resolveModelOverride(params: {
     raw,
     defaultProvider: currentProvider,
     aliasIndex,
+    cfg: params.cfg,
   });
   if (!resolved) {
     throw new Error(`Unrecognized model "${raw}".`);

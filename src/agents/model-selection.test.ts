@@ -3,11 +3,15 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resetLogger, setLoggerOverride } from "../logging/logger.js";
 import {
   parseModelRef,
+  parseModelRefWithConfig,
   resolveModelRefFromString,
   resolveConfiguredModelRef,
   buildModelAliasIndex,
+  buildAllowedModelSet,
+  buildConfiguredAllowlistKeys,
   normalizeProviderId,
   modelKey,
+  resolveAllowedModelRef,
   resolveThinkingDefault,
 } from "./model-selection.js";
 
@@ -149,6 +153,30 @@ describe("model-selection", () => {
       expect(parseModelRef("anthropic/", "anthropic")).toBeNull();
       expect(parseModelRef("/model", "anthropic")).toBeNull();
     });
+
+    it("preserves configured custom qwen provider instead of forcing qwen-portal", () => {
+      const cfg = {
+        models: {
+          providers: {
+            qwen: {
+              baseUrl: "http://172.16.120.244:8000/v1",
+              api: "openai-completions",
+              models: [],
+            },
+          },
+        },
+      } as OpenClawConfig;
+      expect(
+        parseModelRefWithConfig({
+          raw: "qwen/qwen3.6-27b",
+          defaultProvider: "anthropic",
+          cfg,
+        }),
+      ).toEqual({
+        provider: "qwen",
+        model: "qwen3.6-27b",
+      });
+    });
   });
 
   describe("buildModelAliasIndex", () => {
@@ -261,6 +289,83 @@ describe("model-selection", () => {
       });
 
       expect(result).toEqual({ provider: "kimi", model: "kimi-for-coding" });
+    });
+
+    it("preserves configured custom qwen provider for primary model", () => {
+      const cfg: Partial<OpenClawConfig> = {
+        models: {
+          providers: {
+            qwen: {
+              baseUrl: "http://127.0.0.1:8000/v1",
+              api: "openai-completions",
+              models: [],
+            },
+          },
+        },
+        agents: {
+          defaults: {
+            model: { primary: "qwen/qwen3.6-27b" },
+          },
+        },
+      };
+
+      const result = resolveConfiguredModelRef({
+        cfg: cfg as OpenClawConfig,
+        defaultProvider: "anthropic",
+        defaultModel: "claude-opus-4-6",
+      });
+
+      expect(result).toEqual({ provider: "qwen", model: "qwen3.6-27b" });
+    });
+  });
+
+  describe("buildAllowedModelSet", () => {
+    it("allows configured custom qwen provider outside curated catalog", () => {
+      const cfg: Partial<OpenClawConfig> = {
+        models: {
+          providers: {
+            qwen: {
+              baseUrl: "http://127.0.0.1:8000/v1",
+              api: "openai-completions",
+              models: [],
+            },
+          },
+        },
+        agents: {
+          defaults: {
+            models: {
+              "qwen/qwen3.6-27b": {},
+            },
+          },
+        },
+      };
+
+      const allowed = buildAllowedModelSet({
+        cfg: cfg as OpenClawConfig,
+        catalog: [],
+        defaultProvider: "anthropic",
+      });
+
+      expect(allowed.allowAny).toBe(false);
+      expect(allowed.allowedKeys.has("qwen/qwen3.6-27b")).toBe(true);
+      expect(
+        buildConfiguredAllowlistKeys({
+          cfg: cfg as OpenClawConfig,
+          defaultProvider: "anthropic",
+        }),
+      ).toEqual(new Set(["qwen/qwen3.6-27b"]));
+
+      expect(
+        resolveAllowedModelRef({
+          cfg: cfg as OpenClawConfig,
+          catalog: [],
+          raw: "qwen/qwen3.6-27b",
+          defaultProvider: "anthropic",
+        }),
+      ).toEqual({
+        ref: { provider: "qwen", model: "qwen3.6-27b" },
+        key: "qwen/qwen3.6-27b",
+      });
     });
   });
 

@@ -53,6 +53,7 @@ export function resolveConfiguredEntries(cfg: OpenClawConfig) {
       raw: String(raw ?? ""),
       defaultProvider: DEFAULT_PROVIDER,
       aliasIndex,
+      cfg,
     });
     if (!resolved) {
       return;
@@ -65,6 +66,7 @@ export function resolveConfiguredEntries(cfg: OpenClawConfig) {
       raw: imagePrimary,
       defaultProvider: DEFAULT_PROVIDER,
       aliasIndex,
+      cfg,
     });
     if (resolved) {
       addEntry(resolved.ref, "image");
@@ -76,6 +78,7 @@ export function resolveConfiguredEntries(cfg: OpenClawConfig) {
       raw: String(raw ?? ""),
       defaultProvider: DEFAULT_PROVIDER,
       aliasIndex,
+      cfg,
     });
     if (!resolved) {
       return;

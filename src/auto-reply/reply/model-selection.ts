@@ -157,9 +157,10 @@ export function resolveStoredModelOverride(params: {
 function normalizeStoredModelOverrideRef(
   override: StoredModelOverride | { provider?: string; model: string },
   defaultProvider: string,
+  cfg?: OpenClawConfig,
 ): { provider: string; model: string } {
   const raw = override.provider ? `${override.provider}/${override.model}` : override.model;
-  const resolved = resolveModelRefFromString({ raw, defaultProvider });
+  const resolved = resolveModelRefFromString({ raw, defaultProvider, cfg });
   return (
     resolved?.ref ?? {
       provider: override.provider ? normalizeProviderId(override.provider) : defaultProvider,
@@ -350,6 +351,7 @@ export async function createModelSelectionState(params: {
           model: overrideModel,
         },
         defaultProvider,
+        cfg,
       );
       const key = modelKey(overrideRef.provider, overrideRef.model);
       if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key)) {
@@ -381,7 +383,7 @@ export async function createModelSelectionState(params: {
   // the regular session/parent model override behavior.
   const skipStoredOverride = params.hasResolvedHeartbeatModelOverride === true;
   if (storedOverride?.model && !skipStoredOverride) {
-    const storedOverrideRef = normalizeStoredModelOverrideRef(storedOverride, defaultProvider);
+    const storedOverrideRef = normalizeStoredModelOverrideRef(storedOverride, defaultProvider, cfg);
     const key = modelKey(storedOverrideRef.provider, storedOverrideRef.model);
     if (allowedModelKeys.size === 0 || allowedModelKeys.has(key)) {
       provider = storedOverrideRef.provider;
@@ -453,8 +455,9 @@ export function resolveModelDirectiveSelection(params: {
   defaultModel: string;
   aliasIndex: ModelAliasIndex;
   allowedModelKeys: Set<string>;
+  cfg?: OpenClawConfig;
 }): { selection?: ModelDirectiveSelection; error?: string } {
-  const { raw, defaultProvider, defaultModel, aliasIndex, allowedModelKeys } = params;
+  const { raw, defaultProvider, defaultModel, aliasIndex, allowedModelKeys, cfg } = params;
 
   const rawTrimmed = raw.trim();
   const rawLower = rawTrimmed.toLowerCase();
@@ -573,6 +576,7 @@ export function resolveModelDirectiveSelection(params: {
     raw: rawTrimmed,
     defaultProvider,
     aliasIndex,
+    cfg,
   });
 
   if (!resolved) {

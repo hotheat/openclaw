@@ -60,6 +60,19 @@ export function normalizeProviderId(provider: string): string {
   return normalized;
 }
 
+function shouldPreserveConfiguredProviderAlias(params: {
+  provider: string;
+  cfg?: OpenClawConfig;
+}): boolean {
+  const normalized = params.provider.trim().toLowerCase();
+  if (normalized !== "qwen") {
+    return false;
+  }
+  return Boolean(
+    params.cfg?.models?.providers?.[params.provider] ?? params.cfg?.models?.providers?.[normalized],
+  );
+}
+
 export function findNormalizedProviderValue<T>(
   entries: Record<string, T> | undefined,
   provider: string,
@@ -150,8 +163,21 @@ function shouldUseOpenAICodexProvider(provider: string, model: string): boolean 
 }
 
 export function normalizeModelRef(provider: string, model: string): ModelRef {
-  const normalizedProvider = normalizeProviderId(provider);
-  const normalizedModel = normalizeProviderModelId(normalizedProvider, model.trim());
+  return normalizeModelRefWithConfig({ provider, model });
+}
+
+export function normalizeModelRefWithConfig(params: {
+  provider: string;
+  model: string;
+  cfg?: OpenClawConfig;
+}): ModelRef {
+  const normalizedProvider = shouldPreserveConfiguredProviderAlias({
+    provider: params.provider,
+    cfg: params.cfg,
+  })
+    ? params.provider.trim().toLowerCase()
+    : normalizeProviderId(params.provider);
+  const normalizedModel = normalizeProviderModelId(normalizedProvider, params.model.trim());
   if (shouldUseOpenAICodexProvider(normalizedProvider, normalizedModel)) {
     return { provider: "openai-codex", model: normalizedModel };
   }
@@ -159,20 +185,36 @@ export function normalizeModelRef(provider: string, model: string): ModelRef {
 }
 
 export function parseModelRef(raw: string, defaultProvider: string): ModelRef | null {
-  const trimmed = raw.trim();
+  return parseModelRefWithConfig({ raw, defaultProvider });
+}
+
+export function parseModelRefWithConfig(params: {
+  raw: string;
+  defaultProvider: string;
+  cfg?: OpenClawConfig;
+}): ModelRef | null {
+  const trimmed = params.raw.trim();
   if (!trimmed) {
     return null;
   }
   const slash = trimmed.indexOf("/");
   if (slash === -1) {
-    return normalizeModelRef(defaultProvider, trimmed);
+    return normalizeModelRefWithConfig({
+      provider: params.defaultProvider,
+      model: trimmed,
+      cfg: params.cfg,
+    });
   }
   const providerRaw = trimmed.slice(0, slash).trim();
   const model = trimmed.slice(slash + 1).trim();
   if (!providerRaw || !model) {
     return null;
   }
-  return normalizeModelRef(providerRaw, model);
+  return normalizeModelRefWithConfig({
+    provider: providerRaw,
+    model,
+    cfg: params.cfg,
+  });
 }
 
 export function normalizeModelSelection(value: unknown): string | undefined {
@@ -191,12 +233,23 @@ export function normalizeModelSelection(value: unknown): string | undefined {
   return undefined;
 }
 
-export function resolveAllowlistModelKey(raw: string, defaultProvider: string): string | null {
-  const parsed = parseModelRef(raw, defaultProvider);
+export function resolveAllowlistModelKey(
+  raw: string,
+  defaultProvider: string,
+  cfg?: OpenClawConfig,
+): string | null {
+  const parsed = parseModelRefWithConfig({ raw, defaultProvider, cfg });
   if (!parsed) {
     return null;
   }
   return modelKey(parsed.provider, parsed.model);
+}
+
+function hasConfiguredProvider(params: {
+  providers: Record<string, unknown>;
+  provider: string;
+}): boolean {
+  return findNormalizedProviderKey(params.providers, params.provider) != null;
 }
 
 export function buildConfiguredAllowlistKeys(params: {
@@ -210,9 +263,13 @@ export function buildConfiguredAllowlistKeys(params: {
 
   const keys = new Set<string>();
   for (const raw of rawAllowlist) {
-    const key = resolveAllowlistModelKey(String(raw ?? ""), params.defaultProvider);
-    if (key) {
-      keys.add(key);
+    const parsed = parseModelRefWithConfig({
+      raw: String(raw ?? ""),
+      defaultProvider: params.defaultProvider,
+      cfg: params.cfg,
+    });
+    if (parsed) {
+      keys.add(modelKey(parsed.provider, parsed.model));
     }
   }
   return keys.size > 0 ? keys : null;
@@ -227,7 +284,11 @@ export function buildModelAliasIndex(params: {
 
   const rawModels = params.cfg.agents?.defaults?.models ?? {};
   for (const [keyRaw, entryRaw] of Object.entries(rawModels)) {
-    const parsed = parseModelRef(String(keyRaw ?? ""), params.defaultProvider);
+    const parsed = parseModelRefWithConfig({
+      raw: String(keyRaw ?? ""),
+      defaultProvider: params.defaultProvider,
+      cfg: params.cfg,
+    });
     if (!parsed) {
       continue;
     }
@@ -250,6 +311,7 @@ export function resolveModelRefFromString(params: {
   raw: string;
   defaultProvider: string;
   aliasIndex?: ModelAliasIndex;
+  cfg?: OpenClawConfig;
 }): { ref: ModelRef; alias?: string } | null {
   const trimmed = params.raw.trim();
   if (!trimmed) {
@@ -262,7 +324,11 @@ export function resolveModelRefFromString(params: {
       return { ref: aliasMatch.ref, alias: aliasMatch.alias };
     }
   }
-  const parsed = parseModelRef(trimmed, params.defaultProvider);
+  const parsed = parseModelRefWithConfig({
+    raw: trimmed,
+    defaultProvider: params.defaultProvider,
+    cfg: params.cfg,
+  });
   if (!parsed) {
     return null;
   }
@@ -305,6 +371,7 @@ export function resolveConfiguredModelRef(params: {
       raw: trimmed,
       defaultProvider: params.defaultProvider,
       aliasIndex,
+      cfg: params.cfg,
     });
     if (resolved) {
       return resolved.ref;
@@ -395,7 +462,11 @@ export function buildAllowedModelSet(params: {
   const defaultModel = params.defaultModel?.trim();
   const defaultRef =
     defaultModel && params.defaultProvider
-      ? parseModelRef(defaultModel, params.defaultProvider)
+      ? parseModelRefWithConfig({
+          raw: defaultModel,
+          defaultProvider: params.defaultProvider,
+          cfg: params.cfg,
+        })
       : null;
   const defaultKey = defaultRef ? modelKey(defaultRef.provider, defaultRef.model) : undefined;
   const catalogKeys = new Set(params.catalog.map((entry) => modelKey(entry.provider, entry.id)));
@@ -414,17 +485,25 @@ export function buildAllowedModelSet(params: {
   const allowedKeys = new Set<string>();
   const configuredProviders = (params.cfg.models?.providers ?? {}) as Record<string, unknown>;
   for (const raw of rawAllowlist) {
-    const parsed = parseModelRef(String(raw), params.defaultProvider);
+    const parsed = parseModelRefWithConfig({
+      raw: String(raw),
+      defaultProvider: params.defaultProvider,
+      cfg: params.cfg,
+    });
     if (!parsed) {
       continue;
     }
     const key = modelKey(parsed.provider, parsed.model);
-    const providerKey = normalizeProviderId(parsed.provider);
     if (isCliProvider(parsed.provider, params.cfg)) {
       allowedKeys.add(key);
     } else if (catalogKeys.has(key)) {
       allowedKeys.add(key);
-    } else if (configuredProviders[providerKey] != null) {
+    } else if (
+      hasConfiguredProvider({
+        providers: configuredProviders,
+        provider: parsed.provider,
+      })
+    ) {
       // Explicitly configured providers should be allowlist-able even when
       // they don't exist in the curated model catalog.
       allowedKeys.add(key);
@@ -506,6 +585,7 @@ export function resolveAllowedModelRef(params: {
     raw: trimmed,
     defaultProvider: params.defaultProvider,
     aliasIndex,
+    cfg: params.cfg,
   });
   if (!resolved) {
     return { error: `invalid model: ${trimmed}` };
@@ -585,6 +665,7 @@ export function resolveHooksGmailModel(params: {
     raw: hooksModel,
     defaultProvider: params.defaultProvider,
     aliasIndex,
+    cfg: params.cfg,
   });
 
   return resolved?.ref ?? null;

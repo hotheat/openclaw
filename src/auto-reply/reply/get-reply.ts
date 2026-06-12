@@ -144,6 +144,7 @@ export async function getReplyFromConfig(
           raw: heartbeatRaw,
           defaultProvider,
           aliasIndex,
+          cfg,
         })
       : null;
     if (heartbeatRef) {
@@ -279,6 +280,7 @@ export async function getReplyFromConfig(
       raw: channelModelOverride.model,
       defaultProvider,
       aliasIndex,
+      cfg,
     });
     if (resolved) {
       provider = resolved.ref.provider;

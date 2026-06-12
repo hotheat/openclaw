@@ -88,6 +88,7 @@ function buildModelPickerCatalog(params: {
         raw: value,
         defaultProvider: params.defaultProvider,
         aliasIndex: params.aliasIndex,
+        cfg: params.cfg,
       });
       if (!resolved) {
         return;
@@ -164,6 +165,7 @@ function buildModelPickerCatalog(params: {
       raw: String(raw),
       defaultProvider: params.defaultProvider,
       aliasIndex: params.aliasIndex,
+      cfg: params.cfg,
     });
     if (!resolved) {
       continue;
@@ -393,6 +395,7 @@ export function resolveModelSelectionFromDirective(params: {
     raw,
     defaultProvider: params.defaultProvider,
     aliasIndex: params.aliasIndex,
+    cfg: params.cfg,
   });
   if (explicit) {
     const explicitKey = modelKey(explicit.ref.provider, explicit.ref.model);
@@ -415,6 +418,7 @@ export function resolveModelSelectionFromDirective(params: {
       defaultModel: params.defaultModel,
       aliasIndex: params.aliasIndex,
       allowedModelKeys: params.allowedModelKeys,
+      cfg: params.cfg,
     });
 
     if (resolved.error) {

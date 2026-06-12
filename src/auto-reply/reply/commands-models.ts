@@ -71,6 +71,7 @@ export async function buildModelsProviderData(cfg: OpenClawConfig): Promise<Mode
       raw: trimmed,
       defaultProvider: resolvedDefault.provider,
       aliasIndex,
+      cfg,
     });
     if (!resolved) {
       return;

@@ -233,6 +233,7 @@ export async function modelsStatusCommand(
           raw: String(raw ?? ""),
           defaultProvider: DEFAULT_PROVIDER,
           aliasIndex,
+          cfg,
         })?.ref,
     )
     .filter((ref): ref is { provider: string; model: string } => Boolean(ref));

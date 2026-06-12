@@ -17,7 +17,7 @@ import {
   buildConfiguredAllowlistKeys,
   buildModelAliasIndex,
   modelKey,
-  normalizeModelRef,
+  normalizeModelRefWithConfig,
   resolveConfiguredModelRef,
   resolveModelRefFromString,
 } from "./model-selection.js";
@@ -141,6 +141,7 @@ function resolveImageFallbackCandidates(params: {
       raw: String(raw ?? ""),
       defaultProvider: params.defaultProvider,
       aliasIndex,
+      cfg: params.cfg,
     });
     if (!resolved) {
       return;
@@ -197,8 +198,16 @@ function resolveFallbackCandidates(params: {
   const defaultModel = primary?.model ?? DEFAULT_MODEL;
   const providerRaw = String(params.provider ?? "").trim() || defaultProvider;
   const modelRaw = String(params.model ?? "").trim() || defaultModel;
-  const normalizedPrimary = normalizeModelRef(providerRaw, modelRaw);
-  const configuredPrimary = normalizeModelRef(defaultProvider, defaultModel);
+  const normalizedPrimary = normalizeModelRefWithConfig({
+    provider: providerRaw,
+    model: modelRaw,
+    cfg: params.cfg,
+  });
+  const configuredPrimary = normalizeModelRefWithConfig({
+    provider: defaultProvider,
+    model: defaultModel,
+    cfg: params.cfg,
+  });
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg ?? {},
     defaultProvider,
@@ -235,6 +244,7 @@ function resolveFallbackCandidates(params: {
       raw: String(raw ?? ""),
       defaultProvider,
       aliasIndex,
+      cfg: params.cfg,
     });
     if (!resolved) {
       continue;

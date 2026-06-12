@@ -17,6 +17,7 @@ export function ensureModelAllowlistEntry(params: {
   const canonicalKey = resolveAllowlistModelKey(
     rawModelRef,
     params.defaultProvider ?? DEFAULT_PROVIDER,
+    params.cfg,
   );
   if (canonicalKey) {
     keySet.add(canonicalKey);

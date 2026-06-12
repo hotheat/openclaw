@@ -34,11 +34,13 @@ function buildSelectionFromExplicit(params: {
   defaultModel: string;
   aliasIndex: ModelAliasIndex;
   allowedModelKeys: Set<string>;
+  cfg: OpenClawConfig;
 }): ModelDirectiveSelection | undefined {
   const resolved = resolveModelRefFromString({
     raw: params.raw,
     defaultProvider: params.defaultProvider,
     aliasIndex: params.aliasIndex,
+    cfg: params.cfg,
   });
   if (!resolved) {
     return undefined;
@@ -140,6 +142,7 @@ export async function applyResetModelOverride(params: {
       defaultModel: params.defaultModel,
       aliasIndex: params.aliasIndex,
       allowedModelKeys,
+      cfg: params.cfg,
     });
 
   let selection: ModelDirectiveSelection | undefined;
@@ -161,6 +164,7 @@ export async function applyResetModelOverride(params: {
       defaultModel: params.defaultModel,
       aliasIndex: params.aliasIndex,
       allowedModelKeys,
+      cfg: params.cfg,
     });
     if (selection) {
       consumed = 1;

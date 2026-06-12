@@ -600,6 +600,7 @@ export function buildStatusMessage(args: StatusArgs): string {
       raw: channelOverride.model,
       defaultProvider: DEFAULT_PROVIDER,
       aliasIndex,
+      cfg: args.config,
     });
     if (!resolvedOverride) {
       return undefined;

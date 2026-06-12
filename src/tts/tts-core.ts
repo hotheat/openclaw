@@ -406,6 +406,7 @@ function resolveSummaryModelRef(
     raw: override,
     defaultProvider: defaultRef.provider,
     aliasIndex,
+    cfg,
   });
   if (!resolved) {
     return { ref: defaultRef, source: "default" };

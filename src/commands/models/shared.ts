@@ -89,6 +89,7 @@ export function resolveModelTarget(params: { raw: string; cfg: OpenClawConfig })
     raw: params.raw,
     defaultProvider: DEFAULT_PROVIDER,
     aliasIndex,
+    cfg: params.cfg,
   });
   if (!resolved) {
     throw new Error(`Invalid model reference: ${params.raw}`);
@@ -110,6 +111,7 @@ export function resolveModelKeysFromEntries(params: {
         raw: entry,
         defaultProvider: DEFAULT_PROVIDER,
         aliasIndex,
+        cfg: params.cfg,
       }),
     )
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))

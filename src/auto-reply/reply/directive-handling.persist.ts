@@ -143,6 +143,7 @@ export async function persistInlineDirectives(params: {
         raw: modelDirective,
         defaultProvider,
         aliasIndex,
+        cfg,
       });
       if (resolved) {
         const key = modelKey(resolved.ref.provider, resolved.ref.model);

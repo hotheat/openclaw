@@ -127,6 +127,7 @@ export async function removeFallbackCommand(
         raw: String(entry ?? ""),
         defaultProvider: DEFAULT_PROVIDER,
         aliasIndex,
+        cfg,
       });
       if (!resolvedEntry) {
         return true;
