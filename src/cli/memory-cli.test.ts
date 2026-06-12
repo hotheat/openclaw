@@ -83,6 +83,12 @@ describe("memory cli", () => {
     );
   }
 
+  function expectCliMigrateEmbeddings(migrateEmbeddings: ReturnType<typeof vi.fn>) {
+    expect(migrateEmbeddings).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.any(Function) }),
+    );
+  }
+
   function makeMemoryStatus(overrides: Record<string, unknown> = {}) {
     return {
       files: 0,
@@ -343,6 +349,21 @@ describe("memory cli", () => {
     expect(log).toHaveBeenCalledWith("Memory store repaired (main).");
   });
 
+  it("migrates memory embeddings in place", async () => {
+    const close = vi.fn(async () => {});
+    const migrateEmbeddings = vi.fn(async () => ({ migrated: 2, skipped: 1, dims: 1024 }));
+    mockManager({ migrateEmbeddings, close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["migrate-embeddings"]);
+
+    expectCliMigrateEmbeddings(migrateEmbeddings);
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "Memory embeddings migrated (main): 2 updated, 1 skipped · 1024 dims.",
+    );
+  });
+
   it("reports when backend does not support repair-store", async () => {
     const close = vi.fn(async () => {});
     mockManager({ close });
@@ -352,6 +373,19 @@ describe("memory cli", () => {
 
     expect(close).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Memory backend does not support store repair.");
+  });
+
+  it("reports when backend does not support embedding migration", async () => {
+    const close = vi.fn(async () => {});
+    mockManager({ close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["migrate-embeddings"]);
+
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "Memory backend does not support in-place embedding migration.",
+    );
   });
 
   it("logs qmd index file path and size after index", async () => {

@@ -114,4 +114,36 @@ describe("createChildAdapter", () => {
     };
     expect(spawnArgs.options?.env).toEqual({ FOO: "bar", COUNT: "12" });
   });
+
+  it("resolves wait when close fires before wait is called", async () => {
+    const { adapter } = await createAdapterHarness({
+      pid: 5555,
+      argv: ["node", "-e", "process.exit(0)"],
+    });
+    const child = spawnWithFallbackMock.mock.results[0]?.value
+      ? ((await spawnWithFallbackMock.mock.results[0].value).child as ChildProcess)
+      : undefined;
+    expect(child).toBeTruthy();
+
+    child?.emit("close", 0, null);
+
+    await expect(adapter.wait()).resolves.toEqual({ code: 0, signal: null });
+  });
+
+  it("keeps wait listeners after dispose", async () => {
+    const { adapter } = await createAdapterHarness({
+      pid: 6666,
+      argv: ["node", "-e", "process.exit(0)"],
+    });
+    const child = spawnWithFallbackMock.mock.results[0]?.value
+      ? ((await spawnWithFallbackMock.mock.results[0].value).child as ChildProcess)
+      : undefined;
+    expect(child).toBeTruthy();
+
+    const waitPromise = adapter.wait();
+    adapter.dispose();
+    child?.emit("close", 0, null);
+
+    await expect(waitPromise).resolves.toEqual({ code: 0, signal: null });
+  });
 });

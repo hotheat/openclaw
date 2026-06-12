@@ -195,6 +195,44 @@ async function runRepairStoreForManager(params: {
   return true;
 }
 
+async function runEmbeddingMigrationForManager(params: {
+  manager: MemoryManager;
+  agentId: string;
+}): Promise<boolean> {
+  const migrateEmbeddingsFn = params.manager.migrateEmbeddings
+    ? params.manager.migrateEmbeddings.bind(params.manager)
+    : null;
+  if (!migrateEmbeddingsFn) {
+    defaultRuntime.log("Memory backend does not support in-place embedding migration.");
+    return false;
+  }
+  const result = await withProgressTotals(
+    {
+      label: "Migrating memory embeddings…",
+      total: 0,
+    },
+    async (update, progress) => {
+      return await migrateEmbeddingsFn({
+        progress: (migrationUpdate) => {
+          update({
+            completed: migrationUpdate.completed,
+            total: migrationUpdate.total,
+            label: migrationUpdate.label,
+          });
+          if (migrationUpdate.label) {
+            progress.setLabel(migrationUpdate.label);
+          }
+        },
+      });
+    },
+  );
+  const dims = result.dims ? ` · ${result.dims} dims` : "";
+  defaultRuntime.log(
+    `Memory embeddings migrated (${params.agentId}): ${result.migrated} updated, ${result.skipped} skipped${dims}.`,
+  );
+  return true;
+}
+
 async function scanSessionFiles(agentId: string): Promise<SourceScan> {
   const issues: string[] = [];
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
@@ -621,6 +659,7 @@ export function registerMemoryCli(program: Command) {
         `\n${theme.heading("Examples:")}\n${formatHelpExamples([
           ["openclaw memory status", "Show index and provider status."],
           ["openclaw memory repair-store", "Repair pgvector columns and metadata in place."],
+          ["openclaw memory migrate-embeddings", "Re-embed existing chunks without re-chunking."],
           ["openclaw memory index --force", "Force a full reindex."],
           ['openclaw memory search --query "deployment notes"', "Search indexed memory entries."],
           ["openclaw memory status --json", "Output machine-readable JSON."],
@@ -728,6 +767,32 @@ export function registerMemoryCli(program: Command) {
             } catch (err) {
               const message = formatErrorMessage(err);
               defaultRuntime.error(`Memory store repair failed (${agentId}): ${message}`);
+              process.exitCode = 1;
+            }
+          },
+        });
+      }
+    });
+
+  memory
+    .command("migrate-embeddings")
+    .description("Re-embed existing memory chunks without re-chunking")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentIds = resolveAgentIds(cfg, opts.agent);
+      for (const agentId of agentIds) {
+        await withMemoryManagerForAgent({
+          cfg,
+          agentId,
+          run: async (manager) => {
+            try {
+              await runEmbeddingMigrationForManager({ manager, agentId });
+            } catch (err) {
+              const message = formatErrorMessage(err);
+              defaultRuntime.error(`Memory embedding migration failed (${agentId}): ${message}`);
               process.exitCode = 1;
             }
           },

@@ -70,6 +70,7 @@ const sqlTag = vi.hoisted(() => {
   const chunks = new Map<string, ChunkRow>();
   const meta = new Map<string, MetaRow>();
   const cache = new Map<string, CacheRow>();
+  const pgIndexRows: Array<{ indexname: string; indexdef: string }> = [];
   const beginCalls: string[] = [];
   const txCalls: string[] = [];
   type UnsafeIdentifier = { raw: string; toString: () => string };
@@ -101,6 +102,9 @@ const sqlTag = vi.hoisted(() => {
           return Promise.resolve([{ available: extensions.get(extname) ?? false }]);
         }
         return Promise.resolve([{ available: true }]);
+      }
+      if (query.includes("FROM pg_indexes")) {
+        return Promise.resolve(pgIndexRows);
       }
       if (query.includes("INSERT INTO ?") && query.includes("(agent_id, id, path, source")) {
         const [
@@ -159,11 +163,13 @@ const sqlTag = vi.hoisted(() => {
           model,
           providerKey,
           sources,
+          excludeGlobs,
           chunkTokens,
           chunkOverlap,
           vectorDims,
         ] = values;
         void table;
+        void excludeGlobs;
         meta.set(String(agentId), {
           agent_id: String(agentId),
           provider: String(provider),
@@ -323,6 +329,17 @@ const sqlTag = vi.hoisted(() => {
         }
         return Promise.resolve(Array.from(files.values()));
       }
+      if (query.includes("SET model = ?") && query.includes("embedding_vec =")) {
+        const [table, model, embedding, embeddingVec, agentId, id] = values;
+        void table;
+        const row = chunks.get(String(id));
+        if (row && row.agent_id === String(agentId)) {
+          row.model = String(model);
+          row.embedding = Array.isArray(embedding) ? embedding.map((value) => Number(value)) : [];
+          row.embedding_vec = typeof embeddingVec === "string" ? embeddingVec : null;
+        }
+        return Promise.resolve([]);
+      }
       if (query.includes("FROM ?") && firstArgText.includes("chunks")) {
         if (query.includes("SET embedding_vec = embedding::vector")) {
           for (const row of chunks.values()) {
@@ -353,6 +370,24 @@ const sqlTag = vi.hoisted(() => {
                 .length,
             },
           ]);
+        }
+        if (query.includes("SELECT id, text, hash")) {
+          const [, agentId, sources, lastId, limit] = values;
+          const sourceSet = new Set(
+            Array.isArray(sources) ? sources.map((value) => String(value)) : [],
+          );
+          return Promise.resolve(
+            Array.from(chunks.values())
+              .filter(
+                (row) =>
+                  row.agent_id === String(agentId) &&
+                  sourceSet.has(row.source) &&
+                  row.id > String(lastId),
+              )
+              .toSorted((a, b) => a.id.localeCompare(b.id))
+              .slice(0, Number(limit))
+              .map((row) => ({ id: row.id, text: row.text, hash: row.hash })),
+          );
         }
         if (query.includes("search_tokens ILIKE ANY")) {
           const [, agentId, sources, likeTerms] = values;
@@ -411,6 +446,9 @@ const sqlTag = vi.hoisted(() => {
         if (value.includes("[unsafe:")) {
           throw new Error('syntax error at or near "["');
         }
+        if (value.includes("CREATE INDEX")) {
+          calls.push(value);
+        }
         if (value.startsWith('"')) {
           return makeUnsafeIdentifier(value);
         }
@@ -446,6 +484,7 @@ const sqlTag = vi.hoisted(() => {
         chunks.clear();
         meta.clear();
         cache.clear();
+        pgIndexRows.length = 0;
       },
       calls,
       extensions,
@@ -453,6 +492,7 @@ const sqlTag = vi.hoisted(() => {
       chunks,
       meta,
       cache,
+      pgIndexRows,
       beginCalls,
       txCalls,
     },
@@ -664,6 +704,225 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
+  it("migrates existing chunks without re-chunking", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-migrate-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    const chunkIds = Array.from(sqlTag.chunks.keys()).toSorted();
+    for (const row of sqlTag.chunks.values()) {
+      row.model = "old-embed";
+      row.embedding = [0, 1, 0];
+      row.embedding_vec = "[0,1,0]";
+    }
+    embeddingBatchVectors.value = [[1, 0, 0]];
+    sqlTag.beginCalls.length = 0;
+    sqlTag.txCalls.length = 0;
+
+    const result = await manager?.migrateEmbeddings?.();
+
+    expect(result).toMatchObject({ migrated: chunkIds.length, skipped: 0, dims: 3 });
+    expect(sqlTag.beginCalls).toEqual(["begin"]);
+    expect(sqlTag.txCalls.some((query) => query.includes("pg_advisory_xact_lock"))).toBe(true);
+    expect(Array.from(sqlTag.chunks.keys()).toSorted()).toEqual(chunkIds);
+    expect(Array.from(sqlTag.chunks.values())).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          model: "mock-embed",
+          embedding: [1, 0, 0],
+          embedding_vec: "'[1,0,0]'::vector",
+        }),
+      ]),
+    );
+    expect(sqlTag.meta.get("main")).toMatchObject({
+      model: "mock-embed",
+      vector_dims: 3,
+    });
+
+    await manager?.close?.();
+  });
+
+  it("keeps pending source dirtiness after embedding migration", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-migrate-dirty-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    const stateDir = path.join(tmpRoot, "state");
+    const sessionsDir = path.join(stateDir, "agents", "main", "sessions");
+    const sessionFile = path.join(sessionsDir, "thread.jsonl");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.sources = ["memory", "sessions"];
+    cfg.agents!.defaults!.memorySearch!.experimental = { sessionMemory: true };
+
+    let manager: PostgresMemoryManager | null = null;
+    try {
+      manager = await PostgresMemoryManager.get({
+        cfg,
+        agentId: "main",
+      });
+      await manager?.initStore?.();
+      await manager?.sync?.({ force: true });
+
+      for (const row of sqlTag.chunks.values()) {
+        row.model = "old-embed";
+        row.embedding = [0, 1, 0];
+        row.embedding_vec = "[0,1,0]";
+      }
+      await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha updated notes\n", "utf-8");
+      await fs.writeFile(
+        sessionFile,
+        JSON.stringify({ type: "message", role: "user", content: "Session update" }),
+        "utf-8",
+      );
+      const dirtyState = manager as unknown as {
+        dirty: boolean;
+        sessionsDirty: boolean;
+        sessionsDirtyFiles: Set<string>;
+      };
+      dirtyState.dirty = true;
+      dirtyState.sessionsDirty = true;
+      dirtyState.sessionsDirtyFiles.add(sessionFile);
+      embeddingBatchVectors.value = [[1, 0, 0]];
+
+      await manager?.migrateEmbeddings?.();
+
+      expect(manager?.status().dirty).toBe(true);
+
+      embeddingBatchVectors.value = null;
+      await manager?.sync?.();
+
+      expect(manager?.status().dirty).toBe(false);
+    } finally {
+      await manager?.close?.();
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+    }
+  });
+
+  it("reuses a compatible existing hnsw index during embedding migration", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-migrate-index-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+    sqlTag.pgIndexRows.push({
+      indexname: "existing_embedding_hnsw_idx",
+      indexdef:
+        "CREATE INDEX existing_embedding_hnsw_idx ON agent_memory.chunks USING hnsw (((embedding_vec)::vector(3)) vector_cosine_ops) WHERE ((embedding_vec IS NOT NULL) AND (vector_dims(embedding_vec) = 3))",
+    });
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    const chunkIds = Array.from(sqlTag.chunks.keys()).toSorted();
+    for (const row of sqlTag.chunks.values()) {
+      row.model = "old-embed";
+      row.embedding = [0, 1, 0];
+      row.embedding_vec = "[0,1,0]";
+    }
+    embeddingBatchVectors.value = [[1, 0, 0]];
+    sqlTag.calls.length = 0;
+
+    const result = await manager?.migrateEmbeddings?.();
+
+    expect(result).toMatchObject({ migrated: chunkIds.length, skipped: 0, dims: 3 });
+    expect(manager?.status().vector).toMatchObject({
+      enabled: true,
+      available: true,
+      dims: 3,
+      indexAvailable: true,
+    });
+    expect(sqlTag.calls.some((query) => query.includes("FROM pg_indexes"))).toBe(true);
+    expect(sqlTag.calls.some((query) => query.includes("CREATE INDEX"))).toBe(false);
+
+    await manager?.close?.();
+  });
+
+  it("creates a compatible hnsw index when no postgres index exists", async () => {
+    embeddingDims.value = 3;
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-migrate-no-index-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "notes.md"), "Alpha deployment notes\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    for (const row of sqlTag.chunks.values()) {
+      row.model = "old-embed";
+      row.embedding = [0, 1, 0];
+      row.embedding_vec = "[0,1,0]";
+    }
+    embeddingBatchVectors.value = [[1, 0, 0]];
+    sqlTag.calls.length = 0;
+
+    const result = await manager?.migrateEmbeddings?.();
+
+    expect(result?.migrated).toBeGreaterThan(0);
+    expect(manager?.status().vector).toMatchObject({
+      enabled: true,
+      available: true,
+      dims: 3,
+      indexAvailable: true,
+    });
+    expect(sqlTag.calls.some((query) => query.includes("FROM pg_indexes"))).toBe(true);
+    expect(
+      sqlTag.calls.some(
+        (query) =>
+          query.includes("CREATE INDEX IF NOT EXISTS") &&
+          query.includes("chunks_embedding_vec_3_hnsw_idx"),
+      ),
+    ).toBe(true);
+    expect(
+      sqlTag.calls.some((query) =>
+        query.includes(
+          'CREATE INDEX IF NOT EXISTS "agent_memory"."chunks_embedding_vec_3_hnsw_idx"',
+        ),
+      ),
+    ).toBe(false);
+
+    await manager?.close?.();
+  });
+
   it("syncs memory files and returns search results", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-"));
     const workspaceDir = path.join(tmpRoot, "workspace");
@@ -708,7 +967,7 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
-  it("keeps postgres memory usable when pgvector is disabled", async () => {
+  it("keeps semantic postgres memory search usable when pgvector is disabled", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-keyword-"));
     const workspaceDir = path.join(tmpRoot, "workspace");
     const memoryDir = path.join(workspaceDir, "memory");
@@ -718,6 +977,7 @@ describe("PostgresMemoryManager", () => {
     const cfg = createConfig();
     cfg.agents!.defaults!.workspace = workspaceDir;
     cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    cfg.agents!.defaults!.memorySearch!.query = { minScore: 0, hybrid: { enabled: false } };
     sqlTag.extensions.set("vector", false);
 
     const manager = await PostgresMemoryManager.get({

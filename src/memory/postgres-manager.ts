@@ -54,6 +54,8 @@ import type {
   MemorySearchResult,
   MemorySource,
   MemorySyncProgressUpdate,
+  MemoryVectorMigrationProgressUpdate,
+  MemoryVectorMigrationResult,
 } from "./types.js";
 
 type MemoryIndexMeta = {
@@ -73,6 +75,7 @@ const log = createSubsystemLogger("memory");
 const INDEX_CACHE = new Map<string, PostgresMemoryManager>();
 const SNIPPET_MAX_CHARS = 700;
 const EMBEDDING_INDEX_CONCURRENCY = 4;
+const EMBEDDING_MIGRATION_BATCH_SIZE = 64;
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
 const POSTGRES_HNSW_MAX_VECTOR_DIMS = 2000;
 const SESSION_DIRTY_DEBOUNCE_MS = 5000;
@@ -95,8 +98,29 @@ function quotePgIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-function qualifyIndex(schema: string, indexName: string): string {
-  return `${quotePgIdentifier(schema)}.${quotePgIdentifier(indexName)}`;
+function normalizePgIndexDef(indexDef: string): string {
+  return indexDef
+    .toLowerCase()
+    .replaceAll('"', "")
+    .replace(/\s+/g, " ")
+    .replace(/\(\s+/g, "(")
+    .replace(/\s+\)/g, ")")
+    .trim();
+}
+
+function isCompatibleHnswIndexDefinition(indexDef: string, dims: number): boolean {
+  const normalized = normalizePgIndexDef(indexDef);
+  const vectorDimsPattern = new RegExp(
+    `vector_dims\\s*\\(\\s*embedding_vec\\s*\\)\\s*=\\s*${dims}\\b`,
+  );
+  return (
+    normalized.includes("using hnsw") &&
+    normalized.includes("embedding_vec") &&
+    normalized.includes(`vector(${dims})`) &&
+    normalized.includes("vector_cosine_ops") &&
+    normalized.includes("embedding_vec is not null") &&
+    vectorDimsPattern.test(normalized)
+  );
 }
 
 function truncateSnippet(text: string, maxChars = SNIPPET_MAX_CHARS): string {
@@ -166,7 +190,12 @@ export class PostgresMemoryManager implements MemorySearchManager {
   private readonly providerUnavailableReason?: string;
   private readonly sources: Set<MemorySource>;
   private readonly cache: { enabled: boolean; maxEntries?: number };
-  private readonly vector: { enabled: boolean; available: boolean; dims?: number };
+  private readonly vector: {
+    enabled: boolean;
+    available: boolean;
+    indexAvailable: boolean;
+    dims?: number;
+  };
   private readonly fts: { enabled: boolean; available: boolean; error?: string };
   private providerKey: string;
   private syncPromise: Promise<void> | null = null;
@@ -285,6 +314,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     this.vector = {
       enabled: params.settings.store.vector.enabled,
       available: false,
+      indexAvailable: false,
     };
     this.fts = {
       enabled: params.settings.query.hybrid.enabled,
@@ -328,6 +358,34 @@ export class PostgresMemoryManager implements MemorySearchManager {
     progress?.({ completed: 4, total: 4, label: "Repair complete" });
   }
 
+  async migrateEmbeddings(params?: {
+    progress?: (update: MemoryVectorMigrationProgressUpdate) => void;
+  }): Promise<MemoryVectorMigrationResult> {
+    await this.ensureReady();
+    if (!this.provider) {
+      throw new Error("Memory embedding migration requires an embedding provider.");
+    }
+    if (!this.vector.enabled || !this.vector.available) {
+      throw new Error("Memory embedding migration requires pgvector to be enabled and available.");
+    }
+
+    log.info("Starting PostgreSQL memory embedding migration", {
+      agentId: this.agentId,
+      provider: this.provider.id,
+      model: this.provider.model,
+    });
+    const result = await this.migrateExistingChunkEmbeddings({
+      progress: params?.progress,
+    });
+    log.info("Completed PostgreSQL memory embedding migration", {
+      agentId: this.agentId,
+      migrated: result.migrated,
+      skipped: result.skipped,
+      dims: result.dims,
+    });
+    return result;
+  }
+
   async search(
     query: string,
     opts?: { maxResults?: number; minScore?: number; sessionKey?: string },
@@ -365,6 +423,12 @@ export class PostgresMemoryManager implements MemorySearchManager {
 
     if (!hybrid.enabled) {
       return vectorResults.filter((entry) => entry.score >= minScore).slice(0, maxResults);
+    }
+    if (vectorResults.length === 0 && keywordResults.length > 0) {
+      return keywordResults
+        .map((entry) => ({ ...entry, score: entry.textScore }))
+        .filter((entry) => entry.score >= minScore)
+        .slice(0, maxResults);
     }
 
     const merged = await mergeHybridResults({
@@ -488,6 +552,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
       vector: {
         enabled: this.vector.enabled,
         available: this.vector.available,
+        indexAvailable: this.vector.indexAvailable,
         dims: this.vector.dims,
       },
       custom: {
@@ -634,16 +699,30 @@ export class PostgresMemoryManager implements MemorySearchManager {
       dims <= 0 ||
       dims > POSTGRES_HNSW_MAX_VECTOR_DIMS
     ) {
+      this.vector.indexAvailable = false;
+      return;
+    }
+    const rows = await this.activeSql<Array<{ indexdef: string }>>`
+      SELECT indexdef
+      FROM pg_indexes
+      WHERE schemaname = ${this.store.schema}
+        AND tablename = 'chunks'
+    `;
+    this.vector.indexAvailable = rows.some((row) =>
+      isCompatibleHnswIndexDefinition(String(row.indexdef), dims),
+    );
+    if (this.vector.indexAvailable) {
       return;
     }
     const chunksTable = qualifyTable(this.store.schema, "chunks");
-    const indexName = qualifyIndex(this.store.schema, `chunks_embedding_vec_${dims}_hnsw_idx`);
+    const indexName = quotePgIdentifier(`chunks_embedding_vec_${dims}_hnsw_idx`);
     await this.activeSql.unsafe(`
       CREATE INDEX IF NOT EXISTS ${indexName}
         ON ${chunksTable}
         USING hnsw ((embedding_vec::vector(${dims})) vector_cosine_ops)
         WHERE embedding_vec IS NOT NULL AND vector_dims(embedding_vec) = ${dims}
     `);
+    this.vector.indexAvailable = true;
   }
 
   private ensureWatcher(): void {
@@ -1042,57 +1121,48 @@ export class PostgresMemoryManager implements MemorySearchManager {
       : [];
     reporter.setTotal(memoryFiles.length + sessionFiles.length, "Indexing memory");
 
-    await this.sql.begin(async (tx: PostgresMemoryClient) => {
-      const previousSql = this.activeSql;
-      this.activeSql = tx as unknown as SqlExecutor;
-      try {
-        await this.activeSql`
-          SELECT pg_advisory_xact_lock(hashtext(${this.store.schema}), hashtext(${this.agentId}))
-        `;
-        const meta = await this.readMeta();
-        const needsFullReindex =
-          Boolean(params?.force) ||
-          !meta ||
-          meta.model !== (this.provider?.model ?? "fts-only") ||
-          meta.provider !== (this.provider?.id ?? "none") ||
-          meta.providerKey !== this.providerKey ||
-          meta.chunkTokens !== this.settings.chunking.tokens ||
-          meta.chunkOverlap !== this.settings.chunking.overlap ||
-          JSON.stringify(meta.sources) !== JSON.stringify(configuredSources) ||
-          this.metaExcludeGlobsDiffer(meta, configuredExcludeGlobs);
+    await this.withPostgresIndexLock(async () => {
+      const meta = await this.readMeta();
+      const needsFullReindex =
+        Boolean(params?.force) ||
+        !meta ||
+        meta.model !== (this.provider?.model ?? "fts-only") ||
+        meta.provider !== (this.provider?.id ?? "none") ||
+        meta.providerKey !== this.providerKey ||
+        meta.chunkTokens !== this.settings.chunking.tokens ||
+        meta.chunkOverlap !== this.settings.chunking.overlap ||
+        JSON.stringify(meta.sources) !== JSON.stringify(configuredSources) ||
+        this.metaExcludeGlobsDiffer(meta, configuredExcludeGlobs);
 
-        if (needsFullReindex) {
-          const filesTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "files"));
-          const chunksTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "chunks"));
-          await this.activeSql`DELETE FROM ${filesTable} WHERE agent_id = ${this.agentId}`;
-          await this.activeSql`DELETE FROM ${chunksTable} WHERE agent_id = ${this.agentId}`;
-        }
-
-        shouldSyncMemory =
-          this.sources.has("memory") && (Boolean(params?.force) || needsFullReindex || this.dirty);
-        shouldSyncSessions = this.shouldSyncSessions(params, needsFullReindex);
-
-        if (shouldSyncMemory) {
-          await this.syncMemoryFiles({ files: memoryFiles, reporter, needsFullReindex });
-        }
-        if (shouldSyncSessions) {
-          await this.syncSessionFiles({ files: sessionFiles, reporter, needsFullReindex });
-        }
-
-        await this.writeMeta({
-          model: this.provider?.model ?? "fts-only",
-          provider: this.provider?.id ?? "none",
-          providerKey: this.providerKey,
-          sources: configuredSources,
-          chunkTokens: this.settings.chunking.tokens,
-          chunkOverlap: this.settings.chunking.overlap,
-          vectorDims: this.vector.dims,
-          excludeGlobs: configuredExcludeGlobs,
-        });
-        await this.pruneEmbeddingCacheIfNeeded();
-      } finally {
-        this.activeSql = previousSql;
+      if (needsFullReindex) {
+        const filesTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "files"));
+        const chunksTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "chunks"));
+        await this.activeSql`DELETE FROM ${filesTable} WHERE agent_id = ${this.agentId}`;
+        await this.activeSql`DELETE FROM ${chunksTable} WHERE agent_id = ${this.agentId}`;
       }
+
+      shouldSyncMemory =
+        this.sources.has("memory") && (Boolean(params?.force) || needsFullReindex || this.dirty);
+      shouldSyncSessions = this.shouldSyncSessions(params, needsFullReindex);
+
+      if (shouldSyncMemory) {
+        await this.syncMemoryFiles({ files: memoryFiles, reporter, needsFullReindex });
+      }
+      if (shouldSyncSessions) {
+        await this.syncSessionFiles({ files: sessionFiles, reporter, needsFullReindex });
+      }
+
+      await this.writeMeta({
+        model: this.provider?.model ?? "fts-only",
+        provider: this.provider?.id ?? "none",
+        providerKey: this.providerKey,
+        sources: configuredSources,
+        chunkTokens: this.settings.chunking.tokens,
+        chunkOverlap: this.settings.chunking.overlap,
+        vectorDims: this.vector.dims,
+        excludeGlobs: configuredExcludeGlobs,
+      });
+      await this.pruneEmbeddingCacheIfNeeded();
     });
 
     await this.refreshStatusSnapshot();
@@ -1107,6 +1177,21 @@ export class PostgresMemoryManager implements MemorySearchManager {
     } else {
       this.sessionsDirty = false;
     }
+  }
+
+  private async withPostgresIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+    return await this.sql.begin(async (tx: PostgresMemoryClient) => {
+      const previousSql = this.activeSql;
+      this.activeSql = tx as unknown as SqlExecutor;
+      try {
+        await this.activeSql`
+          SELECT pg_advisory_xact_lock(hashtext(${this.store.schema}), hashtext(${this.agentId}))
+        `;
+        return await fn();
+      } finally {
+        this.activeSql = previousSql;
+      }
+    });
   }
 
   private async syncMemoryFiles(params: {
@@ -1357,6 +1442,107 @@ export class PostgresMemoryManager implements MemorySearchManager {
       await this.upsertEmbeddingCache(cacheEntries);
     }
     return embeddings.map((entry) => entry ?? []);
+  }
+
+  private async migrateExistingChunkEmbeddings(params: {
+    progress?: (update: MemoryVectorMigrationProgressUpdate) => void;
+  }): Promise<MemoryVectorMigrationResult> {
+    const provider = this.provider;
+    if (!provider) {
+      throw new Error("Memory embedding migration requires an embedding provider.");
+    }
+    const result = await this.withPostgresIndexLock(async () => {
+      const chunksTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "chunks"));
+      const countRows = await this.activeSql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM ${chunksTable}
+        WHERE agent_id = ${this.agentId}
+          AND source = ANY(${this.activeSql.array(Array.from(this.sources))})
+      `;
+      const total = Number(countRows[0]?.count ?? 0);
+      params.progress?.({ completed: 0, total, label: "Migrating existing memory embeddings" });
+      if (total === 0) {
+        await this.writeCurrentMeta(undefined);
+        return { migrated: 0, skipped: 0 };
+      }
+
+      let migrated = 0;
+      let skipped = 0;
+      let dims: number | undefined;
+      let lastId = "";
+
+      while (true) {
+        const rows = await this.activeSql<Array<{ id: string; text: string; hash: string }>>`
+          SELECT id, text, hash
+          FROM ${chunksTable}
+          WHERE agent_id = ${this.agentId}
+            AND source = ANY(${this.activeSql.array(Array.from(this.sources))})
+            AND id > ${lastId}
+          ORDER BY id ASC
+          LIMIT ${EMBEDDING_MIGRATION_BATCH_SIZE}
+        `;
+        if (rows.length === 0) {
+          break;
+        }
+        lastId = rows.at(-1)?.id ?? lastId;
+        const embeddings = await this.embedChunks(
+          rows.map((row) => ({ text: row.text, hash: row.hash })),
+        );
+        for (let i = 0; i < rows.length; i += 1) {
+          const row = rows[i];
+          const embedding = embeddings[i] ?? [];
+          if (embedding.length === 0) {
+            skipped += 1;
+            continue;
+          }
+          if (dims === undefined) {
+            dims = embedding.length;
+            await this.ensureVectorIndexForDims(dims);
+          } else if (embedding.length !== dims) {
+            throw new Error(
+              `postgres memory migration expected ${dims}-dim embeddings, got ${embedding.length}`,
+            );
+          }
+          await this.activeSql`
+            UPDATE ${chunksTable}
+               SET model = ${provider.model},
+                   embedding = ${this.activeSql.array(embedding, 701)},
+                   embedding_vec = ${this.activeSql.unsafe(`'${serializePgvector(embedding)}'::vector`)},
+                   updated_at = NOW()
+             WHERE agent_id = ${this.agentId}
+               AND id = ${row.id}
+          `;
+          migrated += 1;
+        }
+        params.progress?.({
+          completed: Math.min(total, migrated + skipped),
+          total,
+          label: `Migrated ${migrated} memory embeddings`,
+        });
+      }
+
+      await this.writeCurrentMeta(dims);
+      await this.pruneEmbeddingCacheIfNeeded();
+      return { migrated, skipped, dims };
+    });
+    if (result.dims) {
+      this.vector.dims = result.dims;
+    }
+    await this.refreshStatusSnapshot();
+    return result;
+  }
+
+  private async writeCurrentMeta(vectorDims?: number): Promise<void> {
+    await this.writeMeta({
+      model: this.provider?.model ?? "fts-only",
+      provider: this.provider?.id ?? "none",
+      providerKey: this.providerKey,
+      sources: this.resolveConfiguredSourcesForMeta(),
+      chunkTokens: this.settings.chunking.tokens,
+      chunkOverlap: this.settings.chunking.overlap,
+      vectorDims: vectorDims ?? this.vector.dims,
+      excludeGlobs: this.resolveConfiguredExcludeGlobsForMeta(),
+    });
   }
 
   private async loadEmbeddingCache(hashes: string[]): Promise<Map<string, number[]>> {

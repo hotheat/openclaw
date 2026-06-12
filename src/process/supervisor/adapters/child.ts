@@ -104,25 +104,35 @@ export async function createChildAdapter(params: {
       }
     : undefined;
 
+  const stdoutHandlers: Array<(chunk: Buffer | string) => void> = [];
+  const stderrHandlers: Array<(chunk: Buffer | string) => void> = [];
+
   const onStdout = (listener: (chunk: string) => void) => {
-    child.stdout.on("data", (chunk) => {
+    const handler = (chunk: Buffer | string) => {
       listener(chunk.toString());
-    });
+    };
+    stdoutHandlers.push(handler);
+    child.stdout.on("data", handler);
   };
 
   const onStderr = (listener: (chunk: string) => void) => {
-    child.stderr.on("data", (chunk) => {
+    const handler = (chunk: Buffer | string) => {
       listener(chunk.toString());
-    });
+    };
+    stderrHandlers.push(handler);
+    child.stderr.on("data", handler);
   };
 
-  const wait = async () =>
-    await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+  const waitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolve, reject) => {
       child.once("error", reject);
       child.once("close", (code, signal) => {
         resolve({ code, signal });
       });
-    });
+    },
+  );
+
+  const wait = async () => await waitPromise;
 
   const kill = (signal?: NodeJS.Signals) => {
     const pid = child.pid ?? undefined;
@@ -146,7 +156,14 @@ export async function createChildAdapter(params: {
   };
 
   const dispose = () => {
-    child.removeAllListeners();
+    for (const handler of stdoutHandlers) {
+      child.stdout.removeListener("data", handler);
+    }
+    for (const handler of stderrHandlers) {
+      child.stderr.removeListener("data", handler);
+    }
+    stdoutHandlers.length = 0;
+    stderrHandlers.length = 0;
   };
 
   return {
