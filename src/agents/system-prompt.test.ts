@@ -237,6 +237,16 @@ describe("buildAgentSystemPrompt", () => {
     expect(prompt).toContain("Do not poll `subagents list` / `sessions_list` in a loop");
   });
 
+  it("guides shell search to prefer ripgrep when available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+    });
+
+    expect(prompt).toContain(
+      "For shell-based code search, prefer `rg` for text search and `rg --files` for file discovery because ripgrep is usually faster than grep/find. If `rg` is unavailable, fall back to available alternatives.",
+    );
+  });
+
   it("lists available tools when provided", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",

@@ -471,6 +471,7 @@ export function buildAgentSystemPrompt(params: {
           "- subagents: list/steer/kill sub-agent runs",
           '- session_status: show usage/time/model state and answer "what model are we using?"',
         ].join("\n"),
+    "For shell-based code search, prefer `rg` for text search and `rg --files` for file discovery because ripgrep is usually faster than grep/find. If `rg` is unavailable, fall back to available alternatives.",
     "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
     `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
     "If a task is more complex or takes longer, spawn a sub-agent. Completion is push-based: it will auto-announce when done.",
