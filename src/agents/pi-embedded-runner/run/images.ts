@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageContent } from "@mariozechner/pi-ai";
 import { resolveUserPath } from "../../../utils.js";
-import { loadWebMedia } from "../../../web/media.js";
+import { LocalMediaAccessError, loadWebMedia } from "../../../web/media.js";
 import type { ImageSanitizationLimits } from "../../image-sanitization.js";
 import type { SandboxFsBridge } from "../../sandbox/fs-bridge.js";
 import { sanitizeImageBlocks } from "../../tool-images.js";
@@ -234,7 +234,15 @@ export async function loadImageFromRef(
           readFile: (filePath) =>
             options.sandbox!.bridge.readFile({ filePath, cwd: options.sandbox!.root }),
         })
-      : await loadWebMedia(targetPath, options?.maxBytes);
+      : await loadWebMedia(targetPath, options?.maxBytes).catch(async (err: unknown) => {
+          if (!(err instanceof LocalMediaAccessError) || err.code !== "path-not-allowed") {
+            throw err;
+          }
+          return await loadWebMedia(targetPath, {
+            maxBytes: options?.maxBytes,
+            localRoots: [path.resolve(workspaceDir)],
+          });
+        });
 
     if (media.kind !== "image") {
       log.debug(`Native image: not an image file: ${targetPath} (got ${media.kind})`);

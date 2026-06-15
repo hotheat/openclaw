@@ -73,10 +73,17 @@ export function createOpenClawTools(options?: {
   senderIsOwner?: boolean;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
+  const requesterAgentId =
+    options?.requesterAgentIdOverride ??
+    resolveSessionAgentId({
+      sessionKey: options?.agentSessionKey,
+      config: options?.config,
+    });
   const imageTool = options?.agentDir?.trim()
     ? createImageTool({
         config: options?.config,
         agentDir: options.agentDir,
+        agentId: requesterAgentId,
         workspaceDir,
         inboundMediaPaths: options?.inboundMediaPaths,
         sandbox:
@@ -190,10 +197,7 @@ export function createOpenClawTools(options?: {
       config: options?.config,
       workspaceDir,
       agentDir: options?.agentDir,
-      agentId: resolveSessionAgentId({
-        sessionKey: options?.agentSessionKey,
-        config: options?.config,
-      }),
+      agentId: requesterAgentId,
       sessionKey: options?.agentSessionKey,
       messageChannel: options?.agentChannel,
       agentAccountId: options?.agentAccountId,

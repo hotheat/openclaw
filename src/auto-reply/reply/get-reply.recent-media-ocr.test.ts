@@ -161,6 +161,8 @@ function makeCtx(params: {
   messageSid?: string;
   mediaPath?: string;
   mediaType?: string;
+  commandSource?: "text" | "native";
+  commandTargetSessionKey?: string;
 }) {
   return {
     Body: params.body,
@@ -179,6 +181,8 @@ function makeCtx(params: {
     OriginatingTo: "whatsapp:+2000",
     MediaPath: params.mediaPath,
     MediaType: params.mediaType,
+    CommandSource: params.commandSource,
+    CommandTargetSessionKey: params.commandTargetSessionKey,
   };
 }
 
@@ -321,6 +325,61 @@ describe("getReplyFromConfig recent image OCR rehydration", () => {
       expect(finalPrompt).toContain("[Image]");
       expect(finalPrompt).toContain("User text:\n解释这个图片");
       expect(finalPrompt).toContain("Description:\nOCR for inbound-image.jpg");
+    });
+  });
+
+  it("passes the resolved target agent to media understanding before and after session init", async () => {
+    await withTempHome(async (home) => {
+      vi.mocked(runEmbeddedPiAgent).mockResolvedValue(makeResult("ok"));
+
+      const cfg = {
+        ...makeCfg(home),
+        agents: {
+          defaults: {
+            model: "anthropic/claude-opus-4-5",
+            workspace: path.join(home, "openclaw"),
+            imageModel: "openai/gpt-5.2",
+          },
+          list: [
+            { id: "main", default: true },
+            { id: "vision", imageModel: null },
+          ],
+        },
+      } as unknown as OpenClawConfig;
+      const slashSessionKey = "agent:main:whatsapp:slash:user-1";
+      const targetSessionKey = "agent:vision:whatsapp:direct:user-1";
+
+      await getReplyFromConfig(
+        makeCtx({
+          body: "<media:image>",
+          sessionKey: slashSessionKey,
+          senderId: "user-1",
+          messageSid: "msg-image",
+          mediaPath: "/tmp/inbound-image.jpg",
+          mediaType: "image/jpeg",
+          commandSource: "native",
+          commandTargetSessionKey: targetSessionKey,
+        }),
+        {},
+        cfg,
+      );
+
+      await getReplyFromConfig(
+        makeCtx({
+          body: "解释这个图片",
+          sessionKey: slashSessionKey,
+          senderId: "user-1",
+          messageSid: "msg-text",
+          commandSource: "native",
+          commandTargetSessionKey: targetSessionKey,
+        }),
+        {},
+        cfg,
+      );
+
+      expect(vi.mocked(applyMediaUnderstanding)).toHaveBeenCalledTimes(3);
+      expect(vi.mocked(applyMediaUnderstanding).mock.calls[0]?.[0].agentId).toBe("vision");
+      expect(vi.mocked(applyMediaUnderstanding).mock.calls[2]?.[0].agentId).toBe("vision");
     });
   });
 });

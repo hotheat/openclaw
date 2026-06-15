@@ -5,6 +5,7 @@ import {
   resolveAgentConfig,
   resolveAgentDir,
   resolveEffectiveModelFallbacks,
+  resolveEffectiveImageModelConfig,
   resolveAgentModelFallbacksOverride,
   resolveAgentModelPrimary,
   resolveAgentWorkspaceDir,
@@ -167,6 +168,42 @@ describe("resolveAgentConfig", () => {
         hasSessionModelOverride: true,
       }),
     ).toEqual([]);
+  });
+
+  it("supports per-agent imageModel null to disable inherited image routing", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          imageModel: { primary: "openai/gpt-5-mini", fallbacks: ["anthropic/claude-opus-4-5"] },
+        },
+        list: [
+          {
+            id: "qwen-group",
+            model: { primary: "qwen-openai/qwen/qwen3.6-27b", fallbacks: [] },
+            imageModel: null,
+          },
+          {
+            id: "default-image",
+            model: { primary: "openai/gpt-5.4" },
+          },
+          {
+            id: "custom-image",
+            imageModel: { primary: "minimax/MiniMax-VL-01", fallbacks: [] },
+          },
+        ],
+      },
+    };
+
+    expect(resolveAgentConfig(cfg, "qwen-group")?.imageModel).toBeNull();
+    expect(resolveEffectiveImageModelConfig({ cfg, agentId: "qwen-group" })).toBeNull();
+    expect(resolveEffectiveImageModelConfig({ cfg, agentId: "default-image" })).toEqual({
+      primary: "openai/gpt-5-mini",
+      fallbacks: ["anthropic/claude-opus-4-5"],
+    });
+    expect(resolveEffectiveImageModelConfig({ cfg, agentId: "custom-image" })).toEqual({
+      primary: "minimax/MiniMax-VL-01",
+      fallbacks: [],
+    });
   });
 
   it("should return agent-specific sandbox config", () => {

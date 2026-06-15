@@ -27,6 +27,7 @@ Related:
 - `agents.defaults.models` is the allowlist/catalog of models OpenClaw can use (plus aliases).
 - `agents.defaults.imageModel` is used **only when** the primary model can’t accept images.
 - Per-agent defaults can override `agents.defaults.model` via `agents.list[].model` plus bindings (see [/concepts/multi-agent](/concepts/multi-agent)).
+- Set `agents.list[].imageModel: null` to disable inherited image-model routing for an agent that should rely on its primary model's native vision support.
 
 ## Quick model picks (anecdotal)
 

@@ -12,6 +12,8 @@ export type AgentConfig = {
   workspace?: string;
   agentDir?: string;
   model?: AgentModelConfig;
+  /** Per-agent image model override; null disables inherited imageModel routing. */
+  imageModel?: AgentModelConfig | null;
   /** Optional allowlist of skills for this agent (omit = all skills; empty = none). */
   skills?: string[];
   memorySearch?: MemorySearchConfig;

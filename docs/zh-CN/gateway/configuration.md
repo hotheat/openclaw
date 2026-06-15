@@ -1635,7 +1635,7 @@ Talk 模式（macOS/iOS/Android）的默认值。语音 ID 在未设置时回退
 控制内置智能体运行时（模型/思考/详细/超时）。
 `agents.defaults.models` 定义已配置的模型目录（也充当 `/model` 的白名单）。
 `agents.defaults.model.primary` 设置默认模型；`agents.defaults.model.fallbacks` 是全局故障转移。
-`agents.defaults.imageModel` 是可选的，**仅在主模型缺少图像输入时使用**。
+`agents.defaults.imageModel` 是可选的，**仅在主模型缺少图像输入时使用**。如果某个智能体只应使用主模型自身的视觉能力，可设置 `agents.list[].imageModel: null` 禁用继承的图像模型路由。
 每个 `agents.defaults.models` 条目可以包含：
 
 - `alias`（可选的模型快捷方式，例如 `/opus`）。

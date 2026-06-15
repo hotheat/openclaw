@@ -1,4 +1,5 @@
 import path from "node:path";
+import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -468,8 +469,11 @@ export async function applyMediaUnderstanding(params: {
   agentDir?: string;
   providers?: Record<string, MediaUnderstandingProvider>;
   activeModel?: ActiveMediaModel;
+  agentId?: string;
 }): Promise<ApplyMediaUnderstandingResult> {
   const { ctx, cfg } = params;
+  const agentId =
+    params.agentId ?? resolveSessionAgentId({ sessionKey: ctx.SessionKey, config: cfg });
   const commandCandidates = [ctx.CommandBody, ctx.RawBody, ctx.Body];
   const originalUserText =
     commandCandidates
@@ -495,6 +499,7 @@ export async function applyMediaUnderstanding(params: {
         providerRegistry,
         config,
         activeModel: params.activeModel,
+        agentId,
       });
     });
 

@@ -1,13 +1,26 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
 import {
   cacheSticker,
+  describeStickerImage,
   getAllCachedStickers,
   getCachedSticker,
   getCacheStats,
   searchStickers,
 } from "./sticker-cache.js";
+
+const mocks = vi.hoisted(() => ({
+  describeImageWithModel: vi.fn(async () => ({ text: "mock sticker description" })),
+  findModelInCatalog: vi.fn(() => undefined),
+  loadModelCatalog: vi.fn(async () => [
+    { provider: "openai", id: "gpt-5-mini" },
+    { provider: "minimax", id: "MiniMax-VL-01" },
+  ]),
+  modelSupportsVision: vi.fn((entry: unknown) => Boolean(entry)),
+  resolveApiKeyForProvider: vi.fn(async () => "test-key"),
+}));
 
 // Mock the state directory to use a temp location
 vi.mock("../config/paths.js", async (importOriginal) => {
@@ -17,6 +30,20 @@ vi.mock("../config/paths.js", async (importOriginal) => {
     STATE_DIR: "/tmp/openclaw-test-sticker-cache",
   };
 });
+
+vi.mock("../agents/model-auth.js", () => ({
+  resolveApiKeyForProvider: mocks.resolveApiKeyForProvider,
+}));
+
+vi.mock("../agents/model-catalog.js", () => ({
+  findModelInCatalog: mocks.findModelInCatalog,
+  loadModelCatalog: mocks.loadModelCatalog,
+  modelSupportsVision: mocks.modelSupportsVision,
+}));
+
+vi.mock("../media-understanding/providers/image.js", () => ({
+  describeImageWithModel: mocks.describeImageWithModel,
+}));
 
 const TEST_CACHE_DIR = "/tmp/openclaw-test-sticker-cache/telegram";
 const TEST_CACHE_FILE = path.join(TEST_CACHE_DIR, "sticker-cache.json");
@@ -256,6 +283,76 @@ describe("sticker-cache", () => {
       expect(stats.count).toBe(3);
       expect(stats.oldestAt).toBe("2026-01-20T10:00:00.000Z");
       expect(stats.newestAt).toBe("2026-01-26T10:00:00.000Z");
+    });
+  });
+
+  describe("describeStickerImage", () => {
+    const imagePath = path.join(TEST_CACHE_DIR, "sticker.webp");
+
+    beforeEach(() => {
+      fs.mkdirSync(TEST_CACHE_DIR, { recursive: true });
+      fs.writeFileSync(imagePath, Buffer.from("webp"));
+      mocks.describeImageWithModel.mockClear();
+      mocks.findModelInCatalog.mockClear();
+      mocks.loadModelCatalog.mockClear();
+      mocks.modelSupportsVision.mockClear();
+      mocks.resolveApiKeyForProvider.mockClear();
+    });
+
+    afterEach(() => {
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+    });
+
+    it("does not scan generic providers when agent imageModel is null", async () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            imageModel: { primary: "openai/gpt-5-mini", fallbacks: [] },
+          },
+          list: [
+            {
+              id: "vision-off",
+              model: { primary: "qwen-openai/qwen/qwen3.6-27b" },
+              imageModel: null,
+            },
+          ],
+        },
+      } as OpenClawConfig;
+
+      const result = await describeStickerImage({ imagePath, cfg, agentId: "vision-off" });
+
+      expect(result).toBeNull();
+      expect(mocks.resolveApiKeyForProvider).not.toHaveBeenCalled();
+      expect(mocks.describeImageWithModel).not.toHaveBeenCalled();
+    });
+
+    it("uses agent-specific imageModel before generic provider fallback", async () => {
+      const cfg = {
+        agents: {
+          defaults: {
+            imageModel: { primary: "openai/gpt-5-mini", fallbacks: [] },
+          },
+          list: [
+            {
+              id: "vision-agent",
+              model: { primary: "qwen-openai/qwen/qwen3.6-27b" },
+              imageModel: { primary: "minimax/MiniMax-VL-01", fallbacks: [] },
+            },
+          ],
+        },
+      } as OpenClawConfig;
+
+      const result = await describeStickerImage({ imagePath, cfg, agentId: "vision-agent" });
+
+      expect(result).toBe("mock sticker description");
+      expect(mocks.describeImageWithModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "minimax",
+          model: "MiniMax-VL-01",
+        }),
+      );
     });
   });
 });

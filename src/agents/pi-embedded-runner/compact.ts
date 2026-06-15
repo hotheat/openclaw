@@ -138,6 +138,53 @@ function createCompactionDiagId(): string {
   return `cmp-${Date.now().toString(36)}-${generateSecureToken(4)}`;
 }
 
+function resolveCompactionAgentScope(params: {
+  sessionKey: string | undefined;
+  config: OpenClawConfig | undefined;
+}): {
+  defaultAgentId: string;
+  sessionAgentId: string;
+  isDefaultAgent: boolean;
+} {
+  const { defaultAgentId, sessionAgentId } = resolveSessionAgentIds({
+    sessionKey: params.sessionKey,
+    config: params.config,
+  });
+  return {
+    defaultAgentId,
+    sessionAgentId,
+    isDefaultAgent: sessionAgentId === defaultAgentId,
+  };
+}
+
+function buildBeforeCompactionHookContext(params: {
+  sessionAgentId: string;
+  sessionKey: string | undefined;
+  sessionId: string;
+  workspaceDir: string;
+  messageChannel: string | undefined;
+  messageProvider: string | undefined;
+}): {
+  agentId: string;
+  sessionKey: string | undefined;
+  sessionId: string;
+  workspaceDir: string;
+  messageProvider: string | undefined;
+} {
+  return {
+    agentId: params.sessionAgentId,
+    sessionKey: params.sessionKey,
+    sessionId: params.sessionId,
+    workspaceDir: params.workspaceDir,
+    messageProvider: params.messageChannel ?? params.messageProvider,
+  };
+}
+
+export const __testing = {
+  buildBeforeCompactionHookContext,
+  resolveCompactionAgentScope,
+};
+
 function getMessageTextChars(msg: AgentMessage): number {
   const content = (msg as { content?: unknown }).content;
   if (typeof content === "string") {
@@ -363,6 +410,10 @@ export async function compactEmbeddedPiSessionDirect(
       sessionId: params.sessionId,
       warn: makeBootstrapWarn({ sessionLabel, warn: (message) => log.warn(message) }),
     });
+    const { sessionAgentId, isDefaultAgent } = resolveCompactionAgentScope({
+      sessionKey: params.sessionKey,
+      config: params.config,
+    });
     const runAbortController = new AbortController();
     const toolsRaw = createOpenClawCodingTools({
       exec: {
@@ -372,6 +423,7 @@ export async function compactEmbeddedPiSessionDirect(
       messageProvider: params.messageChannel ?? params.messageProvider,
       agentAccountId: params.agentAccountId,
       sessionKey: params.sessionKey ?? params.sessionId,
+      agentId: sessionAgentId,
       groupId: params.groupId,
       groupChannel: params.groupChannel,
       groupSpace: params.groupSpace,
@@ -467,11 +519,6 @@ export async function compactEmbeddedPiSessionDirect(
     const userTimezone = resolveUserTimezone(params.config?.agents?.defaults?.userTimezone);
     const userTimeFormat = resolveUserTimeFormat(params.config?.agents?.defaults?.timeFormat);
     const userTime = formatUserTime(new Date(), userTimezone, userTimeFormat);
-    const { defaultAgentId, sessionAgentId } = resolveSessionAgentIds({
-      sessionKey: params.sessionKey,
-      config: params.config,
-    });
-    const isDefaultAgent = sessionAgentId === defaultAgentId;
     const promptMode =
       isSubagentSessionKey(params.sessionKey) || isCronSessionKey(params.sessionKey)
         ? "minimal"
@@ -626,13 +673,14 @@ export async function compactEmbeddedPiSessionDirect(
         // can read sessionFile asynchronously and process in parallel with
         // the compaction LLM call — no need to block or wait for after_compaction.
         const hookRunner = getGlobalHookRunner();
-        const hookCtx = {
-          agentId: params.sessionKey?.split(":")[0] ?? "main",
+        const hookCtx = buildBeforeCompactionHookContext({
+          sessionAgentId,
           sessionKey: params.sessionKey,
           sessionId: params.sessionId,
           workspaceDir: params.workspaceDir,
-          messageProvider: params.messageChannel ?? params.messageProvider,
-        };
+          messageChannel: params.messageChannel,
+          messageProvider: params.messageProvider,
+        });
         if (hookRunner?.hasHooks("before_compaction")) {
           hookRunner
             .runBeforeCompaction(

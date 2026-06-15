@@ -312,10 +312,12 @@ describe("detectAndLoadPromptImages", () => {
     expect(result.historyImagesByIndex.size).toBe(0);
   });
 
-  it("loads inboundMediaPaths even when prompt has no explicit image path", async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-detect-inbound-image-"));
+  it("loads inboundMediaPaths from per-agent workspace-* roots without sandbox", async () => {
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-detect-workspace-image-"));
     try {
-      const workspaceDir = path.join(root, "workspace");
+      process.env.OPENCLAW_STATE_DIR = root;
+      const workspaceDir = path.join(root, "workspace-feishu-ou_test");
       await fs.mkdir(path.join(workspaceDir, "media", "inbound"), { recursive: true });
       const imagePath = path.join(workspaceDir, "media", "inbound", "input.png");
       const pngB64 =
@@ -327,10 +329,7 @@ describe("detectAndLoadPromptImages", () => {
         workspaceDir,
         model: { input: ["text", "image"] },
         inboundMediaPaths: ["media/inbound/input.png"],
-        sandbox: {
-          root: workspaceDir,
-          bridge: createHostSandboxFsBridge(workspaceDir),
-        },
+        workspaceOnly: true,
       });
 
       expect(result.detectedRefs).toHaveLength(1);
@@ -340,6 +339,11 @@ describe("detectAndLoadPromptImages", () => {
       expect(result.images[0]?.type).toBe("image");
       expect(result.images[0]?.data.length).toBeGreaterThan(0);
     } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

@@ -19,6 +19,7 @@ import {
   coerceImageAssistantText,
   coerceImageModelConfig,
   decodeDataUrl,
+  isImageModelRoutingDisabled,
   type ImageModelConfig,
   resolveProviderVisionModelFromConfig,
 } from "./image-tool.helpers.js";
@@ -135,14 +136,18 @@ function hasAuthForProvider(params: { provider: string; agentDir: string }): boo
 export function resolveImageModelConfigForTool(params: {
   cfg?: OpenClawConfig;
   agentDir: string;
+  agentId?: string;
 }): ImageModelConfig | null {
   // Note: We intentionally do NOT gate based on primarySupportsImages here.
   // Even when the primary model supports images, we keep the tool available
   // because images are auto-injected into prompts (see attempt.ts detectAndLoadPromptImages).
   // The tool description is adjusted via modelHasVision to discourage redundant usage.
-  const explicit = coerceImageModelConfig(params.cfg);
+  const explicit = coerceImageModelConfig({ cfg: params.cfg, agentId: params.agentId });
   if (explicit.primary?.trim() || (explicit.fallbacks?.length ?? 0) > 0) {
     return explicit;
+  }
+  if (isImageModelRoutingDisabled({ cfg: params.cfg, agentId: params.agentId })) {
+    return null;
   }
 
   const primary = resolveDefaultModelRef(params.cfg);
@@ -388,6 +393,7 @@ async function runImagePrompt(params: {
 export function createImageTool(options?: {
   config?: OpenClawConfig;
   agentDir?: string;
+  agentId?: string;
   workspaceDir?: string;
   inboundMediaPaths?: string[];
   sandbox?: ImageSandboxConfig;
@@ -396,7 +402,7 @@ export function createImageTool(options?: {
 }): AnyAgentTool | null {
   const agentDir = options?.agentDir?.trim();
   if (!agentDir) {
-    const explicit = coerceImageModelConfig(options?.config);
+    const explicit = coerceImageModelConfig({ cfg: options?.config, agentId: options?.agentId });
     if (explicit.primary?.trim() || (explicit.fallbacks?.length ?? 0) > 0) {
       throw new Error("createImageTool requires agentDir when enabled");
     }
@@ -405,6 +411,7 @@ export function createImageTool(options?: {
   const imageModelConfig = resolveImageModelConfigForTool({
     cfg: options?.config,
     agentDir,
+    agentId: options?.agentId,
   });
   if (!imageModelConfig) {
     return null;

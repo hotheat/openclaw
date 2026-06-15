@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveEffectiveImageModelConfig } from "../agents/agent-scope.js";
 import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import {
@@ -158,6 +159,11 @@ export interface DescribeStickerParams {
  */
 export async function describeStickerImage(params: DescribeStickerParams): Promise<string | null> {
   const { imagePath, cfg, agentDir, agentId } = params;
+  const effectiveImageModel = resolveEffectiveImageModelConfig({ cfg, agentId });
+  if (effectiveImageModel === null) {
+    logVerbose("telegram: sticker image description disabled by agent imageModel");
+    return null;
+  }
 
   const defaultModel = resolveDefaultModelForAgent({ cfg, agentId });
   let activeModel = undefined as { provider: string; model: string } | undefined;
@@ -211,7 +217,7 @@ export async function describeStickerImage(params: DescribeStickerParams): Promi
     resolved = activeModel;
   }
 
-  if (!resolved) {
+  if (!resolved && effectiveImageModel === undefined) {
     for (const provider of VISION_PROVIDERS) {
       if (!(await hasProviderKey(provider))) {
         continue;
@@ -229,6 +235,7 @@ export async function describeStickerImage(params: DescribeStickerParams): Promi
       cfg,
       agentDir,
       activeModel,
+      agentId,
     });
   }
 

@@ -257,6 +257,68 @@ describe("image tool implicit imageModel config", () => {
     });
   });
 
+  it("disables inherited image model routing for agent imageModel null", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      vi.stubEnv("OPENAI_API_KEY", "openai-test");
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            model: { primary: "openai/gpt-5.2" },
+            imageModel: { primary: "openai/gpt-5-mini" },
+          },
+          list: [
+            {
+              id: "qwen-group",
+              model: { primary: "qwen-openai/qwen/qwen3.6-27b", fallbacks: [] },
+              imageModel: null,
+            },
+          ],
+        },
+      };
+
+      expect(resolveImageModelConfigForTool({ cfg, agentDir, agentId: "qwen-group" })).toBeNull();
+      expect(createImageTool({ config: cfg, agentDir, agentId: "qwen-group" })).toBeNull();
+      expect(resolveImageModelConfigForTool({ cfg, agentDir })).toEqual({
+        primary: "openai/gpt-5-mini",
+      });
+    });
+  });
+
+  it("passes explicit agent id through createOpenClawCodingTools image tool creation", async () => {
+    await withTempAgentDir(async (agentDir) => {
+      vi.stubEnv("OPENAI_API_KEY", "openai-test");
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            model: { primary: "openai/gpt-5.2" },
+            imageModel: { primary: "openai/gpt-5-mini" },
+          },
+          list: [
+            {
+              id: "main",
+              default: true,
+            },
+            {
+              id: "qwen-group",
+              model: { primary: "qwen-openai/qwen/qwen3.6-27b", fallbacks: [] },
+              imageModel: null,
+            },
+          ],
+        },
+      };
+
+      const inheritedTools = createOpenClawCodingTools({ config: cfg, agentDir, agentId: "main" });
+      expect(inheritedTools.find((candidate) => candidate.name === "image")).toBeTruthy();
+
+      const qwenTools = createOpenClawCodingTools({
+        config: cfg,
+        agentDir,
+        agentId: "qwen-group",
+      });
+      expect(qwenTools.find((candidate) => candidate.name === "image")).toBeUndefined();
+    });
+  });
+
   it("keeps image tool available when primary model supports images (for explicit requests)", async () => {
     // When the primary model supports images, we still keep the tool available
     // because images are auto-injected into prompts. The tool description is

@@ -32,6 +32,7 @@ OpenClaw 按以下顺序选择模型：
 - `agents.defaults.models` 是 OpenClaw 可使用的模型白名单/目录（加上别名）。
 - `agents.defaults.imageModel` **仅在**主要模型无法接受图像时使用。
 - 每个智能体的默认值可以通过 `agents.list[].model` 加绑定覆盖 `agents.defaults.model`（参见 [/concepts/multi-agent](/concepts/multi-agent)）。
+- 设置 `agents.list[].imageModel: null` 可禁用某个智能体继承的图像模型路由，让它只使用主模型自身的视觉能力。
 
 ## 快速模型推荐（经验之谈）
 

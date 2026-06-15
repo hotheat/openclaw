@@ -192,6 +192,7 @@ export async function getReplyFromConfig(
       cfg,
       agentDir,
       activeModel: { provider, model },
+      agentId,
     });
     await applyLinkUnderstanding({
       ctx: finalized,
@@ -235,6 +236,7 @@ export async function getReplyFromConfig(
       cfg,
       agentDir,
       activeModel: { provider, model },
+      agentId,
     });
     sessionCtx = syncSessionContextFromInbound({
       ctx: finalized,

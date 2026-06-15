@@ -65,12 +65,12 @@ describe("GitHub Actions workflow runners", () => {
     expect(content).toMatch(/test:\n\tpnpm test\n/);
   });
 
-  it("includes a Codex review workflow for pull requests", async () => {
+  it("includes a Codex review job for pull requests", async () => {
     const workflowPath = path.resolve(process.cwd(), ".github", "workflows", "codex-review.yml");
     const content = await readFile(workflowPath, "utf8");
 
-    expect(content).toMatch(/name: Codex Review/);
     expect(content).toMatch(/pull_request:/);
+    expect(content).toMatch(/\n  codex_review:\n[\s\S]*?\n    timeout-minutes: 8\n/);
     expect(content).toMatch(/CODEX_TOKEN/);
     expect(content).toMatch(/\.github\/codex\/prompts\/review\.md/);
     expect(content).toMatch(/codex exec/);
@@ -85,6 +85,7 @@ describe("GitHub Actions workflow runners", () => {
     expect(content).toMatch(/github\.rest\.issues\.listComments/);
     expect(content).toMatch(/github\.rest\.issues\.updateComment/);
     expect(content).toMatch(/const marker = ['"]<!-- codex-review -->['"]/);
+    expect(content).toMatch(/\n  claudecode_review:\n[\s\S]*?\n    timeout-minutes: 8\n/);
   });
 
   it("includes an OpenClaw-specific Codex review prompt", async () => {

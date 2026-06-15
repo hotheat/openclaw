@@ -15,12 +15,17 @@ const log = createSubsystemLogger("agent-scope");
 export { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
+type AgentDefaultImageModelConfig = NonNullable<
+  NonNullable<OpenClawConfig["agents"]>["defaults"]
+>["imageModel"];
+type AgentImageModelConfig = AgentEntry["imageModel"] | AgentDefaultImageModelConfig;
 
 type ResolvedAgentConfig = {
   name?: string;
   workspace?: string;
   agentDir?: string;
   model?: AgentEntry["model"];
+  imageModel?: AgentEntry["imageModel"];
   thinkingDefault?: AgentEntry["thinkingDefault"];
   reasoningDefault?: AgentEntry["reasoningDefault"];
   skills?: AgentEntry["skills"];
@@ -125,6 +130,12 @@ export function resolveAgentConfig(
       typeof entry.model === "string" || (entry.model && typeof entry.model === "object")
         ? entry.model
         : undefined,
+    imageModel:
+      entry.imageModel === null ||
+      typeof entry.imageModel === "string" ||
+      (entry.imageModel && typeof entry.imageModel === "object")
+        ? entry.imageModel
+        : undefined,
     thinkingDefault: typeof entry.thinkingDefault === "string" ? entry.thinkingDefault : undefined,
     reasoningDefault:
       typeof entry.reasoningDefault === "string" ? entry.reasoningDefault : undefined,
@@ -172,6 +183,26 @@ export function resolveAgentModelFallbacksOverride(
     return undefined;
   }
   return Array.isArray(raw.fallbacks) ? raw.fallbacks : undefined;
+}
+
+export function resolveAgentImageModelOverride(
+  cfg: OpenClawConfig,
+  agentId: string,
+): AgentEntry["imageModel"] | undefined {
+  return resolveAgentConfig(cfg, agentId)?.imageModel;
+}
+
+export function resolveEffectiveImageModelConfig(params: {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string;
+}): AgentImageModelConfig | null | undefined {
+  if (params.cfg && params.agentId) {
+    const agentImageModel = resolveAgentImageModelOverride(params.cfg, params.agentId);
+    if (agentImageModel !== undefined) {
+      return agentImageModel;
+    }
+  }
+  return params.cfg?.agents?.defaults?.imageModel;
 }
 
 export function resolveEffectiveModelFallbacks(params: {

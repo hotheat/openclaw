@@ -2,6 +2,7 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveEffectiveImageModelConfig } from "../agents/agent-scope.js";
 import { resolveApiKeyForProvider } from "../agents/model-auth.js";
 import {
   findModelInCatalog,
@@ -417,11 +418,14 @@ async function resolveKeyEntry(params: {
   return null;
 }
 
-function resolveImageModelFromAgentDefaults(cfg: OpenClawConfig): MediaUnderstandingModelConfig[] {
-  const imageModel = cfg.agents?.defaults?.imageModel as
-    | { primary?: string; fallbacks?: string[] }
-    | string
-    | undefined;
+function resolveImageModelFromAgentDefaults(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+}): MediaUnderstandingModelConfig[] {
+  const imageModel = resolveEffectiveImageModelConfig({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  }) as { primary?: string; fallbacks?: string[] } | string | null | undefined;
   if (!imageModel) {
     return [];
   }
@@ -461,6 +465,7 @@ async function resolveAutoEntries(params: {
   providerRegistry: ProviderRegistry;
   capability: MediaUnderstandingCapability;
   activeModel?: ActiveMediaModel;
+  agentId?: string;
 }): Promise<MediaUnderstandingModelConfig[]> {
   const activeEntry = await resolveActiveModelEntry(params);
   if (activeEntry) {
@@ -473,7 +478,10 @@ async function resolveAutoEntries(params: {
     }
   }
   if (params.capability === "image") {
-    const imageModelEntries = resolveImageModelFromAgentDefaults(params.cfg);
+    const imageModelEntries = resolveImageModelFromAgentDefaults({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    });
     if (imageModelEntries.length > 0) {
       return imageModelEntries;
     }
@@ -493,7 +501,16 @@ export async function resolveAutoImageModel(params: {
   cfg: OpenClawConfig;
   agentDir?: string;
   activeModel?: ActiveMediaModel;
+  agentId?: string;
 }): Promise<ActiveMediaModel | null> {
+  const effectiveImageModel = resolveEffectiveImageModelConfig({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  });
+  if (effectiveImageModel === null) {
+    return null;
+  }
+
   const providerRegistry = buildProviderRegistry();
   const toActive = (entry: MediaUnderstandingModelConfig | null): ActiveMediaModel | null => {
     if (!entry || entry.type === "cli") {
@@ -519,6 +536,15 @@ export async function resolveAutoImageModel(params: {
   const resolvedActive = toActive(activeEntry);
   if (resolvedActive) {
     return resolvedActive;
+  }
+  for (const entry of resolveImageModelFromAgentDefaults({
+    cfg: params.cfg,
+    agentId: params.agentId,
+  })) {
+    const resolvedImageModel = toActive(entry);
+    if (resolvedImageModel) {
+      return resolvedImageModel;
+    }
   }
   const keyEntry = await resolveKeyEntry({
     cfg: params.cfg,
@@ -671,6 +697,7 @@ export async function runCapability(params: {
   providerRegistry: ProviderRegistry;
   config?: MediaUnderstandingConfig;
   activeModel?: ActiveMediaModel;
+  agentId?: string;
 }): Promise<RunCapabilityResult> {
   const { capability, cfg, ctx } = params;
   const config = params.config ?? cfg.tools?.media?.[capability];
@@ -759,6 +786,7 @@ export async function runCapability(params: {
       providerRegistry: params.providerRegistry,
       capability,
       activeModel: params.activeModel,
+      agentId: params.agentId,
     });
   }
   if (resolvedEntries.length === 0) {

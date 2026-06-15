@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/config.js";
+import { resolveEffectiveImageModelConfig } from "./agent-scope.js";
 import {
   ensureAuthProfileStore,
   getSoonestCooldownExpiry,
@@ -125,6 +126,7 @@ function resolveImageFallbackCandidates(params: {
   cfg: OpenClawConfig | undefined;
   defaultProvider: string;
   modelOverride?: string;
+  agentId?: string;
 }): ModelCandidate[] {
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg ?? {},
@@ -152,10 +154,13 @@ function resolveImageFallbackCandidates(params: {
   if (params.modelOverride?.trim()) {
     addRaw(params.modelOverride, false);
   } else {
-    const imageModel = params.cfg?.agents?.defaults?.imageModel as
-      | { primary?: string }
-      | string
-      | undefined;
+    const imageModel = resolveEffectiveImageModelConfig({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    }) as { primary?: string } | string | null | undefined;
+    if (imageModel === null) {
+      return candidates;
+    }
     const primary = typeof imageModel === "string" ? imageModel.trim() : imageModel?.primary;
     if (primary?.trim()) {
       addRaw(primary, false);
@@ -163,10 +168,10 @@ function resolveImageFallbackCandidates(params: {
   }
 
   const imageFallbacks = (() => {
-    const imageModel = params.cfg?.agents?.defaults?.imageModel as
-      | { fallbacks?: string[] }
-      | string
-      | undefined;
+    const imageModel = resolveEffectiveImageModelConfig({
+      cfg: params.cfg,
+      agentId: params.agentId,
+    }) as { fallbacks?: string[] } | string | null | undefined;
     if (imageModel && typeof imageModel === "object") {
       return imageModel.fallbacks ?? [];
     }
@@ -438,6 +443,7 @@ export async function runWithModelFallback<T>(params: {
 export async function runWithImageModelFallback<T>(params: {
   cfg: OpenClawConfig | undefined;
   modelOverride?: string;
+  agentId?: string;
   run: (provider: string, model: string) => Promise<T>;
   onError?: ModelFallbackErrorHandler;
 }): Promise<ModelFallbackRunResult<T>> {
@@ -445,6 +451,7 @@ export async function runWithImageModelFallback<T>(params: {
     cfg: params.cfg,
     defaultProvider: DEFAULT_PROVIDER,
     modelOverride: params.modelOverride,
+    agentId: params.agentId,
   });
   if (candidates.length === 0) {
     throw new Error(
