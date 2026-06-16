@@ -30,6 +30,11 @@ export type ModelDefinitionConfig = {
   api?: ModelApi;
   reasoning: boolean;
   input: Array<"text" | "image">;
+  /**
+   * Maximum number of image content blocks sent to this model in one prompt.
+   * When set, older images in transcript history are replaced with text placeholders.
+   */
+  maxImagesPerPrompt?: number;
   cost: {
     input: number;
     output: number;

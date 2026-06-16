@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
+import { limitImagesPerPromptInMessages } from "./max-images-per-prompt.js";
 import {
   normalizeSilentAssistantCompletionMessage,
   sanitizeGoogleTurnOrdering,
@@ -392,5 +393,79 @@ describe("sanitizeGoogleTurnOrdering", () => {
     const input = [{ role: "user", content: "hi" }] as unknown as AgentMessage[];
     const out = sanitizeGoogleTurnOrdering(input);
     expect(out).toBe(input);
+  });
+});
+
+describe("limitImagesPerPromptInMessages", () => {
+  it("keeps the most recent images and replaces older images with text placeholders", () => {
+    const input = [
+      {
+        role: "toolResult",
+        toolCallId: "call_1",
+        toolName: "read",
+        content: [
+          { type: "text", text: "Read image file [image/png]" },
+          { type: "image", data: "old", mimeType: "image/png" },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call_2",
+        toolName: "read",
+        content: [
+          { type: "text", text: "Read image file [image/jpeg]" },
+          { type: "image", data: "middle", mimeType: "image/jpeg" },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "compare" },
+          { type: "image", data: "new", mimeType: "image/webp" },
+        ],
+      },
+    ] as unknown as AgentMessage[];
+
+    const out = limitImagesPerPromptInMessages(input, 2);
+
+    expect(out.omitted).toBe(1);
+    expect(out.kept).toBe(2);
+    expect(out.messages).not.toBe(input);
+    expect(
+      ((out.messages[0] as { content?: Array<{ type?: string; text?: string }> }).content ?? [])
+        .map((block) => block.type)
+        .join(","),
+    ).toBe("text,text");
+    expect(
+      ((out.messages[0] as { content?: Array<{ text?: string }> }).content?.[1]?.text ?? "").trim(),
+    ).toContain("maxImagesPerPrompt");
+    expect(
+      (
+        (out.messages[1] as { content?: Array<{ type?: string; data?: string }> }).content ?? []
+      ).find((block) => block.type === "image")?.data,
+    ).toBe("middle");
+    expect(
+      (
+        (out.messages[2] as { content?: Array<{ type?: string; data?: string }> }).content ?? []
+      ).find((block) => block.type === "image")?.data,
+    ).toBe("new");
+  });
+
+  it("does not clone messages when the image count is already within the limit", () => {
+    const input = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "look" },
+          { type: "image", data: "only", mimeType: "image/png" },
+        ],
+      },
+    ] as unknown as AgentMessage[];
+
+    const out = limitImagesPerPromptInMessages(input, 2);
+
+    expect(out.messages).toBe(input);
+    expect(out.omitted).toBe(0);
+    expect(out.kept).toBe(1);
   });
 });

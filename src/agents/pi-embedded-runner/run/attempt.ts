@@ -41,6 +41,10 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
+import {
+  limitImagesPerPromptInMessages,
+  resolveMaxImagesPerPrompt,
+} from "../../max-images-per-prompt.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { resolveDefaultModelForAgent } from "../../model-selection.js";
 import { createOllamaStreamFn, OLLAMA_NATIVE_BASE_URL } from "../../ollama-stream.js";
@@ -868,6 +872,35 @@ export async function runEmbeddedAttempt(
         activeSession.agent.streamFn = anthropicPayloadLogger.wrapStreamFn(
           activeSession.agent.streamFn,
         );
+      }
+
+      const maxImagesPerPrompt = resolveMaxImagesPerPrompt(params.model);
+      if (maxImagesPerPrompt !== undefined) {
+        const inner = activeSession.agent.streamFn;
+        activeSession.agent.streamFn = (model, context, options) => {
+          const ctx = context as unknown as { messages?: unknown };
+          const messages = ctx?.messages;
+          if (!Array.isArray(messages)) {
+            return inner(model, context, options);
+          }
+          const limited = limitImagesPerPromptInMessages(
+            messages as AgentMessage[],
+            maxImagesPerPrompt,
+          );
+          if (limited.omitted === 0) {
+            return inner(model, context, options);
+          }
+          log.debug(
+            `limited image blocks before model request: provider=${params.provider} ` +
+              `model=${params.modelId} maxImagesPerPrompt=${maxImagesPerPrompt} ` +
+              `kept=${limited.kept} omitted=${limited.omitted}`,
+          );
+          const nextContext = {
+            ...(context as unknown as Record<string, unknown>),
+            messages: limited.messages,
+          } as unknown;
+          return inner(model, nextContext as typeof context, options);
+        };
       }
 
       try {

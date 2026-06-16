@@ -16,7 +16,9 @@ type ParsedModelOverlay = {
 };
 
 type RawModelOverlay = Pick<Model<Api>, "id" | "provider"> &
-  Partial<Omit<Model<Api>, "id" | "provider">>;
+  Partial<Omit<Model<Api>, "id" | "provider">> & {
+    maxImagesPerPrompt?: number;
+  };
 
 const DEFAULT_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
@@ -46,6 +48,10 @@ function optionalPositiveNumber(value: unknown): number | undefined {
 
 function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+function optionalNonnegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
 }
 
 function parseInput(value: unknown): ("text" | "image")[] | undefined {
@@ -149,6 +155,9 @@ function completeRawModelOverlay(overlay: RawModelOverlay): Model<Api> | undefin
     maxTokens: overlay.maxTokens ?? 16_384,
     headers: overlay.headers,
     compat: overlay.compat,
+    ...(overlay.maxImagesPerPrompt !== undefined
+      ? { maxImagesPerPrompt: overlay.maxImagesPerPrompt }
+      : {}),
   };
 }
 
@@ -166,6 +175,9 @@ function mergeRawModelOverlay(base: Model<Api>, overlay: RawModelOverlay): Model
     maxTokens: overlay.maxTokens ?? base.maxTokens,
     headers: mergeRawModelHeaders(base.headers, overlay.headers),
     compat: overlay.compat ?? base.compat,
+    ...(overlay.maxImagesPerPrompt !== undefined
+      ? { maxImagesPerPrompt: overlay.maxImagesPerPrompt }
+      : {}),
   };
 }
 
@@ -321,6 +333,7 @@ function parseRawModelOverlay(modelsJsonPath: string): ParsedModelOverlay {
       const cost = parseCost(modelDef.cost);
       const contextWindow = optionalPositiveNumber(modelDef.contextWindow);
       const maxTokens = optionalPositiveNumber(modelDef.maxTokens);
+      const maxImagesPerPrompt = optionalNonnegativeInteger(modelDef.maxImagesPerPrompt);
 
       const model: RawModelOverlay = {
         id,
@@ -349,6 +362,9 @@ function parseRawModelOverlay(modelsJsonPath: string): ParsedModelOverlay {
       }
       if (maxTokens !== undefined) {
         model.maxTokens = maxTokens;
+      }
+      if (maxImagesPerPrompt !== undefined) {
+        model.maxImagesPerPrompt = maxImagesPerPrompt;
       }
       if (headers) {
         model.headers = headers;

@@ -106,6 +106,33 @@ describe("pi model discovery", () => {
     expect(listed?.input).toEqual(["text"]);
   });
 
+  it("preserves maxImagesPerPrompt from raw model definitions", () => {
+    const agentDir = makeAgentDir();
+    writeModelsJson(agentDir, {
+      providers: {
+        "qwen-openai": {
+          baseUrl: "http://127.0.0.1:8000/v1",
+          api: "openai-completions",
+          models: [
+            {
+              id: "qwen/qwen3.6-27b",
+              name: "Qwen 3.6 27B",
+              input: ["text", "image"],
+              maxImagesPerPrompt: 2,
+            },
+          ],
+        },
+      },
+    });
+
+    const registry = discoverModels(AuthStorage.inMemory(), agentDir);
+    const found = registry.find("qwen-openai", "qwen/qwen3.6-27b") as
+      | { maxImagesPerPrompt?: number }
+      | undefined;
+
+    expect(found?.maxImagesPerPrompt).toBe(2);
+  });
+
   it("drops stale dynamic apiKey when a provider is re-registered without one", async () => {
     const registry = discoverModels(AuthStorage.inMemory(), makeAgentDir());
 
