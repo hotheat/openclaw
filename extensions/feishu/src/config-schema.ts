@@ -1,3 +1,4 @@
+import { BlockStreamingCoalesceSchema } from "openclaw/plugin-sdk";
 import { z } from "zod";
 export { z };
 
@@ -39,15 +40,7 @@ const RenderModeSchema = z.enum(["auto", "raw", "card"]).optional();
 // Streaming card mode: when enabled, card replies use Feishu's Card Kit streaming API
 // for incremental text display with a "Thinking..." placeholder
 const StreamingModeSchema = z.boolean().optional();
-
-const BlockStreamingCoalesceSchema = z
-  .object({
-    enabled: z.boolean().optional(),
-    minDelayMs: z.number().int().positive().optional(),
-    maxDelayMs: z.number().int().positive().optional(),
-  })
-  .strict()
-  .optional();
+const BlockStreamingModeSchema = z.boolean().optional();
 
 const ChannelHeartbeatVisibilitySchema = z
   .object({
@@ -129,7 +122,8 @@ const FeishuSharedConfigShape = {
   dms: z.record(z.string(), DmConfigSchema).optional(),
   textChunkLimit: z.number().int().positive().optional(),
   chunkMode: z.enum(["length", "newline"]).optional(),
-  blockStreamingCoalesce: BlockStreamingCoalesceSchema,
+  blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
+  blockStreaming: BlockStreamingModeSchema,
   mediaMaxMb: z.number().positive().optional(),
   inboundMediaMaxMb: z.number().positive().optional(),
   outboundFileMaxMb: z.number().positive().optional(),

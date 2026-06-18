@@ -75,6 +75,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const tableMode = core.channel.text.resolveMarkdownTableMode({ cfg, channel: "feishu" });
   const renderMode = account.config?.renderMode ?? "auto";
   const streamingEnabled = account.config?.streaming !== false && renderMode !== "raw";
+  const blockStreamingEnabled = account.config?.blockStreaming !== false;
 
   let streaming: FeishuStreamingSession | null = null;
   let streamText = "";
@@ -215,6 +216,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     dispatcher,
     replyOptions: {
       ...replyOptions,
+      disableBlockStreaming: blockStreamingEnabled ? false : true,
       onModelSelected: prefixContext.onModelSelected,
       onPartialReply: streamingEnabled
         ? (payload: ReplyPayload) => {

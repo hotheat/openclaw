@@ -16,6 +16,7 @@ type AgentRunParams = {
   onAssistantMessageStart?: () => Promise<void> | void;
   onReasoningStream?: (payload: { text?: string }) => Promise<void> | void;
   onBlockReply?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
+  onBlockReplyFlush?: () => Promise<void> | void;
   onToolResult?: (payload: { text?: string; mediaUrls?: string[] }) => Promise<void> | void;
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
 };
@@ -482,6 +483,46 @@ describe("runReplyAgent typing (heartbeat)", () => {
       abortSignal: expect.any(AbortSignal),
       timeoutMs: expect.any(Number),
     });
+  });
+
+  it("streams block replies and suppresses duplicate final payloads when enabled by channel", async () => {
+    const onBlockReply = vi.fn();
+    state.runEmbeddedPiAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      await params.onBlockReply?.({ text: "checking schema" });
+      await params.onBlockReplyFlush?.();
+      await params.onBlockReply?.({ text: "running query" });
+      await params.onBlockReplyFlush?.();
+      return {
+        payloads: [{ text: "checking schema" }, { text: "running query" }],
+        meta: {},
+      };
+    });
+
+    const { run } = createMinimalRun({
+      blockStreamingEnabled: true,
+      opts: { onBlockReply },
+      runOverrides: {
+        config: {
+          agents: {
+            defaults: {
+              blockStreamingCoalesce: {
+                minChars: 1,
+                maxChars: 200,
+                idleMs: 0,
+              },
+            },
+          },
+        },
+      },
+    });
+    const result = await run();
+
+    expect(onBlockReply).toHaveBeenCalledTimes(2);
+    expect(onBlockReply.mock.calls.map((call) => call[0].text)).toEqual([
+      "checking schema",
+      "running query",
+    ]);
+    expect(result).toBeUndefined();
   });
 
   it("handles typing for normal and silent tool results", async () => {

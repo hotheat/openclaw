@@ -97,4 +97,25 @@ describe("feishuPlugin config schema", () => {
       expect(accountProperties[key]).not.toHaveProperty("minimum");
     }
   });
+
+  it("exposes block streaming coalesce overrides on top-level and per-account configs", () => {
+    const properties = feishuPlugin.configSchema?.schema.properties as Record<string, unknown>;
+    const accountsSchema = properties.accounts as {
+      additionalProperties: { properties: Record<string, Record<string, unknown>> };
+    };
+    const expected = {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        minChars: { type: "integer", minimum: 1 },
+        maxChars: { type: "integer", minimum: 1 },
+        idleMs: { type: "integer", minimum: 0 },
+      },
+    };
+
+    expect(properties.blockStreamingCoalesce).toMatchObject(expected);
+    expect(accountsSchema.additionalProperties.properties.blockStreamingCoalesce).toMatchObject(
+      expected,
+    );
+  });
 });

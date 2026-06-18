@@ -38,6 +38,16 @@ const meta: ChannelMeta = {
   order: 70,
 };
 
+const blockStreamingCoalesceJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    minChars: { type: "integer", minimum: 1 },
+    maxChars: { type: "integer", minimum: 1 },
+    idleMs: { type: "integer", minimum: 0 },
+  },
+};
+
 export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
   id: "feishu",
   meta: {
@@ -62,6 +72,7 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
     reactions: true,
     edit: true,
     reply: true,
+    blockStreaming: true,
   },
   agentPrompt: {
     messageToolHints: () => [
@@ -113,6 +124,9 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         outboundFileMaxMb: { type: "number", exclusiveMinimum: 0 },
         outboundImageMaxMb: { type: "number", exclusiveMinimum: 0 },
         renderMode: { type: "string", enum: ["auto", "raw", "card"] },
+        streaming: { type: "boolean" },
+        blockStreaming: { type: "boolean" },
+        blockStreamingCoalesce: blockStreamingCoalesceJsonSchema,
         accounts: {
           type: "object",
           additionalProperties: {
@@ -133,6 +147,10 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
               inboundMediaMaxMb: { type: "number", exclusiveMinimum: 0 },
               outboundFileMaxMb: { type: "number", exclusiveMinimum: 0 },
               outboundImageMaxMb: { type: "number", exclusiveMinimum: 0 },
+              streaming: { type: "boolean" },
+              renderMode: { type: "string", enum: ["auto", "raw", "card"] },
+              blockStreaming: { type: "boolean" },
+              blockStreamingCoalesce: blockStreamingCoalesceJsonSchema,
             },
           },
         },

@@ -24,6 +24,62 @@ describe("FeishuConfigSchema webhook validation", () => {
     expect(result.accounts?.main?.requireMention).toBeUndefined();
   });
 
+  it("accepts blockStreaming at top-level and account level", () => {
+    const result = FeishuConfigSchema.parse({
+      blockStreaming: true,
+      accounts: {
+        main: {
+          blockStreaming: false,
+        },
+      },
+    });
+
+    expect(result.blockStreaming).toBe(true);
+    expect(result.accounts?.main?.blockStreaming).toBe(false);
+  });
+
+  it("accepts core blockStreamingCoalesce fields at top-level and account level", () => {
+    const result = FeishuConfigSchema.parse({
+      blockStreamingCoalesce: {
+        minChars: 400,
+        maxChars: 1200,
+        idleMs: 250,
+      },
+      accounts: {
+        main: {
+          blockStreamingCoalesce: {
+            minChars: 300,
+            maxChars: 900,
+            idleMs: 0,
+          },
+        },
+      },
+    });
+
+    expect(result.blockStreamingCoalesce).toEqual({
+      minChars: 400,
+      maxChars: 1200,
+      idleMs: 250,
+    });
+    expect(result.accounts?.main?.blockStreamingCoalesce).toEqual({
+      minChars: 300,
+      maxChars: 900,
+      idleMs: 0,
+    });
+  });
+
+  it("rejects non-core blockStreamingCoalesce fields", () => {
+    const result = FeishuConfigSchema.safeParse({
+      blockStreamingCoalesce: {
+        enabled: true,
+        minDelayMs: 100,
+        maxDelayMs: 500,
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it("rejects top-level webhook mode without verificationToken", () => {
     const result = FeishuConfigSchema.safeParse({
       connectionMode: "webhook",
