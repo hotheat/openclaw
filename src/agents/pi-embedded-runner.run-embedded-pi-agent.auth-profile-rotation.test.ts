@@ -356,6 +356,115 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
     expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
   });
 
+  it("fails over immediately on HTTP 502 assistant errors without profile rotation", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir);
+      mockSingleErrorAttempt({
+        errorMessage: "HTTP 502: Upstream service temporarily unavailable",
+      });
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:test",
+          sessionKey: "agent:test:http-502-failover",
+          sessionFile: path.join(workspaceDir, "session.jsonl"),
+          workspaceDir,
+          agentDir,
+          config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          authProfileId: "openai:p1",
+          authProfileIdSource: "auto",
+          timeoutMs: 5_000,
+          runId: "run:http-502-failover",
+        }),
+      ).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "timeout",
+        provider: "openai",
+        model: "mock-1",
+        status: 502,
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+      await expectProfileP2UsageUnchanged(agentDir);
+    });
+  });
+
+  it("fails over immediately on HTTP 503 assistant errors without profile rotation", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir);
+      mockSingleErrorAttempt({
+        errorMessage: "HTTP 503: Service temporarily unavailable",
+      });
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:test",
+          sessionKey: "agent:test:http-503-failover",
+          sessionFile: path.join(workspaceDir, "session.jsonl"),
+          workspaceDir,
+          agentDir,
+          config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          authProfileId: "openai:p1",
+          authProfileIdSource: "auto",
+          timeoutMs: 5_000,
+          runId: "run:http-503-failover",
+        }),
+      ).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "timeout",
+        provider: "openai",
+        model: "mock-1",
+        status: 503,
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+      await expectProfileP2UsageUnchanged(agentDir);
+    });
+  });
+
+  it("preserves HTTP 503 status for prompt-level failover errors", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir);
+      runEmbeddedAttemptMock.mockResolvedValueOnce(
+        makeAttempt({
+          promptError: new Error("HTTP 503: Service temporarily unavailable"),
+        }),
+      );
+
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:test",
+          sessionKey: "agent:test:http-503-prompt-failover",
+          sessionFile: path.join(workspaceDir, "session.jsonl"),
+          workspaceDir,
+          agentDir,
+          config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          authProfileId: "openai:p1",
+          authProfileIdSource: "auto",
+          timeoutMs: 5_000,
+          runId: "run:http-503-prompt-failover",
+        }),
+      ).rejects.toMatchObject({
+        name: "FailoverError",
+        reason: "timeout",
+        provider: "openai",
+        model: "mock-1",
+        status: 503,
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("does not rotate for compaction timeouts", async () => {
     await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
       await writeAuthStore(agentDir);

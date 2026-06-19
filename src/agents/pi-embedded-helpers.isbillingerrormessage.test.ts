@@ -8,6 +8,7 @@ import {
   isCompactionFailureError,
   isContextOverflowError,
   isFailoverErrorMessage,
+  isImmediateModelFailoverHttpError,
   isImageDimensionErrorMessage,
   isLikelyContextOverflowError,
   isTimeoutErrorMessage,
@@ -269,7 +270,9 @@ describe("isTransientHttpError", () => {
   it("returns true for retryable 5xx status codes", () => {
     expect(isTransientHttpError("500 Internal Server Error")).toBe(true);
     expect(isTransientHttpError("502 Bad Gateway")).toBe(true);
+    expect(isTransientHttpError("HTTP 502: Upstream service temporarily unavailable")).toBe(true);
     expect(isTransientHttpError("503 Service Unavailable")).toBe(true);
+    expect(isTransientHttpError("HTTP 503: Service temporarily unavailable")).toBe(true);
     expect(isTransientHttpError("521 <!DOCTYPE html><html></html>")).toBe(true);
     expect(isTransientHttpError("529 Overloaded")).toBe(true);
   });
@@ -278,6 +281,25 @@ describe("isTransientHttpError", () => {
     expect(isTransientHttpError("504 Gateway Timeout")).toBe(false);
     expect(isTransientHttpError("429 Too Many Requests")).toBe(false);
     expect(isTransientHttpError("network timeout")).toBe(false);
+  });
+});
+
+describe("isImmediateModelFailoverHttpError", () => {
+  it("matches 502 and 503 status variants", () => {
+    expect(isImmediateModelFailoverHttpError("502 Bad Gateway")).toBe(true);
+    expect(
+      isImmediateModelFailoverHttpError("HTTP 502: Upstream service temporarily unavailable"),
+    ).toBe(true);
+    expect(isImmediateModelFailoverHttpError("503 Service Unavailable")).toBe(true);
+    expect(isImmediateModelFailoverHttpError("HTTP 503: Service temporarily unavailable")).toBe(
+      true,
+    );
+  });
+
+  it("leaves other transient status codes on the retry path", () => {
+    expect(isImmediateModelFailoverHttpError("500 Internal Server Error")).toBe(false);
+    expect(isImmediateModelFailoverHttpError("521 <!DOCTYPE html><html></html>")).toBe(false);
+    expect(isImmediateModelFailoverHttpError("529 Overloaded")).toBe(false);
   });
 });
 

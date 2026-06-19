@@ -136,7 +136,7 @@ export function createFollowupRunner(params: {
             queued.run.config,
             resolveAgentIdFromSessionKey(queued.run.sessionKey),
           ),
-          run: (provider, model) => {
+          run: (provider, model, fallbackContext) => {
             const authProfile = resolveRunAuthProfile(queued.run, provider);
             const attemptTimeoutMs = resolveAgentTimeoutMs({
               cfg: queued.run.config,
@@ -171,6 +171,7 @@ export function createFollowupRunner(params: {
               enforceFinalTag: queued.run.enforceFinalTag,
               provider,
               model,
+              hasModelFallbacks: fallbackContext?.hasFallbackCandidates ?? false,
               ...authProfile,
               thinkLevel: queued.run.thinkLevel,
               verboseLevel: queued.run.verboseLevel,

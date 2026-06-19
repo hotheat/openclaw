@@ -12,6 +12,10 @@ import { makeModelFallbackCfg } from "./test-helpers/model-fallback-config-fixtu
 
 const makeCfg = makeModelFallbackCfg;
 
+function providerModelCalls(run: { mock: { calls: unknown[][] } }) {
+  return run.mock.calls.map(([provider, model]) => [provider, model]);
+}
+
 function makeFallbacksOnlyCfg(): OpenClawConfig {
   return {
     agents: {
@@ -120,7 +124,7 @@ describe("runWithModelFallback", () => {
 
     expect(result.result).toBe("ok");
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("openai-codex", "gpt-5.3-codex");
+    expect(providerModelCalls(run)).toEqual([["openai-codex", "gpt-5.3-codex"]]);
   });
 
   it("does not fall back on non-auth errors", async () => {
@@ -176,7 +180,7 @@ describe("runWithModelFallback", () => {
     expect(result.result).toBe("ok");
     expect(result.provider).toBe("openai");
     expect(result.model).toBe("gpt-4.1-mini");
-    expect(run.mock.calls).toEqual([
+    expect(providerModelCalls(run)).toEqual([
       ["anthropic", "claude-opus-4-5"],
       ["openai", "gpt-4.1-mini"],
     ]);
@@ -207,7 +211,7 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run.mock.calls).toEqual([
+    expect(providerModelCalls(run)).toEqual([
       ["openai", "gpt-4.1-mini"],
       ["anthropic", "claude-haiku-3-5"],
     ]);
@@ -259,7 +263,7 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run.mock.calls).toEqual([
+    expect(providerModelCalls(run)).toEqual([
       ["anthropic", "claude-opus-4"],
       ["openai", "gpt-4.1-mini"],
     ]);
@@ -344,7 +348,7 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run.mock.calls).toEqual([["fallback", "ok-model"]]);
+    expect(providerModelCalls(run)).toEqual([["fallback", "ok-model"]]);
     expect(result.attempts[0]?.reason).toBe("rate_limit");
   });
 
@@ -387,7 +391,7 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run.mock.calls).toEqual([["fallback", "ok-model"]]);
+    expect(providerModelCalls(run)).toEqual([["fallback", "ok-model"]]);
     expect(result.attempts[0]?.reason).toBe("billing");
   });
 
@@ -433,7 +437,7 @@ describe("runWithModelFallback", () => {
     });
 
     expect(result.result).toBe("ok");
-    expect(run.mock.calls).toEqual([[provider, "m1"]]);
+    expect(providerModelCalls(run)).toEqual([[provider, "m1"]]);
     expect(result.attempts).toEqual([]);
   });
 
@@ -461,7 +465,7 @@ describe("runWithModelFallback", () => {
       }),
     ).rejects.toThrow("All models failed");
 
-    expect(run.mock.calls).toEqual([
+    expect(providerModelCalls(run)).toEqual([
       ["anthropic", "claude-opus-4-5"],
       ["anthropic", "claude-haiku-3-5"],
     ]);
@@ -494,6 +498,35 @@ describe("runWithModelFallback", () => {
       { provider: "anthropic", model: "claude-opus-4-5" },
       { provider: "openai", model: "gpt-4.1" },
     ]);
+  });
+
+  it("passes whether alternate model candidates exist to run callbacks", async () => {
+    const cfg = makeFallbacksOnlyCfg();
+    const contexts: boolean[] = [];
+
+    await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      fallbacksOverride: ["openai/gpt-4.1"],
+      run: async (_provider, _model, context) => {
+        contexts.push(context?.hasFallbackCandidates ?? false);
+        return "ok";
+      },
+    });
+
+    await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-opus-4-5",
+      fallbacksOverride: [],
+      run: async (_provider, _model, context) => {
+        contexts.push(context?.hasFallbackCandidates ?? false);
+        return "ok";
+      },
+    });
+
+    expect(contexts).toEqual([true, false]);
   });
 
   it("treats an empty fallbacksOverride as disabling global fallbacks", async () => {

@@ -7,6 +7,7 @@ import { isCliProvider } from "../../agents/model-selection.js";
 import {
   isCompactionFailureError,
   isContextOverflowError,
+  isImmediateModelFailoverHttpError,
   isLikelyContextOverflowError,
   isTransientHttpError,
   sanitizeUserFacingText,
@@ -172,7 +173,7 @@ export async function runAgentTurnWithFallback(params: {
       const onToolResult = params.opts?.onToolResult;
       const fallbackResult = await runWithModelFallback({
         ...resolveModelFallbackOptions(params.followupRun.run),
-        run: (provider, model) => {
+        run: (provider, model, fallbackContext) => {
           // Notify that model selection is complete (including after fallback).
           // This allows responsePrefix template interpolation with the actual model.
           params.opts?.onModelSelected?.({
@@ -297,6 +298,7 @@ export async function runAgentTurnWithFallback(params: {
             groupSpace: params.sessionCtx.GroupSpace?.trim() ?? undefined,
             ...senderContext,
             ...runBaseParams,
+            hasModelFallbacks: fallbackContext?.hasFallbackCandidates ?? false,
             prompt: params.commandBody,
             extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
             toolResultFormat: (() => {
@@ -473,6 +475,10 @@ export async function runAgentTurnWithFallback(params: {
       const isSessionCorruption = /function call turn comes immediately after/i.test(message);
       const isRoleOrderingError = /incorrect role information|roles must alternate/i.test(message);
       const isTransientHttp = isTransientHttpError(message);
+      const shouldRetryTransientHttp =
+        isTransientHttp &&
+        !isImmediateModelFailoverHttpError(message) &&
+        !didRetryTransientHttpError;
 
       if (
         isCompactionFailure &&
@@ -544,12 +550,12 @@ export async function runAgentTurnWithFallback(params: {
         };
       }
 
-      if (isTransientHttp && !didRetryTransientHttpError) {
+      if (shouldRetryTransientHttp) {
         didRetryTransientHttpError = true;
         // Retry the full runWithModelFallback() cycle — transient errors
-        // (502/521/etc.) typically affect the whole provider, so falling
-        // back to an alternate model first would not help. Instead we wait
-        // and retry the complete primary→fallback chain.
+        // (521/etc.) typically affect the whole provider, so falling back to
+        // an alternate model first would not help. HTTP 502/503 are excluded
+        // and are allowed to surface to the model fallback path immediately.
         defaultRuntime.error(
           `Transient HTTP provider error before reply (${message}). Retrying once in ${TRANSIENT_HTTP_RETRY_DELAY_MS}ms.`,
         );

@@ -30,6 +30,10 @@ type ModelCandidate = {
   model: string;
 };
 
+export type ModelFallbackRunContext = {
+  hasFallbackCandidates: boolean;
+};
+
 type FallbackAttempt = {
   provider: string;
   model: string;
@@ -315,7 +319,7 @@ export async function runWithModelFallback<T>(params: {
   agentDir?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
-  run: (provider: string, model: string) => Promise<T>;
+  run: (provider: string, model: string, context?: ModelFallbackRunContext) => Promise<T>;
   onError?: ModelFallbackErrorHandler;
 }): Promise<ModelFallbackRunResult<T>> {
   const candidates = resolveFallbackCandidates({
@@ -380,7 +384,9 @@ export async function runWithModelFallback<T>(params: {
       }
     }
     try {
-      const result = await params.run(candidate.provider, candidate.model);
+      const result = await params.run(candidate.provider, candidate.model, {
+        hasFallbackCandidates,
+      });
       return {
         result,
         provider: candidate.provider,

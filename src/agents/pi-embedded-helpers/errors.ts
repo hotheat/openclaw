@@ -129,10 +129,11 @@ const CONTEXT_OVERFLOW_ERROR_HEAD_RE =
 const BILLING_ERROR_HEAD_RE =
   /^(?:error[:\s-]+)?billing(?:\s+error)?(?:[:\s-]+|$)|^(?:error[:\s-]+)?(?:credit balance|insufficient credits?|payment required|http\s*402\b)/i;
 const HTTP_STATUS_PREFIX_RE = /^(?:http\s*)?(\d{3})\s+(.+)$/i;
-const HTTP_STATUS_CODE_PREFIX_RE = /^(?:http\s*)?(\d{3})(?:\s+([\s\S]+))?$/i;
+const HTTP_STATUS_CODE_PREFIX_RE = /^(?:http\s*)?(\d{3})(?:[:\s]+([\s\S]+))?$/i;
 const HTML_ERROR_PREFIX_RE = /^\s*(?:<!doctype\s+html\b|<html\b)/i;
 const CLOUDFLARE_HTML_ERROR_CODES = new Set([521, 522, 523, 524, 525, 526, 530]);
 const TRANSIENT_HTTP_ERROR_CODES = new Set([500, 502, 503, 521, 522, 523, 524, 529]);
+const IMMEDIATE_MODEL_FAILOVER_HTTP_ERROR_CODES = new Set([502, 503]);
 const HTTP_ERROR_HINTS = [
   "error",
   "bad request",
@@ -193,6 +194,22 @@ export function isTransientHttpError(raw: string): boolean {
     return false;
   }
   return TRANSIENT_HTTP_ERROR_CODES.has(status.code);
+}
+
+export function isImmediateModelFailoverHttpError(raw: string): boolean {
+  return resolveImmediateModelFailoverHttpStatus(raw) !== undefined;
+}
+
+export function resolveImmediateModelFailoverHttpStatus(raw: string): number | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const status = extractLeadingHttpStatus(trimmed);
+  if (!status) {
+    return undefined;
+  }
+  return IMMEDIATE_MODEL_FAILOVER_HTTP_ERROR_CODES.has(status.code) ? status.code : undefined;
 }
 
 function stripFinalTagsFromText(text: string): string {

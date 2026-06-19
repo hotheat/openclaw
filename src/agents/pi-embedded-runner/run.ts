@@ -39,6 +39,7 @@ import {
   isAuthAssistantError,
   isBillingAssistantError,
   isCompactionFailureError,
+  isImmediateModelFailoverHttpError,
   isLikelyContextOverflowError,
   isFailoverAssistantError,
   isFailoverErrorMessage,
@@ -47,6 +48,7 @@ import {
   isRateLimitAssistantError,
   isTimeoutErrorMessage,
   pickFallbackThinkingLevel,
+  resolveImmediateModelFailoverHttpStatus,
   type FailoverReason,
 } from "../pi-embedded-helpers.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
@@ -422,6 +424,7 @@ export async function runEmbeddedPiAgent(
 
         const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
         const fallbackConfigured =
+          params.hasModelFallbacks ??
           (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
         const combinedAbortSignal = combineAbortSignals([
           params.abortSignal,
@@ -1177,12 +1180,16 @@ export async function runEmbeddedPiAgent(
               // FIX: Throw FailoverError for prompt errors when fallbacks configured
               // This enables model fallback for quota/rate limit errors during prompt submission
               if (fallbackConfigured && isFailoverErrorMessage(errorText)) {
+                const immediateModelFailoverHttpStatus =
+                  resolveImmediateModelFailoverHttpStatus(errorText);
                 throw new FailoverError(errorText, {
                   reason: promptFailoverReason ?? "unknown",
                   provider,
                   model: modelId,
                   profileId: lastProfileId,
-                  status: resolveFailoverStatus(promptFailoverReason ?? "unknown"),
+                  status:
+                    immediateModelFailoverHttpStatus ??
+                    resolveFailoverStatus(promptFailoverReason ?? "unknown"),
                 });
               }
               throw promptError;
@@ -1224,8 +1231,45 @@ export async function runEmbeddedPiAgent(
             const assistantFailoverReason = classifyFailoverReason(
               assistantFailoverMessage?.errorMessage ?? "",
             );
+            const immediateModelFailoverHttpStatus = assistantFailoverMessage?.errorMessage
+              ? resolveImmediateModelFailoverHttpStatus(assistantFailoverMessage.errorMessage)
+              : undefined;
+            const shouldFailoverModelImmediately =
+              fallbackConfigured &&
+              Boolean(assistantFailoverMessage?.errorMessage) &&
+              isImmediateModelFailoverHttpError(assistantFailoverMessage?.errorMessage ?? "");
             const cloudCodeAssistFormatError = attempt.cloudCodeAssistFormatError;
             const imageDimensionError = parseImageDimensionError(lastAssistant?.errorMessage ?? "");
+
+            if (shouldFailoverModelImmediately) {
+              const failoverAssistant = assistantFailoverMessage;
+              if (!failoverAssistant) {
+                throw new Error("Immediate model failover missing assistant error.");
+              }
+              const failoverErrorContext = resolveActiveErrorContext({
+                lastAssistant: failoverAssistant,
+                provider: activeErrorContext.provider,
+                model: activeErrorContext.model,
+              });
+              const message =
+                formatAssistantErrorText(failoverAssistant, {
+                  cfg: params.config,
+                  sessionKey: params.sessionKey ?? params.sessionId,
+                  provider: failoverErrorContext.provider,
+                  model: failoverErrorContext.model,
+                }) ||
+                failoverAssistant.errorMessage?.trim() ||
+                "LLM request failed.";
+              throw new FailoverError(message, {
+                reason: assistantFailoverReason ?? "timeout",
+                provider: failoverErrorContext.provider,
+                model: failoverErrorContext.model,
+                profileId: lastProfileId,
+                status:
+                  immediateModelFailoverHttpStatus ??
+                  resolveFailoverStatus(assistantFailoverReason ?? "timeout"),
+              });
+            }
 
             if (imageDimensionError && lastProfileId) {
               const details = [

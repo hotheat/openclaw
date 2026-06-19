@@ -71,6 +71,8 @@ export type RunEmbeddedPiAgentParams = {
   disableTools?: boolean;
   provider?: string;
   model?: string;
+  /** True when the outer fallback runner has at least one alternate model candidate. */
+  hasModelFallbacks?: boolean;
   authProfileId?: string;
   authProfileIdSource?: "auto" | "user";
   thinkLevel?: ThinkLevel;

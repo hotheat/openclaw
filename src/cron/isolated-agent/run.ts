@@ -491,7 +491,7 @@ export async function runCronIsolatedAgentTurn(params: {
       model,
       agentDir,
       fallbacksOverride: resolveAgentModelFallbacksOverride(params.cfg, agentId),
-      run: (providerOverride, modelOverride) => {
+      run: (providerOverride, modelOverride, fallbackContext) => {
         if (abortSignal?.aborted) {
           throw new Error(abortReason());
         }
@@ -536,6 +536,7 @@ export async function runCronIsolatedAgentTurn(params: {
           lane: params.lane ?? "cron",
           provider: providerOverride,
           model: modelOverride,
+          hasModelFallbacks: fallbackContext?.hasFallbackCandidates ?? false,
           authProfileId,
           authProfileIdSource,
           thinkLevel,

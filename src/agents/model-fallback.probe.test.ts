@@ -29,6 +29,15 @@ const mockedResolveAuthProfileOrder = vi.mocked(resolveAuthProfileOrder);
 
 const makeCfg = makeModelFallbackCfg;
 
+function expectProviderModelCall(
+  run: { mock: { calls: unknown[][] } },
+  index: number,
+  provider: string,
+  model: string,
+) {
+  expect(run.mock.calls[index]?.slice(0, 2)).toEqual([provider, model]);
+}
+
 function expectFallbackUsed(
   result: { result: unknown; attempts: Array<{ reason?: string }> },
   run: {
@@ -38,7 +47,7 @@ function expectFallbackUsed(
 ) {
   expect(result.result).toBe("ok");
   expect(run).toHaveBeenCalledTimes(1);
-  expect(run).toHaveBeenCalledWith("anthropic", "claude-haiku-3-5");
+  expectProviderModelCall(run, 0, "anthropic", "claude-haiku-3-5");
   expect(result.attempts[0]?.reason).toBe("rate_limit");
 }
 
@@ -52,7 +61,7 @@ function expectPrimaryProbeSuccess(
 ) {
   expect(result.result).toBe(expectedResult);
   expect(run).toHaveBeenCalledTimes(1);
-  expect(run).toHaveBeenCalledWith("openai", "gpt-4.1-mini");
+  expectProviderModelCall(run, 0, "openai", "gpt-4.1-mini");
 }
 
 describe("runWithModelFallback – probe logic", () => {
@@ -135,7 +144,7 @@ describe("runWithModelFallback – probe logic", () => {
 
     expect(result.result).toBe("ok");
     expect(run).toHaveBeenCalledTimes(1);
-    expect(run).toHaveBeenCalledWith("anthropic", "claude-haiku-3-5");
+    expectProviderModelCall(run, 0, "anthropic", "claude-haiku-3-5");
     expect(result.attempts[0]?.reason).toBe("billing");
   });
 
@@ -199,7 +208,7 @@ describe("runWithModelFallback – probe logic", () => {
     } catch {
       // Primary was probed (i === 0 + within margin), non-primary were skipped
       expect(run).toHaveBeenCalledTimes(1); // only primary was actually called
-      expect(run).toHaveBeenCalledWith("openai", "gpt-4.1-mini");
+      expectProviderModelCall(run, 0, "openai", "gpt-4.1-mini");
     }
   });
 
@@ -321,7 +330,7 @@ describe("runWithModelFallback – probe logic", () => {
       run,
     });
 
-    expect(run).toHaveBeenNthCalledWith(1, "openai", "gpt-4.1-mini");
-    expect(run).toHaveBeenNthCalledWith(2, "openai", "gpt-4.1-mini");
+    expectProviderModelCall(run, 0, "openai", "gpt-4.1-mini");
+    expectProviderModelCall(run, 1, "openai", "gpt-4.1-mini");
   });
 });

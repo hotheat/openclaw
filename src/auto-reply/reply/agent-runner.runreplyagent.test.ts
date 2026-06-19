@@ -24,6 +24,7 @@ type AgentRunParams = {
 type EmbeddedRunParams = {
   prompt?: string;
   extraSystemPrompt?: string;
+  hasModelFallbacks?: boolean;
   onAgentEvent?: (evt: { stream?: string; data?: { phase?: string; willRetry?: boolean } }) => void;
 };
 
@@ -50,13 +51,21 @@ vi.mock("../../agents/model-fallback.js", () => ({
   runWithModelFallback: async ({
     provider,
     model,
+    fallbacksOverride,
     run,
   }: {
     provider: string;
     model: string;
-    run: (provider: string, model: string) => Promise<unknown>;
+    fallbacksOverride?: string[];
+    run: (
+      provider: string,
+      model: string,
+      context: { hasFallbackCandidates: boolean },
+    ) => Promise<unknown>;
   }) => ({
-    result: await run(provider, model),
+    result: await run(provider, model, {
+      hasFallbackCandidates: (fallbacksOverride?.length ?? 0) > 0,
+    }),
     provider,
     model,
     attempts: [],
@@ -569,13 +578,15 @@ describe("runReplyAgent typing (heartbeat)", () => {
     }
   });
 
-  it("retries transient HTTP failures once with timer-driven backoff", async () => {
+  it("retries non-immediate transient HTTP failures once with timer-driven backoff", async () => {
     vi.useFakeTimers();
     let calls = 0;
     state.runEmbeddedPiAgentMock.mockImplementation(async () => {
       calls += 1;
       if (calls === 1) {
-        throw new Error("502 Bad Gateway");
+        throw new Error(
+          "521 <!DOCTYPE html><html><head><title>Web server is down</title></head><body>Cloudflare</body></html>",
+        );
       }
       return { payloads: [{ text: "final" }], meta: {} };
     });
@@ -591,6 +602,55 @@ describe("runReplyAgent typing (heartbeat)", () => {
     await runPromise;
     expect(calls).toBe(2);
     vi.useRealTimers();
+  });
+
+  it("does not retry HTTP 502 before returning the fallback error", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    state.runEmbeddedPiAgentMock.mockImplementation(async () => {
+      calls += 1;
+      throw new Error("HTTP 502: Upstream service temporarily unavailable");
+    });
+
+    const { run } = createMinimalRun({
+      typingMode: "message",
+    });
+    const result = await run();
+
+    expect(calls).toBe(1);
+    const payload = Array.isArray(result) ? result[0] : result;
+    expect(payload?.text).toContain("HTTP 502: Upstream service temporarily unavailable");
+    vi.useRealTimers();
+  });
+
+  it("passes per-agent model fallback availability into embedded runs", async () => {
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "final" }],
+      meta: {},
+    });
+
+    const { run } = createMinimalRun({
+      sessionKey: "agent:researcher:whatsapp:+15550001111",
+      runOverrides: {
+        config: {
+          agents: {
+            list: [
+              {
+                id: "researcher",
+                model: {
+                  primary: "anthropic/claude",
+                  fallbacks: ["openai/gpt-5.2"],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+    await run();
+
+    const call = state.runEmbeddedPiAgentMock.mock.calls[0]?.[0] as EmbeddedRunParams | undefined;
+    expect(call?.hasModelFallbacks).toBe(true);
   });
 
   it("delivers tool results in order even when dispatched concurrently", async () => {
