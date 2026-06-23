@@ -21,10 +21,12 @@ env:
   ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
   CLAUDE_CODE_EFFORT_LEVEL: ${{ vars.CLAUDE_CODE_EFFORT_LEVEL }}
   CLAUDECODE_REVIEW_ENABLED: ${{ vars.CLAUDECODE_REVIEW_ENABLED }}
+  CLAUDECODE_REVIEW_TIMEOUT_MINUTES: ${{ vars.CLAUDECODE_REVIEW_TIMEOUT_MINUTES || '8' }}
   CODEX_API_URL: ${{ vars.CODEX_API_URL }}
   CODEX_TOKEN: ${{ secrets.CODEX_TOKEN }}
   CODEX_MODEL: ${{ vars.CODEX_MODEL }}
   CODEX_MODEL_REASONING_EFFORT: ${{ vars.CODEX_MODEL_REASONING_EFFORT }}
+  CODEX_REVIEW_TIMEOUT_MINUTES: ${{ vars.CODEX_REVIEW_TIMEOUT_MINUTES || '8' }}
 
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
@@ -36,7 +38,7 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: ${{ fromJSON(vars.CODEX_REVIEW_TIMEOUT_MINUTES || '8') }}
     steps:
       - name: Checkout pull request
         uses: actions/checkout@v4
@@ -143,7 +145,7 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: ${{ fromJSON(vars.CLAUDECODE_REVIEW_TIMEOUT_MINUTES || '8') }}
     steps:
       - name: Checkout pull request
         uses: actions/checkout@v4
@@ -206,8 +208,12 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin "${PR_BASE_REF}:refs/remotes/origin/${PR_BASE_REF}"
           PROMPT="$(cat .github/codex/prompts/review.md)"
+          CLAUDECODE_COMMAND_TIMEOUT_MINUTES=$((CLAUDECODE_REVIEW_TIMEOUT_MINUTES - 1))
+          if [ "${CLAUDECODE_COMMAND_TIMEOUT_MINUTES}" -lt 1 ]; then
+            CLAUDECODE_COMMAND_TIMEOUT_MINUTES=1
+          fi
           set +e
-          timeout 7m claude \
+          timeout "${CLAUDECODE_COMMAND_TIMEOUT_MINUTES}m" claude \
             --settings "$HOME/.claude/settings.json" \
             --dangerously-skip-permissions \
             --output-format text \
@@ -234,8 +240,8 @@ jobs:
             cat claudecode-review.md || true
             echo "::endgroup::"
             if [ "${CLAUDE_EXIT}" -eq 124 ]; then
-              printf '%s\n' "Claude Code review skipped: review did not finish within the 7 minute command timeout." > claudecode-review.md
-              echo "::warning::Claude Code review skipped because it exceeded the command timeout."
+              printf '%s\n' "Claude Code review skipped: review did not finish within the ${CLAUDECODE_COMMAND_TIMEOUT_MINUTES} minute command timeout." > claudecode-review.md
+              echo "::warning::Claude Code review skipped because it exceeded the ${CLAUDECODE_COMMAND_TIMEOUT_MINUTES} minute command timeout."
               exit 0
             fi
             if grep -Eiq "API Error: 529|overloaded|capacity" claudecode-review.err claudecode-review.md; then
