@@ -1,4 +1,5 @@
 import "./run.overflow-compaction.mocks.shared.js";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runEmbeddedPiAgent } from "./run.js";
 import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
@@ -19,6 +20,18 @@ const baseParams = {
   images: [{ type: "image" as const, mimeType: "image/png", data: "Zm9v" }],
   inboundMediaPaths: ["/tmp/input.png"],
 };
+
+const makeAssistantMessage = (overrides: Partial<AssistantMessage>): AssistantMessage =>
+  ({
+    role: "assistant",
+    content: [],
+    api: "openai-responses",
+    provider: "otr",
+    model: "gpt-5.5",
+    stopReason: "stop",
+    timestamp: Date.now(),
+    ...overrides,
+  }) as AssistantMessage;
 
 describe("run completion contract", () => {
   beforeEach(() => {
@@ -110,6 +123,84 @@ describe("run completion contract", () => {
         data: expect.objectContaining({ phase: "error" }),
       }),
     );
+  });
+
+  it("fails over when a hidden provider error leaves a normal IM run empty", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        lastAssistant: makeAssistantMessage({
+          stopReason: "toolUse",
+        }),
+        assistantErrors: [
+          makeAssistantMessage({
+            stopReason: "error",
+            errorMessage: "Our servers are currently overloaded. Please try again later.",
+          }),
+        ],
+      }),
+    );
+
+    await expect(
+      runEmbeddedPiAgent({
+        ...baseParams,
+        sessionKey: "agent:main:main",
+        hasModelFallbacks: true,
+      }),
+    ).rejects.toMatchObject({
+      name: "FailoverError",
+      reason: "rate_limit",
+      provider: "otr",
+      model: "gpt-5.5",
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets Feishu completion contract retry empty results before model fallback", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          lastAssistant: makeAssistantMessage({
+            stopReason: "toolUse",
+          }),
+          assistantErrors: [
+            makeAssistantMessage({
+              stopReason: "error",
+              errorMessage: "Our servers are currently overloaded. Please try again later.",
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          lastAssistant: makeAssistantMessage({
+            stopReason: "toolUse",
+          }),
+          assistantErrors: [
+            makeAssistantMessage({
+              stopReason: "error",
+              errorMessage: "Our servers are currently overloaded. Please try again later.",
+            }),
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }));
+
+    await expect(
+      runEmbeddedPiAgent({
+        ...baseParams,
+        sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+        hasModelFallbacks: true,
+      }),
+    ).rejects.toMatchObject({
+      name: "FailoverError",
+      reason: "rate_limit",
+      provider: "otr",
+      model: "gpt-5.5",
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
   });
 
   it("emits a terminal lifecycle event for completion-contract early returns", async () => {

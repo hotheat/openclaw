@@ -30,12 +30,21 @@ describe("runEmbeddedPiAgent usage reporting", () => {
       aborted: false,
       promptError: null,
       timedOut: false,
+      timedOutDuringCompaction: false,
       sessionIdUsed: "test-session",
+      messagesSnapshot: [],
       assistantTexts: ["Response 1", "Response 2"],
+      assistantErrors: [],
+      toolMetas: [],
       lastAssistant: {
         usage: { input: 150, output: 50, total: 200 },
         stopReason: "end_turn",
       },
+      didSendViaMessagingTool: false,
+      messagingToolSentTexts: [],
+      messagingToolSentMediaUrls: [],
+      messagingToolSentTargets: [],
+      cloudCodeAssistFormatError: false,
       attemptUsage: { input: 250, output: 100, total: 350 },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);

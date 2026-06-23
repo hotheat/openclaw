@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
@@ -204,6 +205,96 @@ function resolveActiveErrorContext(params: {
     provider: params.lastAssistant?.provider ?? params.provider,
     model: params.lastAssistant?.model ?? params.model,
   };
+}
+
+function findLatestFailoverAssistantError(params: {
+  lastAssistant: AssistantMessage | undefined;
+  assistantErrors?: AssistantMessage[];
+}): { message: AssistantMessage; reason: FailoverReason } | null {
+  const candidates = [
+    ...(params.assistantErrors ?? []),
+    ...(params.lastAssistant ? [params.lastAssistant] : []),
+  ];
+  for (let i = candidates.length - 1; i >= 0; i -= 1) {
+    const message = candidates[i];
+    if (!message || message.stopReason !== "error") {
+      continue;
+    }
+    const reason = classifyFailoverReason(message.errorMessage ?? "");
+    if (reason) {
+      return { message, reason };
+    }
+  }
+  return null;
+}
+
+function hasAttemptDeliveredSideEffect(attempt: {
+  didSendViaMessagingTool?: boolean;
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  successfulCronAdds?: number;
+}): boolean {
+  return (
+    Boolean(attempt.didSendViaMessagingTool) ||
+    Boolean(attempt.messagingToolSentTexts?.some((text) => text.trim().length > 0)) ||
+    Boolean(attempt.messagingToolSentMediaUrls?.length) ||
+    (attempt.successfulCronAdds ?? 0) > 0
+  );
+}
+
+function hasAttemptVisibleResultOrSideEffect(attempt: {
+  assistantTexts?: string[];
+  didSendViaMessagingTool?: boolean;
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  successfulCronAdds?: number;
+}): boolean {
+  return (
+    hasAttemptDeliveredSideEffect(attempt) ||
+    Boolean(attempt.assistantTexts?.some((text) => text.trim().length > 0))
+  );
+}
+
+function hasPayloadVisibleResult(
+  payloads: Array<{ text?: string; mediaUrl?: string; mediaUrls?: string[] }>,
+): boolean {
+  return payloads.some(
+    (payload) =>
+      Boolean(payload.text?.trim()) ||
+      Boolean(payload.mediaUrl) ||
+      Boolean(payload.mediaUrls?.length),
+  );
+}
+
+function createAssistantFailoverError(params: {
+  assistant: AssistantMessage;
+  reason: FailoverReason;
+  provider: string;
+  model: string;
+  profileId?: string;
+  config?: RunEmbeddedPiAgentParams["config"];
+  sessionKey: string;
+  fallbackMessage: string;
+}): FailoverError {
+  const message =
+    formatAssistantErrorText(params.assistant, {
+      cfg: params.config,
+      sessionKey: params.sessionKey,
+      provider: params.provider,
+      model: params.model,
+    }) ||
+    params.assistant.errorMessage?.trim() ||
+    params.fallbackMessage;
+  const status = params.assistant.errorMessage
+    ? resolveImmediateModelFailoverHttpStatus(params.assistant.errorMessage)
+    : undefined;
+  return new FailoverError(message, {
+    reason: params.reason,
+    provider: params.provider,
+    model: params.model,
+    profileId: params.profileId,
+    status: status ?? resolveFailoverStatus(params.reason),
+  });
 }
 
 function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
@@ -721,6 +812,14 @@ export async function runEmbeddedPiAgent(
         let toolResultTruncationAttempted = false;
         let completionContinuationPrompt: string | undefined;
         let completionContinuationCount = 0;
+        // Keep the latest failover-worthy provider error across completion-contract retries.
+        // If the provider fails first, then retries still end empty without a new error,
+        // the outer model fallback should see the original provider failure instead of
+        // treating the run as an empty success.
+        let stickyEmptyResultFailover: {
+          message: AssistantMessage;
+          reason: FailoverReason;
+        } | null = null;
         const usageAccumulator = createUsageAccumulator();
         let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
         let autoCompactionCount = 0;
@@ -882,6 +981,14 @@ export async function runEmbeddedPiAgent(
               provider,
               model: modelId,
             });
+            const latestAssistantFailover = findLatestFailoverAssistantError({
+              lastAssistant,
+              assistantErrors: attempt.assistantErrors,
+            });
+            const attemptVisibleResultOrSideEffect = hasAttemptVisibleResultOrSideEffect(attempt);
+            if (!attemptVisibleResultOrSideEffect && latestAssistantFailover) {
+              stickyEmptyResultFailover = latestAssistantFailover;
+            }
             const formattedAssistantErrorText = lastAssistant
               ? formatAssistantErrorText(lastAssistant, {
                   cfg: params.config,
@@ -1223,14 +1330,21 @@ export async function runEmbeddedPiAgent(
               canUseAssistantErrorHistory &&
               rateLimitAssistantErrors.length >= RATE_LIMIT_ASSISTANT_ERROR_FALLBACK_THRESHOLD;
             const directAssistantFailoverMessage = failoverFailure ? lastAssistant : undefined;
+            const emptyResultAssistantFailover =
+              !completionContractEnabled && !attemptVisibleResultOrSideEffect
+                ? latestAssistantFailover
+                : null;
             const assistantFailoverMessage =
               directAssistantFailoverMessage ??
+              emptyResultAssistantFailover?.message ??
               (shouldUseRateLimitHistory
                 ? rateLimitAssistantErrors[rateLimitAssistantErrors.length - 1]
                 : undefined);
-            const assistantFailoverReason = classifyFailoverReason(
-              assistantFailoverMessage?.errorMessage ?? "",
-            );
+            const assistantFailoverReason =
+              emptyResultAssistantFailover &&
+              assistantFailoverMessage === emptyResultAssistantFailover.message
+                ? emptyResultAssistantFailover.reason
+                : classifyFailoverReason(assistantFailoverMessage?.errorMessage ?? "");
             const immediateModelFailoverHttpStatus = assistantFailoverMessage?.errorMessage
               ? resolveImmediateModelFailoverHttpStatus(assistantFailoverMessage.errorMessage)
               : undefined;
@@ -1384,6 +1498,27 @@ export async function runEmbeddedPiAgent(
                       `classification=${completionAssessment.classification} ` +
                       `reason=${completionAssessment.reason} action=fail`,
                   );
+                  if (
+                    fallbackConfigured &&
+                    !attemptVisibleResultOrSideEffect &&
+                    stickyEmptyResultFailover
+                  ) {
+                    const failoverErrorContext = resolveActiveErrorContext({
+                      lastAssistant: stickyEmptyResultFailover.message,
+                      provider: activeErrorContext.provider,
+                      model: activeErrorContext.model,
+                    });
+                    throw createAssistantFailoverError({
+                      assistant: stickyEmptyResultFailover.message,
+                      reason: stickyEmptyResultFailover.reason,
+                      provider: failoverErrorContext.provider,
+                      model: failoverErrorContext.model,
+                      profileId: lastProfileId,
+                      config: params.config,
+                      sessionKey: params.sessionKey ?? params.sessionId,
+                      fallbackMessage: "LLM request failed before producing a user-facing reply.",
+                    });
+                  }
                   throw new Error(errorMessage);
                 }
                 const retryIndex = completionContinuationCount;
@@ -1476,6 +1611,33 @@ export async function runEmbeddedPiAgent(
                   messagingToolSentTargets: attempt.messagingToolSentTargets,
                   successfulCronAdds: attempt.successfulCronAdds,
                 },
+              });
+            }
+
+            if (
+              fallbackConfigured &&
+              !hasAttemptDeliveredSideEffect(attempt) &&
+              !hasPayloadVisibleResult(payloads) &&
+              (stickyEmptyResultFailover ?? latestAssistantFailover)
+            ) {
+              const failover = stickyEmptyResultFailover ?? latestAssistantFailover;
+              if (!failover) {
+                throw new Error("Empty-result failover missing assistant error.");
+              }
+              const failoverErrorContext = resolveActiveErrorContext({
+                lastAssistant: failover.message,
+                provider: activeErrorContext.provider,
+                model: activeErrorContext.model,
+              });
+              throw createAssistantFailoverError({
+                assistant: failover.message,
+                reason: failover.reason,
+                provider: failoverErrorContext.provider,
+                model: failoverErrorContext.model,
+                profileId: lastProfileId,
+                config: params.config,
+                sessionKey: params.sessionKey ?? params.sessionId,
+                fallbackMessage: "LLM request failed before producing a user-facing reply.",
               });
             }
 

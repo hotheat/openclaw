@@ -101,8 +101,18 @@ describe("run completion assessment", () => {
     expect(assessment.recoveryAction).toBe("retry_same_step");
   });
 
-  it("enables the contract only for researcher and subagent runs", () => {
+  it("enables the contract for researcher, subagent, and Feishu runs", () => {
     expect(isCompletionContractEnabled({ sessionKey: "agent:main:subagent:abc" })).toBe(true);
+    expect(
+      isCompletionContractEnabled({
+        sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      }),
+    ).toBe(true);
+    expect(
+      isCompletionContractEnabled({
+        sessionKey: "agent:feishu-group_x:feishu:group:oc_x",
+      }),
+    ).toBe(true);
     expect(isCompletionContractEnabled({ agentId: "researcher" })).toBe(true);
     expect(isCompletionContractEnabled({ sessionKey: "agent:main:main", agentId: "main" })).toBe(
       false,

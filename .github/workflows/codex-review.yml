@@ -20,6 +20,7 @@ env:
   ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL }}
   ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
   CLAUDE_CODE_EFFORT_LEVEL: ${{ vars.CLAUDE_CODE_EFFORT_LEVEL }}
+  CLAUDECODE_REVIEW_ENABLED: ${{ vars.CLAUDECODE_REVIEW_ENABLED }}
   CODEX_API_URL: ${{ vars.CODEX_API_URL }}
   CODEX_TOKEN: ${{ secrets.CODEX_TOKEN }}
   CODEX_MODEL: ${{ vars.CODEX_MODEL }}
@@ -138,6 +139,7 @@ jobs:
 
   claudecode_review:
     if: >
+      vars.CLAUDECODE_REVIEW_ENABLED == 'true' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest

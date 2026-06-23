@@ -1032,12 +1032,32 @@ export async function handleFeishuMessage(params: {
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
 
-    const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
+    const dispatchResult = await core.channel.reply.dispatchReplyFromConfig({
       ctx: ctxPayload,
       cfg,
       dispatcher,
       replyOptions,
     });
+    let queuedFinal = dispatchResult.queuedFinal;
+    const counts = dispatchResult.counts;
+
+    if (
+      !queuedFinal &&
+      (counts.final ?? 0) === 0 &&
+      (counts.block ?? 0) === 0 &&
+      (counts.tool ?? 0) === 0
+    ) {
+      const queuedFallback = dispatcher.sendFinalReply({
+        text: "模型执行中断，请重试。",
+        isError: true,
+      });
+      if (queuedFallback) {
+        queuedFinal = true;
+        dispatcher.markComplete();
+        await dispatcher.waitForIdle();
+        counts.final += 1;
+      }
+    }
 
     markDispatchIdle();
 

@@ -10,9 +10,15 @@ const {
   mockGetMessageFeishu,
   mockDownloadMessageResourceFeishu,
   mockTryRecordMessagePersistent,
+  mockFeishuDispatcher,
 } = vi.hoisted(() => ({
+  mockFeishuDispatcher: {
+    sendFinalReply: vi.fn(() => true),
+    waitForIdle: vi.fn().mockResolvedValue(undefined),
+    markComplete: vi.fn(),
+  },
   mockCreateFeishuReplyDispatcher: vi.fn(() => ({
-    dispatcher: vi.fn(),
+    dispatcher: mockFeishuDispatcher,
     replyOptions: {},
     markDispatchIdle: vi.fn(),
   })),
@@ -78,6 +84,9 @@ describe("handleFeishuMessage command authorization", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockDispatchReplyFromConfig.mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
+    mockFeishuDispatcher.sendFinalReply.mockReturnValue(true);
+    mockFeishuDispatcher.waitForIdle.mockResolvedValue(undefined);
     setFeishuRuntime({
       system: {
         enqueueSystemEvent: vi.fn(),
@@ -193,6 +202,43 @@ describe("handleFeishuMessage command authorization", () => {
     expect(mockResolveCommandAuthorizedFromAuthorizers).not.toHaveBeenCalled();
     expect(mockFinalizeInboundContext).toHaveBeenCalledTimes(1);
     expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a fallback reply when Feishu dispatch produces no final message", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({ queuedFinal: false, counts: { final: 0 } });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-empty-dispatch",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFeishuDispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: "模型执行中断，请重试。",
+      isError: true,
+    });
+    expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
   });
 
   it("creates pairing request and drops unauthorized DMs in pairing mode", async () => {

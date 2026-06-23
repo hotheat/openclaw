@@ -68,25 +68,15 @@ vi.mock("../workspace-run.js", () => ({
   redactRunIdentifier: vi.fn((value?: string) => value ?? ""),
 }));
 
-vi.mock("../pi-embedded-helpers.js", () => ({
-  formatBillingErrorMessage: vi.fn(() => ""),
-  classifyFailoverReason: vi.fn(() => null),
-  formatAssistantErrorText: vi.fn(() => ""),
-  isAuthAssistantError: vi.fn(() => false),
-  isBillingAssistantError: vi.fn(() => false),
-  isCompactionFailureError: vi.fn(() => false),
-  isLikelyContextOverflowError: vi.fn((msg?: string) => {
-    const lower = (msg ?? "").toLowerCase();
-    return lower.includes("request_too_large") || lower.includes("context window exceeded");
-  }),
-  isFailoverAssistantError: vi.fn(() => false),
-  isFailoverErrorMessage: vi.fn(() => false),
-  parseImageSizeError: vi.fn(() => null),
-  parseImageDimensionError: vi.fn(() => null),
-  isRateLimitAssistantError: vi.fn(() => false),
-  isTimeoutErrorMessage: vi.fn(() => false),
-  pickFallbackThinkingLevel: vi.fn(() => null),
-}));
+vi.mock("../pi-embedded-helpers.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../pi-embedded-helpers.js")>();
+  return {
+    ...actual,
+    isCompactionFailureError: vi.fn(actual.isCompactionFailureError),
+    isLikelyContextOverflowError: vi.fn(actual.isLikelyContextOverflowError),
+    pickFallbackThinkingLevel: vi.fn(actual.pickFallbackThinkingLevel),
+  };
+});
 
 vi.mock("./run/attempt.js", () => ({
   runEmbeddedAttempt: vi.fn(),
@@ -160,7 +150,32 @@ vi.mock("../defaults.js", () => ({
 }));
 
 vi.mock("../failover-error.js", () => ({
-  FailoverError: class extends Error {},
+  FailoverError: class extends Error {
+    readonly reason?: string;
+    readonly provider?: string;
+    readonly model?: string;
+    readonly profileId?: string;
+    readonly status?: number;
+
+    constructor(
+      message: string,
+      params: {
+        reason?: string;
+        provider?: string;
+        model?: string;
+        profileId?: string;
+        status?: number;
+      } = {},
+    ) {
+      super(message);
+      this.name = "FailoverError";
+      this.reason = params.reason;
+      this.provider = params.provider;
+      this.model = params.model;
+      this.profileId = params.profileId;
+      this.status = params.status;
+    }
+  },
   resolveFailoverStatus: vi.fn(),
 }));
 

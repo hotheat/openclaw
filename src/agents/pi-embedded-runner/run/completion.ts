@@ -68,7 +68,9 @@ export function isCompletionContractEnabled(params: {
 }): boolean {
   const sessionKey = params.sessionKey?.trim() ?? "";
   const agentId = params.agentId?.trim() ?? "";
-  return sessionKey.includes(":subagent:") || agentId === "researcher";
+  return (
+    sessionKey.includes(":subagent:") || sessionKey.includes(":feishu:") || agentId === "researcher"
+  );
 }
 
 export function buildCompletionContinuationPrompt(params: {
