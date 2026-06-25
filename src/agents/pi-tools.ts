@@ -137,7 +137,7 @@ export function resolveToolLoopDetectionConfig(params: {
   cfg?: OpenClawConfig;
   agentId?: string;
 }): ToolLoopDetectionConfig | undefined {
-  const global = params.cfg?.tools?.loopDetection;
+  const global = params.cfg?.tools?.loopDetection ?? {};
   const agent =
     params.agentId && params.cfg
       ? resolveAgentConfig(params.cfg, params.agentId)?.tools?.loopDetection

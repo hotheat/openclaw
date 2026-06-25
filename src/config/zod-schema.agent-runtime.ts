@@ -409,6 +409,7 @@ const ToolLoopDetectionDetectorSchema = z
     genericRepeat: z.boolean().optional(),
     knownPollNoProgress: z.boolean().optional(),
     pingPong: z.boolean().optional(),
+    schemaValidationError: z.boolean().optional(),
   })
   .strict()
   .optional();
@@ -420,6 +421,8 @@ const ToolLoopDetectionSchema = z
     warningThreshold: z.number().int().positive().optional(),
     criticalThreshold: z.number().int().positive().optional(),
     globalCircuitBreakerThreshold: z.number().int().positive().optional(),
+    schemaValidationWarningThreshold: z.number().int().positive().optional(),
+    schemaValidationCriticalThreshold: z.number().int().positive().optional(),
     detectors: ToolLoopDetectionDetectorSchema,
   })
   .strict()
@@ -445,6 +448,18 @@ const ToolLoopDetectionSchema = z
         path: ["globalCircuitBreakerThreshold"],
         message:
           "tools.loopDetection.criticalThreshold must be lower than globalCircuitBreakerThreshold.",
+      });
+    }
+    if (
+      value.schemaValidationWarningThreshold !== undefined &&
+      value.schemaValidationCriticalThreshold !== undefined &&
+      value.schemaValidationWarningThreshold >= value.schemaValidationCriticalThreshold
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["schemaValidationCriticalThreshold"],
+        message:
+          "tools.loopDetection.schemaValidationWarningThreshold must be lower than schemaValidationCriticalThreshold.",
       });
     }
   })

@@ -1547,22 +1547,26 @@ Controls elevated (host) exec access:
 
 ### `tools.loopDetection`
 
-Tool-loop safety checks are **disabled by default**. Set `enabled: true` to activate detection.
+Repeated schema validation failures are guarded by default.
+Set `enabled: true` to enable the broader generic, poll, and ping-pong loop detectors.
 Settings can be defined globally in `tools.loopDetection` and overridden per-agent at `agents.list[].tools.loopDetection`.
 
 ```json5
 {
   tools: {
     loopDetection: {
-      enabled: true,
+      enabled: false,
       historySize: 30,
       warningThreshold: 10,
       criticalThreshold: 20,
       globalCircuitBreakerThreshold: 30,
+      schemaValidationWarningThreshold: 3,
+      schemaValidationCriticalThreshold: 5,
       detectors: {
         genericRepeat: true,
         knownPollNoProgress: true,
         pingPong: true,
+        schemaValidationError: true,
       },
     },
   },
@@ -1570,13 +1574,17 @@ Settings can be defined globally in `tools.loopDetection` and overridden per-age
 ```
 
 - `historySize`: max tool-call history retained for loop analysis.
+- `enabled`: enables general before-tool-call loop detection. The schema validation safety net remains active unless `detectors.schemaValidationError` is false.
 - `warningThreshold`: repeating no-progress pattern threshold for warnings.
 - `criticalThreshold`: higher repeating threshold for blocking critical loops.
 - `globalCircuitBreakerThreshold`: hard stop threshold for any no-progress run.
+- `schemaValidationWarningThreshold`: repeated schema validation error threshold for warnings.
+- `schemaValidationCriticalThreshold`: repeated schema validation error threshold for blocking.
 - `detectors.genericRepeat`: warn on repeated same-tool/same-args calls.
 - `detectors.knownPollNoProgress`: warn/block on known poll tools (`process.poll`, `command_status`, etc.).
 - `detectors.pingPong`: warn/block on alternating no-progress pair patterns.
-- If `warningThreshold >= criticalThreshold` or `criticalThreshold >= globalCircuitBreakerThreshold`, validation fails.
+- `detectors.schemaValidationError`: warn/block on repeated tool schema validation failures.
+- If `warningThreshold >= criticalThreshold`, `criticalThreshold >= globalCircuitBreakerThreshold`, or `schemaValidationWarningThreshold >= schemaValidationCriticalThreshold`, validation fails.
 
 ### `tools.web`
 

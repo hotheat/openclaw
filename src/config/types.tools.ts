@@ -137,10 +137,12 @@ export type ToolLoopDetectionDetectorConfig = {
   knownPollNoProgress?: boolean;
   /** Enable warning/blocking for no-progress ping-pong alternating patterns. */
   pingPong?: boolean;
+  /** Enable warning/blocking for repeated schema validation errors. */
+  schemaValidationError?: boolean;
 };
 
 export type ToolLoopDetectionConfig = {
-  /** Enable tool-loop protection (default: false). */
+  /** Enable general before-tool-call loop protection (default: false). */
   enabled?: boolean;
   /** Maximum tool call history entries retained for loop detection (default: 30). */
   historySize?: number;
@@ -150,6 +152,10 @@ export type ToolLoopDetectionConfig = {
   criticalThreshold?: number;
   /** Global no-progress breaker threshold (default: 30). */
   globalCircuitBreakerThreshold?: number;
+  /** Warning threshold for repeated schema validation errors (default: 3). */
+  schemaValidationWarningThreshold?: number;
+  /** Critical threshold for repeated schema validation errors (default: 5). */
+  schemaValidationCriticalThreshold?: number;
   /** Detector toggles. */
   detectors?: ToolLoopDetectionDetectorConfig;
 };

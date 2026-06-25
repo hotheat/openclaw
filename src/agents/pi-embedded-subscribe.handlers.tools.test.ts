@@ -1,5 +1,14 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  onDiagnosticEvent,
+  resetDiagnosticEventsForTest,
+  type DiagnosticToolLoopEvent,
+} from "../infra/diagnostic-events.js";
+import {
+  getDiagnosticSessionState,
+  resetDiagnosticSessionStateForTest,
+} from "../logging/diagnostic-session-state.js";
 import type { MessagingToolSend } from "./pi-embedded-messaging.js";
 import {
   handleToolExecutionEnd,
@@ -9,6 +18,7 @@ import type {
   ToolCallSummary,
   ToolHandlerContext,
 } from "./pi-embedded-subscribe.handlers.types.js";
+import { hashToolCall } from "./tool-loop-detection.js";
 
 type ToolExecutionStartEvent = Extract<AgentEvent, { type: "tool_execution_start" }>;
 type ToolExecutionEndEvent = Extract<AgentEvent, { type: "tool_execution_end" }>;
@@ -56,7 +66,24 @@ function createTestContext(): {
   return { ctx, warn, onBlockReplyFlush };
 }
 
+function createSchemaValidationResult(field = "content") {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Validation failed for tool "write":\n  - ${field}: must have required property '${field}'\n\nReceived arguments: {}`,
+      },
+    ],
+    details: {},
+  };
+}
+
 describe("handleToolExecutionStart read path checks", () => {
+  beforeEach(() => {
+    resetDiagnosticSessionStateForTest();
+    resetDiagnosticEventsForTest();
+  });
+
   it("does not warn when read tool uses file_path alias", async () => {
     const { ctx, warn, onBlockReplyFlush } = createTestContext();
 
@@ -87,6 +114,146 @@ describe("handleToolExecutionStart read path checks", () => {
 
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0] ?? "")).toContain("read tool called without path");
+  });
+});
+
+describe("handleToolExecutionEnd schema validation loop tracking", () => {
+  beforeEach(() => {
+    resetDiagnosticSessionStateForTest();
+    resetDiagnosticEventsForTest();
+  });
+
+  it("records schema validation errors from tool events and emits warning at the third failure", async () => {
+    const emitted: DiagnosticToolLoopEvent[] = [];
+    const stop = onDiagnosticEvent((evt) => {
+      if (evt.type === "tool.loop") {
+        emitted.push(evt);
+      }
+    });
+    const { ctx } = createTestContext();
+    ctx.params.sessionKey = "agent:main:test";
+    ctx.params.config = {};
+
+    try {
+      for (let i = 0; i < 3; i += 1) {
+        const toolCallId = `tool-schema-${i}`;
+        await handleToolExecutionStart(ctx, {
+          type: "tool_execution_start",
+          toolName: "write",
+          toolCallId,
+          args: i === 1 ? { path: "/tmp/out.txt" } : {},
+        });
+        await handleToolExecutionEnd(ctx, {
+          type: "tool_execution_end",
+          toolName: "write",
+          toolCallId,
+          isError: true,
+          result: createSchemaValidationResult(),
+        });
+      }
+    } finally {
+      stop();
+    }
+
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0]).toEqual(
+      expect.objectContaining({
+        toolName: "write",
+        level: "warning",
+        action: "warn",
+        detector: "schema_validation_error_repeat",
+        count: 3,
+      }),
+    );
+  });
+
+  it("steers the session once when repeated schema validation failures stay critical", async () => {
+    const emitted: DiagnosticToolLoopEvent[] = [];
+    const stop = onDiagnosticEvent((evt) => {
+      if (evt.type === "tool.loop") {
+        emitted.push(evt);
+      }
+    });
+    const { ctx } = createTestContext();
+    const steer = vi.fn().mockResolvedValue(undefined);
+    ctx.params.sessionKey = "agent:main:test";
+    ctx.params.config = {};
+    ctx.params.session = { steer } as never;
+
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const toolCallId = `tool-schema-critical-${i}`;
+        await handleToolExecutionStart(ctx, {
+          type: "tool_execution_start",
+          toolName: "write",
+          toolCallId,
+          args: i % 2 === 0 ? {} : { path: "/tmp/out.txt" },
+        });
+        await handleToolExecutionEnd(ctx, {
+          type: "tool_execution_end",
+          toolName: "write",
+          toolCallId,
+          isError: true,
+          result: createSchemaValidationResult(),
+        });
+      }
+    } finally {
+      stop();
+    }
+
+    const criticalEvents = emitted.filter((evt) => evt.level === "critical");
+    expect(criticalEvents).toHaveLength(1);
+    expect(criticalEvents[0]).toEqual(
+      expect.objectContaining({
+        toolName: "write",
+        level: "critical",
+        action: "block",
+        detector: "schema_validation_error_repeat",
+        count: 5,
+      }),
+    );
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("tool-loop protection triggered");
+    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("write");
+  });
+
+  it("does not mix start data across runs with the same toolCallId", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.sessionKey = "agent:main:test";
+    ctx.params.config = {};
+    const toolCallId = "reused-tool-call";
+
+    ctx.params.runId = "run-a";
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "write",
+      toolCallId,
+      args: { path: "/tmp/a.txt" },
+    });
+
+    ctx.params.runId = "run-b";
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "write",
+      toolCallId,
+      args: { path: "/tmp/b.txt" },
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "write",
+      toolCallId,
+      isError: true,
+      result: createSchemaValidationResult(),
+    });
+
+    const state = getDiagnosticSessionState({
+      sessionKey: ctx.params.sessionKey,
+      sessionId: ctx.params.sessionKey,
+    });
+    const recorded = state.toolCallHistory?.at(-1);
+    expect(recorded?.argsHash).toBe(hashToolCall("write", { path: "/tmp/b.txt" }));
+    expect(recorded?.argsHash).not.toBe(hashToolCall("write", { path: "/tmp/a.txt" }));
   });
 });
 

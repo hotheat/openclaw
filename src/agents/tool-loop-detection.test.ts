@@ -6,7 +6,9 @@ import {
   GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
   TOOL_CALL_HISTORY_SIZE,
   WARNING_THRESHOLD,
+  detectSchemaValidationErrorLoop,
   detectToolCallLoop,
+  extractSchemaValidationOutcomeSignature,
   getToolCallStats,
   hashToolCall,
   recordToolCall,
@@ -42,6 +44,53 @@ function recordSuccessfulCall(
     toolParams: params,
     toolCallId,
     result,
+  });
+}
+
+function createSchemaValidationResult(field = "content") {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Validation failed for tool "write":\n  - ${field}: must have required property '${field}'\n\nReceived arguments: {}`,
+      },
+    ],
+    details: {},
+  };
+}
+
+function recordSchemaValidationFailure(
+  state: SessionState,
+  params: unknown,
+  index: number,
+  field = "content",
+  config: ToolLoopDetectionConfig = enabledLoopDetectionConfig,
+): void {
+  const toolCallId = `write-schema-${index}`;
+  recordToolCall(state, "write", params, toolCallId, config);
+  recordToolCallOutcome(state, {
+    toolName: "write",
+    toolParams: params,
+    toolCallId,
+    result: createSchemaValidationResult(field),
+    config,
+  });
+}
+
+function detectSchemaValidationLoop(
+  state: SessionState,
+  field = "content",
+  config: ToolLoopDetectionConfig = enabledLoopDetectionConfig,
+) {
+  const outcomeSignature = extractSchemaValidationOutcomeSignature({
+    toolName: "write",
+    result: createSchemaValidationResult(field),
+  });
+  expect(outcomeSignature).toBeDefined();
+  return detectSchemaValidationErrorLoop(state, {
+    toolName: "write",
+    outcomeSignature: outcomeSignature ?? "",
+    config,
   });
 }
 
@@ -207,14 +256,32 @@ describe("tool-loop-detection", () => {
   });
 
   describe("detectToolCallLoop", () => {
-    it("is disabled by default", () => {
+    it("is disabled by default for general repeated calls", () => {
       const state = createState();
 
-      for (let i = 0; i < 20; i += 1) {
+      for (let i = 0; i < WARNING_THRESHOLD; i += 1) {
         recordToolCall(state, "read", { path: "/same.txt" }, `default-${i}`);
       }
 
       const loopResult = detectToolCallLoop(state, "read", { path: "/same.txt" });
+      expect(loopResult.stuck).toBe(false);
+    });
+
+    it("can be disabled", () => {
+      const state = createState();
+
+      for (let i = 0; i < WARNING_THRESHOLD; i += 1) {
+        recordToolCall(state, "read", { path: "/same.txt" }, `disabled-${i}`);
+      }
+
+      const loopResult = detectToolCallLoop(
+        state,
+        "read",
+        { path: "/same.txt" },
+        {
+          enabled: false,
+        },
+      );
       expect(loopResult.stuck).toBe(false);
     });
 
@@ -522,6 +589,86 @@ describe("tool-loop-detection", () => {
 
       const result = detectToolCallLoop(state, "tool", { arg: 1 }, enabledLoopDetectionConfig);
       expect(result.stuck).toBe(false);
+    });
+
+    it("warns on the third repeated schema validation error", () => {
+      const state = createState();
+
+      recordSchemaValidationFailure(state, {}, 0);
+      recordSchemaValidationFailure(state, { path: "/tmp/out.txt" }, 1);
+
+      recordSchemaValidationFailure(state, { path: "/tmp/other.txt" }, 2);
+      const loopResult = detectSchemaValidationLoop(state);
+
+      expect(loopResult.stuck).toBe(true);
+      if (loopResult.stuck) {
+        expect(loopResult.level).toBe("warning");
+        expect(loopResult.detector).toBe("schema_validation_error_repeat");
+        expect(loopResult.count).toBe(3);
+      }
+    });
+
+    it("blocks on the fifth repeated schema validation error", () => {
+      const state = createState();
+
+      for (let i = 0; i < 4; i += 1) {
+        recordSchemaValidationFailure(state, i % 2 === 0 ? {} : { path: "/tmp/out.txt" }, i);
+      }
+
+      recordSchemaValidationFailure(state, { path: "/tmp/final.txt" }, 4);
+      const loopResult = detectSchemaValidationLoop(state);
+
+      expect(loopResult.stuck).toBe(true);
+      if (loopResult.stuck) {
+        expect(loopResult.level).toBe("critical");
+        expect(loopResult.detector).toBe("schema_validation_error_repeat");
+        expect(loopResult.count).toBe(5);
+        expect(loopResult.message).toContain("schema validation");
+      }
+    });
+
+    it("does not merge different schema validation signatures", () => {
+      const state = createState();
+
+      recordSchemaValidationFailure(state, {}, 0, "content");
+      recordSchemaValidationFailure(state, {}, 1, "path");
+
+      recordSchemaValidationFailure(state, {}, 2, "content");
+      const loopResult = detectSchemaValidationLoop(state, "content");
+      expect(loopResult.stuck).toBe(false);
+    });
+
+    it("keeps schema validation guard active when general loop detection is disabled", () => {
+      const state = createState();
+      const config: ToolLoopDetectionConfig = {
+        enabled: false,
+      };
+
+      for (let i = 0; i < 3; i += 1) {
+        recordSchemaValidationFailure(state, {}, i, "content", config);
+      }
+
+      const loopResult = detectSchemaValidationLoop(state, "content", config);
+      expect(loopResult.stuck).toBe(true);
+      if (loopResult.stuck) {
+        expect(loopResult.detector).toBe("schema_validation_error_repeat");
+        expect(loopResult.count).toBe(3);
+      }
+    });
+
+    it("can disable schema validation error detector explicitly", () => {
+      const state = createState();
+      const config: ToolLoopDetectionConfig = {
+        enabled: false,
+        detectors: { schemaValidationError: false },
+      };
+
+      for (let i = 0; i < 4; i += 1) {
+        recordSchemaValidationFailure(state, {}, i, "content", config);
+      }
+
+      const loopResult = detectSchemaValidationLoop(state, "content", config);
+      expect(loopResult.stuck).toBe(false);
     });
   });
 

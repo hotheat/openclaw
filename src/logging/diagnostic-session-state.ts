@@ -16,6 +16,8 @@ export type ToolCallRecord = {
   argsHash: string;
   toolCallId?: string;
   resultHash?: string;
+  outcomeKind?: "schema_validation_error";
+  outcomeSignature?: string;
   timestamp: number;
 };
 

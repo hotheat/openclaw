@@ -229,21 +229,25 @@ Notes:
 ### `loop-detection` (tool-call loop guardrails)
 
 OpenClaw tracks recent tool-call history and blocks or warns when it detects repetitive no-progress loops.
-Enable with `tools.loopDetection.enabled: true` (default is `false`).
+Repeated schema validation failures are guarded by default.
+Set `tools.loopDetection.enabled: true` to enable the broader generic, poll, and ping-pong detectors.
 
 ```json5
 {
   tools: {
     loopDetection: {
-      enabled: true,
+      enabled: false,
       warningThreshold: 10,
       criticalThreshold: 20,
       globalCircuitBreakerThreshold: 30,
+      schemaValidationWarningThreshold: 3,
+      schemaValidationCriticalThreshold: 5,
       historySize: 30,
       detectors: {
         genericRepeat: true,
         knownPollNoProgress: true,
         pingPong: true,
+        schemaValidationError: true,
       },
     },
   },
@@ -253,6 +257,7 @@ Enable with `tools.loopDetection.enabled: true` (default is `false`).
 - `genericRepeat`: repeated same tool + same params call pattern.
 - `knownPollNoProgress`: repeating poll-like tools with identical outputs.
 - `pingPong`: alternating `A/B/A/B` no-progress patterns.
+- `schemaValidationError`: repeated schema validation failures for the same tool and error signature.
 - Per-agent override: `agents.list[].tools.loopDetection`.
 
 ### `web_search`

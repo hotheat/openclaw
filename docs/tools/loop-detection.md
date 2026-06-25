@@ -11,9 +11,10 @@ read_when:
 # Tool-loop detection
 
 OpenClaw can keep agents from getting stuck in repeated tool-call patterns.
-The guard is **disabled by default**.
+Repeated schema validation failures are guarded by default.
+General repetitive-call detectors are opt-in with `tools.loopDetection.enabled: true`.
 
-Enable it only where needed, because it can block legitimate repeated calls with strict settings.
+Disable the schema guard only where needed, because schema validation failures are deterministic and usually cannot recover by retrying the same call shape.
 
 ## Why this exists
 
@@ -30,14 +31,17 @@ Global defaults:
   tools: {
     loopDetection: {
       enabled: false,
-      historySize: 20,
-      detectorCooldownMs: 12000,
-      repeatThreshold: 3,
-      criticalThreshold: 6,
+      historySize: 30,
+      warningThreshold: 10,
+      criticalThreshold: 20,
+      globalCircuitBreakerThreshold: 30,
+      schemaValidationWarningThreshold: 3,
+      schemaValidationCriticalThreshold: 5,
       detectors: {
-        repeatedFailure: true,
-        knownPollLoop: true,
-        repeatingNoProgress: true,
+        genericRepeat: true,
+        knownPollNoProgress: true,
+        pingPong: true,
+        schemaValidationError: true,
       },
     },
   },
@@ -55,8 +59,8 @@ Per-agent override (optional):
         tools: {
           loopDetection: {
             enabled: true,
-            repeatThreshold: 2,
-            criticalThreshold: 5,
+            warningThreshold: 8,
+            criticalThreshold: 16,
           },
         },
       },
@@ -67,20 +71,24 @@ Per-agent override (optional):
 
 ### Field behavior
 
-- `enabled`: Master switch. `false` means no loop detection is performed.
+- `enabled`: enables general before-tool-call loop detection. It does not disable the schema validation safety net.
 - `historySize`: number of recent tool calls kept for analysis.
-- `detectorCooldownMs`: time window used by the no-progress detector.
-- `repeatThreshold`: minimum repeats before warning/blocking starts.
-- `criticalThreshold`: stronger threshold that can trigger stricter handling.
-- `detectors.repeatedFailure`: detects repeated failed attempts on the same call path.
-- `detectors.knownPollLoop`: detects known polling-like loops.
-- `detectors.repeatingNoProgress`: detects high-frequency repeated calls without state change.
+- `warningThreshold`: minimum repeats before warning starts for general patterns.
+- `criticalThreshold`: stronger threshold that can block no-progress patterns.
+- `globalCircuitBreakerThreshold`: hard stop for any repeated no-progress outcome.
+- `schemaValidationWarningThreshold`: repeated schema validation failures before warning.
+- `schemaValidationCriticalThreshold`: repeated schema validation failures before blocking.
+- `detectors.genericRepeat`: detects repeated same-tool/same-args calls.
+- `detectors.knownPollNoProgress`: detects known polling-like loops with unchanged output.
+- `detectors.pingPong`: detects alternating no-progress pair patterns.
+- `detectors.schemaValidationError`: detects repeated tool schema validation failures.
 
 ## Recommended setup
 
-- Start with `enabled: true`, defaults unchanged.
+- Keep defaults unchanged for schema validation protection.
+- Set `enabled: true` only when you want generic repeat, poll, and ping-pong loop checks.
 - If false positives occur:
-  - raise `repeatThreshold` and/or `criticalThreshold`
+  - raise `warningThreshold`, `criticalThreshold`, or schema validation thresholds
   - disable only the detector causing issues
   - reduce `historySize` for less strict historical context
 
@@ -96,4 +104,4 @@ This protects users from runaway token spend and lockups while preserving normal
 
 - `tools.loopDetection` is merged with agent-level overrides.
 - Per-agent config fully overrides or extends global values.
-- If no config exists, guardrails stay off.
+- If no config exists, schema validation loop protection is still active.

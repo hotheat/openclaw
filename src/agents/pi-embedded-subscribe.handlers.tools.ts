@@ -1,7 +1,13 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  getDiagnosticSessionState,
+  type SessionState,
+} from "../logging/diagnostic-session-state.js";
+import { logToolLoopAction } from "../logging/diagnostic.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { PluginHookAfterToolCallEvent } from "../plugins/types.js";
+import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
 import { normalizeTextForComparison } from "./pi-embedded-helpers.js";
 import { isMessagingTool, isMessagingToolSendAction } from "./pi-embedded-messaging.js";
 import type {
@@ -18,11 +24,131 @@ import {
   sanitizeToolResult,
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
+import { resolveToolLoopDetectionConfig } from "./pi-tools.js";
+import {
+  detectSchemaValidationErrorLoop,
+  extractSchemaValidationOutcomeSignature,
+  recordToolCallOutcome,
+  shouldEmitLoopWarning,
+} from "./tool-loop-detection.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
 /** Track tool execution start times and args for after_tool_call hook */
 const toolStartData = new Map<string, { startTime: number; args: unknown }>();
+const CRITICAL_SCHEMA_VALIDATION_WARNING_KEY_PREFIX = "critical:";
+
+function buildToolStartKey(runId: string, toolCallId: string): string {
+  return `${runId}:${toolCallId}`;
+}
+
+function buildToolLoopSteerMessage(params: { toolName: string; message: string }): string {
+  return [
+    "OpenClaw tool-loop protection triggered.",
+    params.message,
+    `Do not call ${params.toolName} again with the same invalid arguments.`,
+    "Stop tool execution and respond with the failure reason and the corrected next step.",
+  ].join("\n");
+}
+
+function resetCriticalSchemaValidationLoopBuckets(sessionState: SessionState): void {
+  for (const key of sessionState.toolLoopWarningBuckets?.keys() ?? []) {
+    if (key.startsWith(CRITICAL_SCHEMA_VALIDATION_WARNING_KEY_PREFIX)) {
+      sessionState.toolLoopWarningBuckets?.delete(key);
+    }
+  }
+}
+
+function recordToolLoopDetectionOutcome(params: {
+  ctx: ToolHandlerContext;
+  toolName: string;
+  toolCallId: string;
+  toolArgs: unknown;
+  result: unknown;
+  isToolError: boolean;
+}): void {
+  if (!params.isToolError || !params.ctx.params.sessionKey) {
+    return;
+  }
+
+  const agentId = resolveAgentIdFromSessionKey(params.ctx.params.sessionKey);
+  const sessionId =
+    (params.ctx.params.session as { id?: string } | undefined)?.id ?? params.ctx.params.sessionKey;
+  const loopDetection = resolveToolLoopDetectionConfig({
+    cfg: params.ctx.params.config,
+    agentId,
+  });
+  const outcomeSignature = extractSchemaValidationOutcomeSignature({
+    toolName: params.toolName,
+    result: params.result,
+  });
+  if (!outcomeSignature) {
+    return;
+  }
+
+  const sessionState = getDiagnosticSessionState({
+    sessionKey: params.ctx.params.sessionKey,
+    sessionId,
+  });
+  recordToolCallOutcome(sessionState, {
+    toolName: params.toolName,
+    toolParams: params.toolArgs,
+    toolCallId: params.toolCallId,
+    result: params.result,
+    config: loopDetection,
+  });
+  const loopResult = detectSchemaValidationErrorLoop(sessionState, {
+    toolName: params.toolName,
+    outcomeSignature,
+    config: loopDetection,
+  });
+
+  if (!loopResult.stuck || loopResult.detector !== "schema_validation_error_repeat") {
+    resetCriticalSchemaValidationLoopBuckets(sessionState);
+    return;
+  }
+
+  const warningKey = loopResult.warningKey ?? `${loopResult.detector}:${params.toolName}`;
+  if (loopResult.level === "critical") {
+    const criticalKey = `${CRITICAL_SCHEMA_VALIDATION_WARNING_KEY_PREFIX}${warningKey}`;
+    if (!shouldEmitLoopWarning(sessionState, criticalKey, 1)) {
+      return;
+    }
+    logToolLoopAction({
+      sessionKey: params.ctx.params.sessionKey,
+      sessionId,
+      toolName: params.toolName,
+      level: "critical",
+      action: "block",
+      detector: loopResult.detector,
+      count: loopResult.count,
+      message: loopResult.message,
+    });
+    params.ctx.params.session
+      ?.steer(buildToolLoopSteerMessage({ toolName: params.toolName, message: loopResult.message }))
+      .catch((err) => {
+        params.ctx.log.warn(
+          `tool loop critical steer failed: tool=${params.toolName} error=${String(err)}`,
+        );
+      });
+    return;
+  }
+
+  resetCriticalSchemaValidationLoopBuckets(sessionState);
+  if (!shouldEmitLoopWarning(sessionState, warningKey, loopResult.count)) {
+    return;
+  }
+  logToolLoopAction({
+    sessionKey: params.ctx.params.sessionKey,
+    sessionId,
+    toolName: params.toolName,
+    level: "warning",
+    action: "warn",
+    detector: loopResult.detector,
+    count: loopResult.count,
+    message: loopResult.message,
+  });
+}
 
 function isCronAddAction(args: unknown): boolean {
   if (!args || typeof args !== "object") {
@@ -184,7 +310,7 @@ export async function handleToolExecutionStart(
 
   const startTime = Date.now();
   // Track start time and args for after_tool_call hook
-  toolStartData.set(toolCallId, { startTime, args });
+  toolStartData.set(buildToolStartKey(ctx.params.runId, toolCallId), { startTime, args });
 
   if (toolName === "read") {
     const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
@@ -305,8 +431,9 @@ export async function handleToolExecutionEnd(
   const result = evt.result;
   const isToolError = isError || isToolResultError(result);
   const sanitizedResult = sanitizeToolResult(result);
-  const startData = toolStartData.get(toolCallId);
-  toolStartData.delete(toolCallId);
+  const toolStartKey = buildToolStartKey(ctx.params.runId, toolCallId);
+  const startData = toolStartData.get(toolStartKey);
+  toolStartData.delete(toolStartKey);
   const durationMs = startData?.startTime != null ? Date.now() - startData.startTime : undefined;
   const callSummary = ctx.state.toolMetaById.get(toolCallId);
   const meta = callSummary?.meta;
@@ -322,6 +449,17 @@ export async function handleToolExecutionEnd(
       mutatingAction: callSummary?.mutatingAction,
       actionFingerprint: callSummary?.actionFingerprint,
     };
+    // pi-agent reports argument schema validation failures as tool_execution_end
+    // errors before OpenClaw's wrapped tool execute path runs. Record them here
+    // so repeated invalid tool calls can be detected and steered out of the loop.
+    recordToolLoopDetectionOutcome({
+      ctx,
+      toolName,
+      toolCallId,
+      toolArgs: startData?.args ?? {},
+      result: sanitizedResult,
+      isToolError,
+    });
   } else if (ctx.state.lastToolError) {
     // Keep unresolved failures in memory so a run cannot end silently after an
     // earlier tool error. For mutating actions we clear only when the same

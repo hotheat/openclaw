@@ -261,7 +261,12 @@ export function logToolLoopAction(
     toolName: string;
     level: "warning" | "critical";
     action: "warn" | "block";
-    detector: "generic_repeat" | "known_poll_no_progress" | "global_circuit_breaker" | "ping_pong";
+    detector:
+      | "generic_repeat"
+      | "known_poll_no_progress"
+      | "global_circuit_breaker"
+      | "ping_pong"
+      | "schema_validation_error_repeat";
     count: number;
     message: string;
     pairedToolName?: string;

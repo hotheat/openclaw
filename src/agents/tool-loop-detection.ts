@@ -10,7 +10,8 @@ export type LoopDetectorKind =
   | "generic_repeat"
   | "known_poll_no_progress"
   | "global_circuit_breaker"
-  | "ping_pong";
+  | "ping_pong"
+  | "schema_validation_error_repeat";
 
 export type LoopDetectionResult =
   | { stuck: false }
@@ -28,18 +29,48 @@ export const TOOL_CALL_HISTORY_SIZE = 30;
 export const WARNING_THRESHOLD = 10;
 export const CRITICAL_THRESHOLD = 20;
 export const GLOBAL_CIRCUIT_BREAKER_THRESHOLD = 30;
+export const SCHEMA_VALIDATION_WARNING_THRESHOLD = 3;
+export const SCHEMA_VALIDATION_CRITICAL_THRESHOLD = 5;
+const LOOP_WARNING_BUCKET_SIZE = 10;
+const MAX_LOOP_WARNING_KEYS = 256;
 const DEFAULT_LOOP_DETECTION_CONFIG = {
   enabled: false,
   historySize: TOOL_CALL_HISTORY_SIZE,
   warningThreshold: WARNING_THRESHOLD,
   criticalThreshold: CRITICAL_THRESHOLD,
   globalCircuitBreakerThreshold: GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
+  schemaValidationWarningThreshold: SCHEMA_VALIDATION_WARNING_THRESHOLD,
+  schemaValidationCriticalThreshold: SCHEMA_VALIDATION_CRITICAL_THRESHOLD,
   detectors: {
     genericRepeat: true,
     knownPollNoProgress: true,
     pingPong: true,
+    schemaValidationError: true,
   },
 };
+
+export function shouldEmitLoopWarning(
+  state: SessionState,
+  warningKey: string,
+  count: number,
+): boolean {
+  if (!state.toolLoopWarningBuckets) {
+    state.toolLoopWarningBuckets = new Map();
+  }
+  const bucket = Math.floor(count / LOOP_WARNING_BUCKET_SIZE);
+  const lastBucket = state.toolLoopWarningBuckets.get(warningKey) ?? -1;
+  if (bucket <= lastBucket) {
+    return false;
+  }
+  state.toolLoopWarningBuckets.set(warningKey, bucket);
+  if (state.toolLoopWarningBuckets.size > MAX_LOOP_WARNING_KEYS) {
+    const oldest = state.toolLoopWarningBuckets.keys().next().value;
+    if (oldest) {
+      state.toolLoopWarningBuckets.delete(oldest);
+    }
+  }
+  return true;
+}
 
 type ResolvedLoopDetectionConfig = {
   enabled: boolean;
@@ -47,10 +78,13 @@ type ResolvedLoopDetectionConfig = {
   warningThreshold: number;
   criticalThreshold: number;
   globalCircuitBreakerThreshold: number;
+  schemaValidationWarningThreshold: number;
+  schemaValidationCriticalThreshold: number;
   detectors: {
     genericRepeat: boolean;
     knownPollNoProgress: boolean;
     pingPong: boolean;
+    schemaValidationError: boolean;
   };
 };
 
@@ -74,12 +108,23 @@ function resolveLoopDetectionConfig(config?: ToolLoopDetectionConfig): ResolvedL
     config?.globalCircuitBreakerThreshold,
     DEFAULT_LOOP_DETECTION_CONFIG.globalCircuitBreakerThreshold,
   );
+  let schemaValidationWarningThreshold = asPositiveInt(
+    config?.schemaValidationWarningThreshold,
+    DEFAULT_LOOP_DETECTION_CONFIG.schemaValidationWarningThreshold,
+  );
+  let schemaValidationCriticalThreshold = asPositiveInt(
+    config?.schemaValidationCriticalThreshold,
+    DEFAULT_LOOP_DETECTION_CONFIG.schemaValidationCriticalThreshold,
+  );
 
   if (criticalThreshold <= warningThreshold) {
     criticalThreshold = warningThreshold + 1;
   }
   if (globalCircuitBreakerThreshold <= criticalThreshold) {
     globalCircuitBreakerThreshold = criticalThreshold + 1;
+  }
+  if (schemaValidationCriticalThreshold <= schemaValidationWarningThreshold) {
+    schemaValidationCriticalThreshold = schemaValidationWarningThreshold + 1;
   }
 
   return {
@@ -88,6 +133,8 @@ function resolveLoopDetectionConfig(config?: ToolLoopDetectionConfig): ResolvedL
     warningThreshold,
     criticalThreshold,
     globalCircuitBreakerThreshold,
+    schemaValidationWarningThreshold,
+    schemaValidationCriticalThreshold,
     detectors: {
       genericRepeat:
         config?.detectors?.genericRepeat ?? DEFAULT_LOOP_DETECTION_CONFIG.detectors.genericRepeat,
@@ -95,6 +142,9 @@ function resolveLoopDetectionConfig(config?: ToolLoopDetectionConfig): ResolvedL
         config?.detectors?.knownPollNoProgress ??
         DEFAULT_LOOP_DETECTION_CONFIG.detectors.knownPollNoProgress,
       pingPong: config?.detectors?.pingPong ?? DEFAULT_LOOP_DETECTION_CONFIG.detectors.pingPong,
+      schemaValidationError:
+        config?.detectors?.schemaValidationError ??
+        DEFAULT_LOOP_DETECTION_CONFIG.detectors.schemaValidationError,
     },
   };
 }
@@ -182,6 +232,127 @@ function formatErrorForHash(error: unknown): string {
   return stableStringify(error);
 }
 
+function normalizeValidationLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^\s*-\s*/, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function extractValidationIssueLines(text: string): string[] {
+  const lines = text.split(/\r?\n/);
+  const issues: string[] = [];
+  for (const line of lines) {
+    const normalized = normalizeValidationLine(line);
+    if (!normalized) {
+      continue;
+    }
+    if (/^received arguments\b/.test(normalized)) {
+      break;
+    }
+    if (
+      /\bmust\b/.test(normalized) ||
+      /\brequired property\b/.test(normalized) ||
+      /\binvalid\b/.test(normalized)
+    ) {
+      issues.push(normalized);
+    }
+  }
+  return issues;
+}
+
+function canonicalizeValidationIssue(issue: string): string {
+  const required = issue.match(
+    /^(?<path>[^:]+):\s*must have required property ['"](?<prop>[^'"]+)['"]/,
+  );
+  if (required?.groups?.path && required.groups.prop) {
+    const path = required.groups.path.trim().replace(/\s+/g, ".");
+    const prop = required.groups.prop.trim().toLowerCase();
+    if (path === prop) {
+      return `required:${prop}`;
+    }
+    return `required:${path}.${prop}`;
+  }
+
+  const missing = issue.match(
+    /\bmissing required (?:property|field)\s+['"]?(?<prop>[a-z0-9_.-]+)['"]?/,
+  );
+  if (missing?.groups?.prop) {
+    return `required:${missing.groups.prop.trim().toLowerCase()}`;
+  }
+
+  return issue.replace(/(['"])[^'"]{80,}\1/g, "$1<value>$1").slice(0, 200);
+}
+
+function extractErrorTextForLoopDetection(value: unknown): string {
+  if (value instanceof Error) {
+    return value.message || value.name;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return `${value}`;
+  }
+  if (!isPlainObject(value)) {
+    return "";
+  }
+
+  const candidates: string[] = [];
+  const directKeys = ["error", "message", "reason"] as const;
+  for (const key of directKeys) {
+    const direct = value[key];
+    if (typeof direct === "string") {
+      candidates.push(direct);
+    } else if (direct instanceof Error) {
+      candidates.push(direct.message || direct.name);
+    } else if (isPlainObject(direct)) {
+      const nested = extractErrorTextForLoopDetection(direct);
+      if (nested) {
+        candidates.push(nested);
+      }
+    }
+  }
+
+  const details = value.details;
+  if (isPlainObject(details)) {
+    const nested = extractErrorTextForLoopDetection(details);
+    if (nested) {
+      candidates.push(nested);
+    }
+  }
+
+  const text = extractTextContent(value);
+  if (text) {
+    candidates.push(text);
+  }
+
+  return candidates.find((candidate) => candidate.trim())?.trim() ?? "";
+}
+
+export function extractSchemaValidationOutcomeSignature(params: {
+  toolName: string;
+  result?: unknown;
+  error?: unknown;
+}): string | undefined {
+  const text = extractErrorTextForLoopDetection(params.error ?? params.result);
+  if (!text) {
+    return undefined;
+  }
+  const normalizedText = text.replace(/\r\n/g, "\n");
+  if (!/\bvalidation failed for tool\b/i.test(normalizedText)) {
+    return undefined;
+  }
+
+  const issues = extractValidationIssueLines(normalizedText);
+  const signatureParts =
+    issues.length > 0
+      ? issues.map(canonicalizeValidationIssue).toSorted()
+      : [normalizedText.split("\n")[0]?.trim().toLowerCase() ?? "validation failed"];
+  return `${params.toolName}:${signatureParts.join("|")}`;
+}
+
 function hashToolOutcome(
   toolName: string,
   params: unknown,
@@ -257,6 +428,34 @@ function getNoProgressStreak(
   }
 
   return { count: streak, latestResultHash };
+}
+
+function getSchemaValidationErrorStreak(
+  history: Array<{ toolName: string; outcomeKind?: string; outcomeSignature?: string }>,
+  toolName: string,
+  signature: string,
+): { count: number; signature: string } {
+  let count = 0;
+
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const record = history[i];
+    if (!record) {
+      continue;
+    }
+    if (
+      record.toolName !== toolName ||
+      record.outcomeKind !== "schema_validation_error" ||
+      !record.outcomeSignature
+    ) {
+      break;
+    }
+    if (record.outcomeSignature !== signature) {
+      break;
+    }
+    count += 1;
+  }
+
+  return { count, signature };
 }
 
 function getPingPongStreak(
@@ -494,6 +693,65 @@ export function detectToolCallLoop(
   return { stuck: false };
 }
 
+export function detectSchemaValidationErrorLoop(
+  state: SessionState,
+  params: {
+    toolName: string;
+    outcomeSignature: string;
+    config?: ToolLoopDetectionConfig;
+  },
+): LoopDetectionResult {
+  const resolvedConfig = resolveLoopDetectionConfig(params.config);
+  // Respect `enabled` as a master off-switch so that
+  // `loopDetection: { enabled: false }` fully disables all detectors.
+  if (!resolvedConfig.enabled) {
+    return { stuck: false };
+  }
+  const schemaGuardEnabled =
+    params.config?.detectors?.schemaValidationError ??
+    DEFAULT_LOOP_DETECTION_CONFIG.detectors.schemaValidationError;
+  if (!schemaGuardEnabled) {
+    return { stuck: false };
+  }
+
+  const history = state.toolCallHistory ?? [];
+  const schemaValidation = getSchemaValidationErrorStreak(
+    history,
+    params.toolName,
+    params.outcomeSignature,
+  );
+
+  if (schemaValidation.count >= resolvedConfig.schemaValidationCriticalThreshold) {
+    log.error(
+      `Critical schema validation loop detected: ${params.toolName} repeated ${schemaValidation.count} times`,
+    );
+    return {
+      stuck: true,
+      level: "critical",
+      detector: "schema_validation_error_repeat",
+      count: schemaValidation.count,
+      message: `CRITICAL: ${params.toolName} has failed schema validation ${schemaValidation.count} times with the same error. Stop calling this tool until you can provide valid arguments. Session execution blocked to prevent repeated tool-call errors.`,
+      warningKey: `schema:${params.toolName}:${schemaValidation.signature}`,
+    };
+  }
+
+  if (schemaValidation.count >= resolvedConfig.schemaValidationWarningThreshold) {
+    log.warn(
+      `Schema validation loop warning: ${params.toolName} repeated ${schemaValidation.count} times`,
+    );
+    return {
+      stuck: true,
+      level: "warning",
+      detector: "schema_validation_error_repeat",
+      count: schemaValidation.count,
+      message: `WARNING: ${params.toolName} has failed schema validation ${schemaValidation.count} times with the same error. Stop retrying the same call shape and fix the required arguments before calling this tool again.`,
+      warningKey: `schema:${params.toolName}:${schemaValidation.signature}`,
+    };
+  }
+
+  return { stuck: false };
+}
+
 /**
  * Record a tool call in the session's history for loop detection.
  * Maintains sliding window of last N calls.
@@ -537,13 +795,18 @@ export function recordToolCallOutcome(
   },
 ): void {
   const resolvedConfig = resolveLoopDetectionConfig(params.config);
+  const outcomeSignature = extractSchemaValidationOutcomeSignature({
+    toolName: params.toolName,
+    result: params.result,
+    error: params.error,
+  });
   const resultHash = hashToolOutcome(
     params.toolName,
     params.toolParams,
     params.result,
     params.error,
   );
-  if (!resultHash) {
+  if (!resultHash && !outcomeSignature) {
     return;
   }
 
@@ -564,10 +827,19 @@ export function recordToolCallOutcome(
     if (call.toolName !== params.toolName || call.argsHash !== argsHash) {
       continue;
     }
+    // Only match incomplete records — completed records (resultHash set) must
+    // not be updated in-place, otherwise reused toolCallIds across runs
+    // collapse distinct failures and undercount schema-validation streaks.
     if (call.resultHash !== undefined) {
       continue;
     }
-    call.resultHash = resultHash;
+    if (call.resultHash === undefined && resultHash) {
+      call.resultHash = resultHash;
+    }
+    if (outcomeSignature) {
+      call.outcomeKind = "schema_validation_error";
+      call.outcomeSignature = outcomeSignature;
+    }
     matched = true;
     break;
   }
@@ -578,6 +850,8 @@ export function recordToolCallOutcome(
       argsHash,
       toolCallId: params.toolCallId,
       resultHash,
+      outcomeKind: outcomeSignature ? "schema_validation_error" : undefined,
+      outcomeSignature,
       timestamp: Date.now(),
     });
   }
