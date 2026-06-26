@@ -68,13 +68,73 @@ vi.mock("../workspace-run.js", () => ({
   redactRunIdentifier: vi.fn((value?: string) => value ?? ""),
 }));
 
+const classifyFailoverReasonMock = (raw?: string): string | null => {
+  const lower = (raw ?? "").toLowerCase();
+  if (!lower) {
+    return null;
+  }
+  if (
+    lower.includes("overload") ||
+    lower.includes("rate limit") ||
+    lower.includes("too many requests") ||
+    lower.includes("429")
+  ) {
+    return "rate_limit";
+  }
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("502") ||
+    lower.includes("503")
+  ) {
+    return "timeout";
+  }
+  if (lower.includes("billing") || lower.includes("insufficient credit")) {
+    return "billing";
+  }
+  if (lower.includes("unauthorized") || lower.includes("invalid api key")) {
+    return "auth";
+  }
+  if (lower.includes("format")) {
+    return "format";
+  }
+  return null;
+};
+
 vi.mock("../pi-embedded-helpers.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../pi-embedded-helpers.js")>();
   return {
     ...actual,
-    isCompactionFailureError: vi.fn(actual.isCompactionFailureError),
-    isLikelyContextOverflowError: vi.fn(actual.isLikelyContextOverflowError),
-    pickFallbackThinkingLevel: vi.fn(actual.pickFallbackThinkingLevel),
+    formatBillingErrorMessage: vi.fn(() => ""),
+    classifyFailoverReason: vi.fn(classifyFailoverReasonMock),
+    formatAssistantErrorText: vi.fn(() => ""),
+    isAuthAssistantError: vi.fn(() => false),
+    isBillingAssistantError: vi.fn(() => false),
+    isCompactionFailureError: vi.fn(() => false),
+    isImmediateModelFailoverHttpError: vi.fn((raw?: string) => /\b(?:502|503)\b/.test(raw ?? "")),
+    isLikelyContextOverflowError: vi.fn((msg?: string) => {
+      const lower = (msg ?? "").toLowerCase();
+      return lower.includes("request_too_large") || lower.includes("context window exceeded");
+    }),
+    isFailoverAssistantError: vi.fn(
+      (message?: { stopReason?: string; errorMessage?: string }) =>
+        message?.stopReason === "error" &&
+        classifyFailoverReasonMock(message.errorMessage) !== null,
+    ),
+    isFailoverErrorMessage: vi.fn((raw?: string) => classifyFailoverReasonMock(raw) !== null),
+    parseImageSizeError: vi.fn(() => null),
+    parseImageDimensionError: vi.fn(() => null),
+    isRateLimitAssistantError: vi.fn(
+      (message?: { stopReason?: string; errorMessage?: string }) =>
+        message?.stopReason === "error" &&
+        classifyFailoverReasonMock(message.errorMessage) === "rate_limit",
+    ),
+    isTimeoutErrorMessage: vi.fn((raw?: string) => classifyFailoverReasonMock(raw) === "timeout"),
+    pickFallbackThinkingLevel: vi.fn(() => null),
+    resolveImmediateModelFailoverHttpStatus: vi.fn((raw?: string) => {
+      const match = (raw ?? "").match(/\b(502|503)\b/);
+      return match?.[1] ? Number(match[1]) : undefined;
+    }),
   };
 });
 

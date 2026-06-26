@@ -616,6 +616,7 @@ const ERROR_PATTERNS = {
     "connection failure",
     "network error",
     "fetch failed",
+    "stream_read_error",
     "socket connection was closed unexpectedly",
     /without sending (?:any )?chunks?/i,
     /\bstop reason:\s*abort\b/i,

@@ -66,6 +66,11 @@ const MAX_ANNOUNCE_RETRY_COUNT = 3;
  */
 const ANNOUNCE_EXPIRY_MS = 5 * 60_000; // 5 minutes
 
+type TranscriptTerminalOutcome = {
+  outcome: SubagentRunOutcome;
+  endedAt?: number;
+};
+
 async function sleepMs(ms: number): Promise<void> {
   const delayMs = Math.max(0, Math.floor(ms));
   if (delayMs <= 0) {
@@ -134,7 +139,13 @@ function clearPendingSubagentCompletion(runId: string) {
   return true;
 }
 
-function resolveCompletionStabilizeDelayMs(outcome: SubagentRunOutcome) {
+function resolveCompletionStabilizeDelayMs(
+  outcome: SubagentRunOutcome,
+  opts?: { confirmOkTranscriptError?: boolean },
+) {
+  if (opts?.confirmOkTranscriptError) {
+    return Math.max(SUBAGENT_COMPLETION_END_STABILIZE_MS, SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS);
+  }
   if (outcome.status === "ok") {
     return SUBAGENT_COMPLETION_END_STABILIZE_MS;
   }
@@ -235,7 +246,7 @@ async function completeSubagentRun(params: {
   startSubagentAnnounceCleanupFlow(params.runId, entry);
 }
 
-function scheduleSubagentRunCompletion(params: {
+type ScheduleSubagentRunCompletionParams = {
   runId: string;
   endedAt?: number;
   outcome: SubagentRunOutcome;
@@ -243,20 +254,54 @@ function scheduleSubagentRunCompletion(params: {
   sendFarewell?: boolean;
   accountId?: string;
   triggerCleanup: boolean;
-}) {
+  confirmOkTranscriptError?: boolean;
+};
+
+async function resolveScheduledSubagentRunCompletion(
+  params: ScheduleSubagentRunCompletionParams,
+): Promise<ScheduleSubagentRunCompletionParams> {
+  if (!params.confirmOkTranscriptError) {
+    return params;
+  }
+  const entry = subagentRuns.get(params.runId);
+  if (!entry) {
+    return params;
+  }
+  const transcriptTerminal = await detectOkTranscriptErrorCandidate({
+    childSessionKey: entry.childSessionKey,
+    nowMs: Date.now(),
+  });
+  if (!transcriptTerminal) {
+    return params;
+  }
+  return {
+    ...params,
+    endedAt: transcriptTerminal.endedAt ?? params.endedAt ?? Date.now(),
+    outcome: transcriptTerminal.outcome,
+    reason: SUBAGENT_ENDED_REASON_ERROR,
+  };
+}
+
+function scheduleSubagentRunCompletion(params: ScheduleSubagentRunCompletionParams) {
   const entry = subagentRuns.get(params.runId);
   if (!entry) {
     return;
   }
   clearPendingSubagentCompletion(params.runId);
-  if (!shouldStabilizeCompletion(entry, params.outcome)) {
+  const shouldConfirmOkTranscriptError = params.confirmOkTranscriptError === true;
+  if (!shouldConfirmOkTranscriptError && !shouldStabilizeCompletion(entry, params.outcome)) {
     void completeSubagentRun(params);
     return;
   }
-  const delayMs = resolveCompletionStabilizeDelayMs(params.outcome);
+  const delayMs = resolveCompletionStabilizeDelayMs(params.outcome, {
+    confirmOkTranscriptError: shouldConfirmOkTranscriptError,
+  });
   const timer = setTimeout(() => {
     pendingCompletionTimers.delete(params.runId);
-    void completeSubagentRun(params);
+    void (async () => {
+      const resolvedParams = await resolveScheduledSubagentRunCompletion(params);
+      await completeSubagentRun(resolvedParams);
+    })();
   }, delayMs);
   timer.unref?.();
   pendingCompletionTimers.set(params.runId, timer);
@@ -407,7 +452,9 @@ function parseTranscriptTimestampMs(value: unknown): number | undefined {
 async function detectTerminalOutcomeFromTranscript(params: {
   childSessionKey: string;
   nowMs?: number;
-}): Promise<{ outcome: SubagentRunOutcome; endedAt?: number } | undefined> {
+  stabilizeMs?: number;
+  requireLatestMessageAssistantError?: boolean;
+}): Promise<TranscriptTerminalOutcome | undefined> {
   const history = await callGateway<{ messages?: Array<unknown> }>({
     method: "chat.history",
     params: {
@@ -420,8 +467,22 @@ async function detectTerminalOutcomeFromTranscript(params: {
   if (messages.length === 0) {
     return undefined;
   }
+  if (params.requireLatestMessageAssistantError) {
+    const latestMessage = messages[messages.length - 1];
+    if (
+      !latestMessage ||
+      typeof latestMessage !== "object" ||
+      (latestMessage as { role?: unknown }).role !== "assistant"
+    ) {
+      return undefined;
+    }
+  }
 
   const nowMs = typeof params.nowMs === "number" ? params.nowMs : Date.now();
+  const stabilizeMs =
+    typeof params.stabilizeMs === "number"
+      ? Math.max(0, params.stabilizeMs)
+      : SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS;
   const latestMessageTimestampMs = (() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const timestampMs = parseTranscriptTimestampMs(
@@ -435,13 +496,15 @@ async function detectTerminalOutcomeFromTranscript(params: {
   })();
 
   if (
+    stabilizeMs > 0 &&
     typeof latestMessageTimestampMs === "number" &&
-    nowMs - latestMessageTimestampMs < SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS
+    nowMs - latestMessageTimestampMs < stabilizeMs
   ) {
     return undefined;
   }
 
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
+  const minScanIndex = params.requireLatestMessageAssistantError ? messages.length - 1 : 0;
+  for (let i = messages.length - 1; i >= minScanIndex; i -= 1) {
     const message = messages[i];
     if (!message || typeof message !== "object") {
       continue;
@@ -468,8 +531,9 @@ async function detectTerminalOutcomeFromTranscript(params: {
       (message as { timestamp?: unknown }).timestamp,
     );
     if (
+      stabilizeMs > 0 &&
       typeof messageTimestampMs === "number" &&
-      nowMs - messageTimestampMs < SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS
+      nowMs - messageTimestampMs < stabilizeMs
     ) {
       return undefined;
     }
@@ -481,6 +545,19 @@ async function detectTerminalOutcomeFromTranscript(params: {
   }
 
   return undefined;
+}
+
+async function detectOkTranscriptErrorCandidate(params: {
+  childSessionKey: string;
+  nowMs?: number;
+}): Promise<TranscriptTerminalOutcome | undefined> {
+  const transcriptTerminal = await detectTerminalOutcomeFromTranscript({
+    childSessionKey: params.childSessionKey,
+    nowMs: params.nowMs,
+    stabilizeMs: 0,
+    requireLatestMessageAssistantError: true,
+  });
+  return transcriptTerminal?.outcome.status === "error" ? transcriptTerminal : undefined;
 }
 
 function startSweeper() {
@@ -567,14 +644,27 @@ function ensureListener() {
           : evt.data?.aborted
             ? { status: "timeout" }
             : { status: "ok" };
+      const resolvedEndedAt = endedAt;
+      let confirmOkTranscriptError = false;
+      if (outcome.status === "ok") {
+        const transcriptTerminal = await detectOkTranscriptErrorCandidate({
+          childSessionKey: entry.childSessionKey,
+          nowMs: Date.now(),
+        });
+        confirmOkTranscriptError = transcriptTerminal !== undefined;
+      }
       scheduleSubagentRunCompletion({
         runId: evt.runId,
-        endedAt,
+        endedAt: resolvedEndedAt,
         outcome,
-        reason: phase === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
+        reason:
+          phase === "error" || outcome.status === "error"
+            ? SUBAGENT_ENDED_REASON_ERROR
+            : SUBAGENT_ENDED_REASON_COMPLETE,
         sendFarewell: true,
         accountId: entry.requesterOrigin?.accountId,
         triggerCleanup: true,
+        confirmOkTranscriptError,
       });
     })();
   });
@@ -964,6 +1054,13 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         }
       }
 
+      const confirmOkTranscriptError =
+        wait.status === "ok" &&
+        (await detectOkTranscriptErrorCandidate({
+          childSessionKey: entry.childSessionKey,
+          nowMs: effectiveNowMs,
+        })) !== undefined;
+
       const waitError = typeof wait.error === "string" ? wait.error : undefined;
       const outcome: SubagentRunOutcome =
         wait.status === "error"
@@ -980,6 +1077,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         sendFarewell: true,
         accountId: entry.requesterOrigin?.accountId,
         triggerCleanup: true,
+        confirmOkTranscriptError,
       });
       return;
     }

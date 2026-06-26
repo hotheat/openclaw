@@ -135,6 +135,204 @@ describe("subagent registry transcript fallback", () => {
     expect(announce.outcome).toEqual({ status: "error", error: "terminated" });
   });
 
+  it("overrides agent.wait ok when transcript ends with assistant error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:27:59.988Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: "我现在开始生成交付文件。" },
+                {
+                  type: "toolCall",
+                  name: "write",
+                  arguments: { file_path: "artifacts/report.md" },
+                  partialJson: '{"file_path":"artifacts/report.md"',
+                },
+              ],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.788Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stream-read-error",
+      childSessionKey: "agent:researcher:subagent:stream-read-error",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 30,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stream-read-error");
+    expect(run?.outcome).toEqual({ status: "error", error: "stream_read_error" });
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stream-read-error");
+    expect(announce.outcome).toEqual({ status: "error", error: "stream_read_error" });
+  });
+
+  it("does not override agent.wait ok when a later tool result follows assistant error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:27:59.988Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.788Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.988Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stream-read-recovered",
+      childSessionKey: "agent:researcher:subagent:stream-read-recovered",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 30,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stream-read-recovered");
+    expect(run?.outcome).toEqual({ status: "ok" });
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stream-read-recovered");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("rechecks lagged transcript history before overriding agent.wait ok", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let historyCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:27:59.988Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        historyCalls += 1;
+        const assistantError = {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "stream_read_error",
+          timestamp: "2026-06-25T10:27:59.788Z",
+        };
+        return {
+          messages:
+            historyCalls === 1
+              ? [assistantError]
+              : [
+                  assistantError,
+                  {
+                    role: "toolResult",
+                    content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+                    timestamp: "2026-06-25T10:27:59.988Z",
+                  },
+                ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stream-read-lagged-history",
+      childSessionKey: "agent:researcher:subagent:stream-read-lagged-history",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 30,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(announceSpy).toHaveBeenCalledTimes(0);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stream-read-lagged-history");
+    expect(run?.outcome).toEqual({ status: "ok" });
+    expect(historyCalls).toBeGreaterThanOrEqual(2);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stream-read-lagged-history");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
   it("treats assistant error text as terminal when error metadata is also present", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T01:43:40.000Z"));
