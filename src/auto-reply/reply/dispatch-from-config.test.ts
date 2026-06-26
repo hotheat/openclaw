@@ -207,6 +207,76 @@ describe("dispatchReplyFromConfig", () => {
     expect(routed?.payload?.text).toBeUndefined();
   });
 
+  it("marks dispatch handled when reply resolver reports messaging tool delivery", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "feishu",
+      ChatType: "direct",
+    });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions & {
+        onHandledWithoutReply?: (reason: "messaging_tool" | "silent") => void;
+      },
+      _cfg?: OpenClawConfig,
+    ) => {
+      await opts?.onHandledWithoutReply?.("messaging_tool");
+      return undefined;
+    };
+
+    const result = await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(result).toMatchObject({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
+  it("marks dispatch handled when reply resolver reports silent completion", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "feishu",
+      ChatType: "direct",
+    });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions & {
+        onHandledWithoutReply?: (reason: "messaging_tool" | "silent") => void;
+      },
+      _cfg?: OpenClawConfig,
+    ) => {
+      await opts?.onHandledWithoutReply?.("silent");
+      return undefined;
+    };
+
+    const result = await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver,
+    });
+
+    expect(result).toMatchObject({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
   it("provides onToolResult in DM sessions", async () => {
     setNoAbort();
     mocks.routeReply.mockClear();

@@ -946,14 +946,19 @@ export async function handleFeishuMessage(params: {
 
       log(`feishu[${account.accountId}]: dispatching permission error notification to agent`);
 
-      await core.channel.reply.dispatchReplyFromConfig({
-        ctx: permissionCtx,
-        cfg,
-        dispatcher: permDispatcher,
-        replyOptions: permReplyOptions,
-      });
-
-      markPermIdle();
+      try {
+        await core.channel.reply.dispatchReplyFromConfig({
+          ctx: permissionCtx,
+          cfg,
+          dispatcher: permDispatcher,
+          replyOptions: permReplyOptions,
+        });
+      } finally {
+        // Release the dispatcher reservation; markPermIdle() only stops typing.
+        permDispatcher.markComplete();
+        await permDispatcher.waitForIdle();
+        markPermIdle();
+      }
     }
 
     const body = core.channel.reply.formatAgentEnvelope({
@@ -1032,34 +1037,44 @@ export async function handleFeishuMessage(params: {
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
 
-    const dispatchResult = await core.channel.reply.dispatchReplyFromConfig({
-      ctx: ctxPayload,
-      cfg,
-      dispatcher,
-      replyOptions,
-    });
-    let queuedFinal = dispatchResult.queuedFinal;
-    const counts = dispatchResult.counts;
-
-    if (
-      !queuedFinal &&
-      (counts.final ?? 0) === 0 &&
-      (counts.block ?? 0) === 0 &&
-      (counts.tool ?? 0) === 0
-    ) {
-      const queuedFallback = dispatcher.sendFinalReply({
-        text: "模型执行中断，请重试。",
-        isError: true,
+    let queuedFinal = false;
+    let finalReplies = 0;
+    try {
+      const dispatchResult = await core.channel.reply.dispatchReplyFromConfig({
+        ctx: ctxPayload,
+        cfg,
+        dispatcher,
+        replyOptions,
       });
-      if (queuedFallback) {
-        queuedFinal = true;
-        dispatcher.markComplete();
-        await dispatcher.waitForIdle();
-        counts.final += 1;
-      }
-    }
+      queuedFinal = dispatchResult.queuedFinal;
+      const counts = dispatchResult.counts;
 
-    markDispatchIdle();
+      if (
+        !queuedFinal &&
+        !dispatchResult.handled &&
+        (counts.final ?? 0) === 0 &&
+        (counts.block ?? 0) === 0 &&
+        (counts.tool ?? 0) === 0
+      ) {
+        const queuedFallback = dispatcher.sendFinalReply({
+          text: "模型执行中断，请重试。",
+          isError: true,
+        });
+        if (queuedFallback) {
+          queuedFinal = true;
+          counts.final += 1;
+        }
+      }
+
+      finalReplies = counts.final;
+    } finally {
+      // Always release the dispatcher reservation on every exit path (handled,
+      // happy path, suppressed fallback, or error). markDispatchIdle() only stops
+      // typing; markComplete()/waitForIdle() are what clear the global reservation.
+      dispatcher.markComplete();
+      await dispatcher.waitForIdle();
+      markDispatchIdle();
+    }
 
     if (isGroup && historyKey && chatHistories) {
       clearHistoryEntriesIfEnabled({
@@ -1070,7 +1085,7 @@ export async function handleFeishuMessage(params: {
     }
 
     log(
-      `feishu[${account.accountId}]: dispatch complete (queuedFinal=${queuedFinal}, replies=${counts.final})`,
+      `feishu[${account.accountId}]: dispatch complete (queuedFinal=${queuedFinal}, replies=${finalReplies})`,
     );
   } catch (err) {
     error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}`);

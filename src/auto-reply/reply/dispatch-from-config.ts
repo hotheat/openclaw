@@ -78,6 +78,7 @@ const resolveSessionTtsAuto = (
 export type DispatchFromConfigResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
+  handled?: boolean;
 };
 
 export async function dispatchReplyFromConfig(params: {
@@ -242,6 +243,20 @@ export async function dispatchReplyFromConfig(params: {
   const shouldRouteToOriginating =
     isRoutableChannel(originatingChannel) && originatingTo && originatingChannel !== currentSurface;
   const ttsChannel = shouldRouteToOriginating ? originatingChannel : currentSurface;
+  let handledWithoutReply = false;
+
+  const buildDispatchResult = (result: {
+    queuedFinal: boolean;
+    counts: Record<ReplyDispatchKind, number>;
+  }): DispatchFromConfigResult => ({
+    ...result,
+    handled:
+      result.queuedFinal ||
+      handledWithoutReply ||
+      (result.counts.final ?? 0) > 0 ||
+      (result.counts.block ?? 0) > 0 ||
+      (result.counts.tool ?? 0) > 0,
+  });
 
   /**
    * Helper to send a payload via route-reply (async).
@@ -314,7 +329,7 @@ export async function dispatchReplyFromConfig(params: {
       counts.final += routedFinalCount;
       recordProcessed("completed", { reason: "fast_abort" });
       markIdle("message_completed");
-      return { queuedFinal, counts };
+      return buildDispatchResult({ queuedFinal, counts });
     }
 
     // Track accumulated block text for TTS generation after streaming completes.
@@ -389,6 +404,9 @@ export async function dispatchReplyFromConfig(params: {
             }
           };
           return run();
+        },
+        onHandledWithoutReply: (_reason) => {
+          handledWithoutReply = true;
         },
       },
       cfg,
@@ -493,7 +511,7 @@ export async function dispatchReplyFromConfig(params: {
     counts.final += routedFinalCount;
     recordProcessed("completed");
     markIdle("message_completed");
-    return { queuedFinal, counts };
+    return buildDispatchResult({ queuedFinal, counts });
   } catch (err) {
     recordProcessed("error", { error: String(err) });
     markIdle("message_error");

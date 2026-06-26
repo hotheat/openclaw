@@ -298,7 +298,14 @@ export function extractMessagingToolSend(
     if (action !== "send" && action !== "thread-reply") {
       return undefined;
     }
-    const toRaw = typeof args.to === "string" ? args.to : undefined;
+    const toRaw =
+      typeof args.target === "string"
+        ? args.target
+        : typeof args.to === "string"
+          ? args.to
+          : typeof args.channelId === "string"
+            ? args.channelId
+            : undefined;
     if (!toRaw) {
       return undefined;
     }

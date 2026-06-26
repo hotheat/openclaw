@@ -51,6 +51,7 @@ import {
 } from "./post-compaction-audit.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
+import { shouldSuppressMessagingToolReplies } from "./reply-payloads.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
 import { createTypingSignaler } from "./typing-mode.js";
@@ -496,7 +497,29 @@ export async function runReplyAgent(params: {
     // Drain any late tool/block deliveries before deciding there's "nothing to send".
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
+    const didSendViaMessagingTool = Boolean(runResult.didSendViaMessagingTool);
+    // Only treat a messaging-tool send as "handled" for the current conversation
+    // when the send target is positively known to match this origin (same
+    // provider/target/account). A run that only forwards elsewhere must not
+    // suppress the origin's fallback — otherwise the origin chat gets no
+    // acknowledgement at all.
+    //
+    // We require a positive match rather than treating "no target metadata" as
+    // handled: cross-session forwards via `sessions_send` are classified as
+    // messaging sends but never emit origin-comparable target metadata, so an
+    // empty target set cannot be assumed to have reached origin.
+    const handledViaMessagingTool =
+      didSendViaMessagingTool &&
+      shouldSuppressMessagingToolReplies({
+        messageProvider: followupRun.run.messageProvider,
+        messagingToolSentTargets: runResult.messagingToolSentTargets,
+        originatingTo: sessionCtx.OriginatingTo ?? sessionCtx.To,
+        accountId: sessionCtx.AccountId,
+      });
     if (payloadArray.length === 0) {
+      if (handledViaMessagingTool) {
+        await opts?.onHandledWithoutReply?.("messaging_tool");
+      }
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -521,6 +544,11 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
+      if (handledViaMessagingTool) {
+        await opts?.onHandledWithoutReply?.("messaging_tool");
+      } else if (payloadResult.didSkipSilentPayload) {
+        await opts?.onHandledWithoutReply?.("silent");
+      }
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 

@@ -241,6 +241,130 @@ describe("handleFeishuMessage command authorization", () => {
     expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
   });
 
+  it("does not queue fallback when Feishu dispatch was handled without queued replies", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-handled-empty-dispatch",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "send file" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFeishuDispatcher.sendFinalReply).not.toHaveBeenCalledWith({
+      text: "模型执行中断，请重试。",
+      isError: true,
+    });
+    // Fallback is suppressed, but the dispatcher reservation must still be released
+    // so it does not stay permanently registered for idle/restart coordination.
+    expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("completes the dispatcher on the happy path with queued replies", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: true,
+      counts: { final: 1, block: 0, tool: 0 },
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-happy-dispatch",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFeishuDispatcher.sendFinalReply).not.toHaveBeenCalledWith({
+      text: "模型执行中断，请重试。",
+      isError: true,
+    });
+    expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not queue fallback when Feishu dispatch completed silently", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-silent-dispatch",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "NO_REPLY" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFeishuDispatcher.sendFinalReply).not.toHaveBeenCalledWith({
+      text: "模型执行中断，请重试。",
+      isError: true,
+    });
+    expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+  });
+
   it("creates pairing request and drops unauthorized DMs in pairing mode", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockReadAllowFromStore.mockResolvedValue([]);

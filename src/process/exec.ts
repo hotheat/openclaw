@@ -173,17 +173,18 @@ export async function runCommandWithTimeout(
         if (settled) {
           return;
         }
-        noOutputTimedOut = true;
-        if (typeof child.kill === "function") {
-          child.kill("SIGKILL");
+        if (typeof child.kill === "function" && child.kill("SIGKILL")) {
+          noOutputTimedOut = true;
         }
       }, Math.floor(noOutputTimeoutMs));
     };
 
     const timer = setTimeout(() => {
-      timedOut = true;
-      if (typeof child.kill === "function") {
-        child.kill("SIGKILL");
+      if (settled) {
+        return;
+      }
+      if (typeof child.kill === "function" && child.kill("SIGKILL")) {
+        timedOut = true;
       }
     }, timeoutMs);
     armNoOutputTimer();
@@ -217,9 +218,12 @@ export async function runCommandWithTimeout(
       settled = true;
       clearTimeout(timer);
       clearNoOutputTimer();
-      const termination = noOutputTimedOut
+      const exitedNormally = code === 0 && signal == null;
+      const didNoOutputTimeOut = noOutputTimedOut && !exitedNormally;
+      const didTimeOut = timedOut && !exitedNormally;
+      const termination = didNoOutputTimeOut
         ? "no-output-timeout"
-        : timedOut
+        : didTimeOut
           ? "timeout"
           : signal != null
             ? "signal"
@@ -232,7 +236,7 @@ export async function runCommandWithTimeout(
         signal,
         killed: child.killed,
         termination,
-        noOutputTimedOut,
+        noOutputTimedOut: didNoOutputTimeOut,
       });
     });
   });

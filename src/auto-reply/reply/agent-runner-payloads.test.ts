@@ -71,4 +71,25 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(1);
     expect(replyPayloads[0]?.mediaUrl).toBe("file:///tmp/photo.jpg");
   });
+
+  it("reports when a NO_REPLY payload is filtered as silent", () => {
+    const { replyPayloads, didSkipSilentPayload } = buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "NO_REPLY" }],
+    });
+
+    expect(replyPayloads).toHaveLength(0);
+    expect(didSkipSilentPayload).toBe(true);
+  });
+
+  it("does not report silent skip when NO_REPLY has media to deliver", () => {
+    const { replyPayloads, didSkipSilentPayload } = buildReplyPayloads({
+      ...baseParams,
+      payloads: [{ text: "NO_REPLY", mediaUrl: "file:///tmp/photo.jpg" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expect(replyPayloads[0]?.mediaUrl).toBe("file:///tmp/photo.jpg");
+    expect(didSkipSilentPayload).toBe(false);
+  });
 });

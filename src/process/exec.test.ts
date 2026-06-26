@@ -34,7 +34,7 @@ describe("runCommandWithTimeout", () => {
 
   it("kills command when no output timeout elapses", async () => {
     const result = await runCommandWithTimeout(
-      [process.execPath, "-e", "setTimeout(() => {}, 40)"],
+      [process.execPath, "-e", "setInterval(() => {}, 1000)"],
       {
         timeoutMs: 500,
         noOutputTimeoutMs: 20,
@@ -78,7 +78,7 @@ describe("runCommandWithTimeout", () => {
 
   it("reports global timeout termination when overall timeout elapses", async () => {
     const result = await runCommandWithTimeout(
-      [process.execPath, "-e", "setTimeout(() => {}, 40)"],
+      [process.execPath, "-e", "setInterval(() => {}, 1000)"],
       {
         timeoutMs: 15,
       },
@@ -87,5 +87,22 @@ describe("runCommandWithTimeout", () => {
     expect(result.termination).toBe("timeout");
     expect(result.noOutputTimedOut).toBe(false);
     expect(result.code).not.toBe(0);
+  });
+
+  it("reports exit when the child finishes before a delayed timeout callback", async () => {
+    const resultPromise = runCommandWithTimeout([process.execPath, "-e", ""], {
+      timeoutMs: 10,
+    });
+    const deadline = Date.now() + 200;
+    while (Date.now() < deadline) {
+      // Keep the parent event loop busy so the child can exit before the timeout callback runs.
+    }
+
+    const result = await resultPromise;
+
+    expect(result.code).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.termination).toBe("exit");
+    expect(result.noOutputTimedOut).toBe(false);
   });
 });

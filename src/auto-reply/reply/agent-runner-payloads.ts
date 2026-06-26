@@ -34,8 +34,13 @@ export function buildReplyPayloads(params: {
   >[0]["messagingToolSentTargets"];
   originatingTo?: string;
   accountId?: string;
-}): { replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean } {
+}): {
+  replyPayloads: ReplyPayload[];
+  didLogHeartbeatStrip: boolean;
+  didSkipSilentPayload: boolean;
+} {
   let didLogHeartbeatStrip = params.didLogHeartbeatStrip;
+  let didSkipSilentPayload = false;
   const sanitizedPayloads = params.isHeartbeat
     ? params.payloads
     : params.payloads.flatMap((payload) => {
@@ -66,15 +71,17 @@ export function buildReplyPayloads(params: {
     replyToChannel: params.replyToChannel,
     currentMessageId: params.currentMessageId,
   })
-    .map(
-      (payload) =>
-        normalizeReplyPayloadDirectives({
-          payload,
-          currentMessageId: params.currentMessageId,
-          silentToken: SILENT_REPLY_TOKEN,
-          parseMode: "always",
-        }).payload,
-    )
+    .map((payload) => {
+      const normalized = normalizeReplyPayloadDirectives({
+        payload,
+        currentMessageId: params.currentMessageId,
+        silentToken: SILENT_REPLY_TOKEN,
+        parseMode: "always",
+      });
+      didSkipSilentPayload =
+        didSkipSilentPayload || (normalized.isSilent && !isRenderablePayload(normalized.payload));
+      return normalized.payload;
+    })
     .filter(isRenderablePayload);
 
   // Drop final payloads only when block streaming succeeded end-to-end.
@@ -126,5 +133,6 @@ export function buildReplyPayloads(params: {
   return {
     replyPayloads,
     didLogHeartbeatStrip,
+    didSkipSilentPayload,
   };
 }

@@ -789,7 +789,11 @@ describe("runReplyAgent claude-cli routing", () => {
 describe("runReplyAgent messaging tool suppression", () => {
   function createRun(
     messageProvider = "slack",
-    opts: { storePath?: string; sessionKey?: string } = {},
+    opts: {
+      storePath?: string;
+      sessionKey?: string;
+      runOptions?: Parameters<typeof runReplyAgent>[0]["opts"];
+    } = {},
   ) {
     const typing = createMockTypingController();
     const sessionKey = opts.sessionKey ?? "main";
@@ -836,6 +840,7 @@ describe("runReplyAgent messaging tool suppression", () => {
       shouldFollowup: false,
       isActive: false,
       isStreaming: false,
+      opts: opts.runOptions,
       typing,
       sessionCtx,
       sessionKey,
@@ -861,6 +866,75 @@ describe("runReplyAgent messaging tool suppression", () => {
     const result = await createRun("slack");
 
     expect(result).toBeUndefined();
+  });
+
+  it("does not mark run handled when a messaging tool sent without origin-comparable target metadata", async () => {
+    // sessions_send forwards to another session and is classified as a messaging
+    // send, but never emits target metadata. An empty target set must not be
+    // assumed to have reached origin, so the origin-side fallback is preserved.
+    const onHandledWithoutReply = vi.fn();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      didSendViaMessagingTool: true,
+      messagingToolSentMediaUrls: ["file:///report.md"],
+      meta: {},
+    });
+
+    const result = await createRun("slack", {
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).not.toHaveBeenCalled();
+  });
+
+  it("marks run handled when a messaging tool sent to the same origin target", async () => {
+    const onHandledWithoutReply = vi.fn();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      didSendViaMessagingTool: true,
+      messagingToolSentTargets: [{ tool: "slack", provider: "slack", to: "channel:C1" }],
+      meta: {},
+    });
+
+    const result = await createRun("slack", {
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("messaging_tool");
+  });
+
+  it("does not mark run handled when a messaging tool only sent to another target", async () => {
+    const onHandledWithoutReply = vi.fn();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [],
+      didSendViaMessagingTool: true,
+      messagingToolSentTargets: [{ tool: "slack", provider: "slack", to: "channel:OTHER" }],
+      meta: {},
+    });
+
+    const result = await createRun("slack", {
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).not.toHaveBeenCalled();
+  });
+
+  it("marks run handled when NO_REPLY is intentionally suppressed", async () => {
+    const onHandledWithoutReply = vi.fn();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "NO_REPLY" }],
+      meta: {},
+    });
+
+    const result = await createRun("slack", {
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("silent");
   });
 
   it("delivers replies when tool provider does not match", async () => {
