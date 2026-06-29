@@ -193,6 +193,8 @@ function createMockRuntime(): PluginRuntime {
       session: {
         resolveStorePath:
           mockResolveStorePath as unknown as PluginRuntime["channel"]["session"]["resolveStorePath"],
+        resolveTranscriptCandidates:
+          vi.fn() as unknown as PluginRuntime["channel"]["session"]["resolveTranscriptCandidates"],
         readSessionUpdatedAt:
           mockReadSessionUpdatedAt as unknown as PluginRuntime["channel"]["session"]["readSessionUpdatedAt"],
         recordInboundSession:

@@ -66,6 +66,7 @@ import { probeDiscord } from "../../discord/probe.js";
 import { resolveDiscordChannelAllowlist } from "../../discord/resolve-channels.js";
 import { resolveDiscordUserAllowlist } from "../../discord/resolve-users.js";
 import { sendMessageDiscord, sendPollDiscord } from "../../discord/send.js";
+import { resolveSessionTranscriptCandidates } from "../../gateway/session-utils.fs.js";
 import { shouldLogVerbose } from "../../globals.js";
 import { monitorIMessageProvider } from "../../imessage/monitor.js";
 import { probeIMessage } from "../../imessage/probe.js";
@@ -328,6 +329,7 @@ function createRuntimeChannel(): PluginRuntime["channel"] {
     },
     session: {
       resolveStorePath,
+      resolveTranscriptCandidates: resolveSessionTranscriptCandidates,
       readSessionUpdatedAt,
       recordSessionMetaFromInbound,
       recordInboundSession,

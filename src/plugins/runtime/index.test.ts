@@ -39,4 +39,15 @@ describe("plugin runtime command execution", () => {
     ).rejects.toThrow("boom");
     expect(runCommandWithTimeoutMock).toHaveBeenCalledWith(["echo", "hello"], { timeoutMs: 1000 });
   });
+
+  it("exposes session transcript candidate resolution", () => {
+    const runtime = createPluginRuntime();
+    const candidates = runtime.channel.session.resolveTranscriptCandidates(
+      "session-1",
+      "/tmp/openclaw-test/sessions.json",
+      "custom.jsonl",
+      "researcher",
+    );
+    expect(candidates.some((candidate) => candidate.endsWith("custom.jsonl"))).toBe(true);
+  });
 });
