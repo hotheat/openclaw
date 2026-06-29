@@ -34,4 +34,8 @@ export type SubagentRunRecord = {
   endedReason?: SubagentLifecycleEndedReason;
   /** Set after the subagent_ended hook has been emitted successfully once. */
   endedHookEmittedAt?: number;
+  /** Ignore stale transcript terminal errors at or before this timestamp. */
+  staleTerminalContinuationAfterMs?: number;
+  /** Original wait deadline for stale-terminal re-arm recovery. */
+  staleTerminalWaitDeadlineMs?: number;
 };

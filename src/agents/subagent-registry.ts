@@ -54,6 +54,7 @@ const SUBAGENT_COMPLETION_END_STABILIZE_MS = 2_000;
 const SUBAGENT_COMPLETION_ERROR_STABILIZE_MS = 15_000;
 const SUBAGENT_WAIT_POLL_INTERVAL_MS = FAST_TEST_MODE ? 25 : 15_000;
 const SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS = FAST_TEST_MODE ? 25 : 20_000;
+const SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS = 250;
 /**
  * Maximum number of announce delivery attempts before giving up.
  * Prevents infinite retry loops when `runSubagentAnnounceFlow` repeatedly
@@ -70,6 +71,16 @@ type TranscriptTerminalOutcome = {
   outcome: SubagentRunOutcome;
   endedAt?: number;
 };
+
+type ScheduledSubagentRunCompletionResolution =
+  | {
+      action: "complete";
+      params: ScheduleSubagentRunCompletionParams;
+    }
+  | {
+      action: "rearm";
+      continuationAfterMs: number;
+    };
 
 async function sleepMs(ms: number): Promise<void> {
   const delayMs = Math.max(0, Math.floor(ms));
@@ -107,6 +118,7 @@ function persistSubagentRuns() {
 const resumedRuns = new Set<string>();
 const endedHookInFlightRunIds = new Set<string>();
 const pendingCompletionTimers = new Map<string, NodeJS.Timeout>();
+const activeSubagentWaiters = new Map<string, { token: symbol; deadlineMs: number }>();
 
 function suppressAnnounceForSteerRestart(entry?: SubagentRunRecord) {
   return entry?.suppressAnnounceReason === "steer-restart";
@@ -139,6 +151,66 @@ function clearPendingSubagentCompletion(runId: string) {
   return true;
 }
 
+function clearActiveSubagentWaiter(runId: string, token?: symbol) {
+  const active = activeSubagentWaiters.get(runId);
+  if (!active) {
+    return false;
+  }
+  if (token && active.token !== token) {
+    return false;
+  }
+  activeSubagentWaiters.delete(runId);
+  return true;
+}
+
+function isActiveSubagentWaiter(runId: string, token: symbol) {
+  return activeSubagentWaiters.get(runId)?.token === token;
+}
+
+function resolveSubagentWaitDeadlineMs(params: {
+  runId: string;
+  entry: SubagentRunRecord;
+  waitTimeoutMs: number;
+}) {
+  const activeDeadlineMs = asFiniteTimestampMs(activeSubagentWaiters.get(params.runId)?.deadlineMs);
+  if (typeof activeDeadlineMs === "number") {
+    return activeDeadlineMs;
+  }
+  const staleDeadlineMs = asFiniteTimestampMs(params.entry.staleTerminalWaitDeadlineMs);
+  if (typeof staleDeadlineMs === "number") {
+    return staleDeadlineMs;
+  }
+  const startedAt = asFiniteTimestampMs(params.entry.startedAt ?? params.entry.createdAt);
+  if (typeof startedAt === "number") {
+    return startedAt + Math.max(1, Math.floor(params.waitTimeoutMs));
+  }
+  return Date.now() + Math.max(1, Math.floor(params.waitTimeoutMs));
+}
+
+function startSubagentCompletionWait(params: {
+  runId: string;
+  waitTimeoutMs: number;
+  resetDeadline?: boolean;
+  deadlineMs?: number;
+  staleContinuationAfterMs?: number;
+}) {
+  const token = Symbol(params.runId);
+  const existing = activeSubagentWaiters.get(params.runId);
+  const deadlineMs =
+    typeof params.deadlineMs === "number" && Number.isFinite(params.deadlineMs)
+      ? params.deadlineMs
+      : !params.resetDeadline && existing
+        ? existing.deadlineMs
+        : Date.now() + Math.max(1, Math.floor(params.waitTimeoutMs));
+  activeSubagentWaiters.set(params.runId, { token, deadlineMs });
+  void waitForSubagentCompletion({
+    runId: params.runId,
+    token,
+    deadlineMs,
+    staleContinuationAfterMs: params.staleContinuationAfterMs,
+  });
+}
+
 function resolveCompletionStabilizeDelayMs(
   outcome: SubagentRunOutcome,
   opts?: { confirmOkTranscriptError?: boolean },
@@ -160,6 +232,10 @@ function shouldStabilizeCompletion(entry: SubagentRunRecord, outcome: SubagentRu
   // same run resumes on provider/model failover. Stabilize terminal snapshots
   // so a later `start` can cancel stale cleanup before the handoff is lost.
   return outcome.status === "ok" || outcome.status === "error" || outcome.status === "timeout";
+}
+
+function asFiniteTimestampMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 async function emitSubagentEndedHookForRun(params: {
@@ -196,6 +272,7 @@ async function completeSubagentRun(params: {
   if (!entry) {
     return;
   }
+  clearActiveSubagentWaiter(params.runId);
 
   let mutated = false;
   const endedAt = typeof params.endedAt === "number" ? params.endedAt : Date.now();
@@ -209,6 +286,14 @@ async function completeSubagentRun(params: {
   }
   if (entry.endedReason !== params.reason) {
     entry.endedReason = params.reason;
+    mutated = true;
+  }
+  if (entry.staleTerminalContinuationAfterMs !== undefined) {
+    entry.staleTerminalContinuationAfterMs = undefined;
+    mutated = true;
+  }
+  if (entry.staleTerminalWaitDeadlineMs !== undefined) {
+    entry.staleTerminalWaitDeadlineMs = undefined;
     mutated = true;
   }
 
@@ -255,31 +340,88 @@ type ScheduleSubagentRunCompletionParams = {
   accountId?: string;
   triggerCleanup: boolean;
   confirmOkTranscriptError?: boolean;
+  rearmOnStaleTerminal?: boolean;
+  rearmWaitDeadlineMs?: number;
+  rearmContinuationAfterMs?: number;
 };
 
 async function resolveScheduledSubagentRunCompletion(
   params: ScheduleSubagentRunCompletionParams,
-): Promise<ScheduleSubagentRunCompletionParams> {
-  if (!params.confirmOkTranscriptError) {
-    return params;
-  }
+): Promise<ScheduledSubagentRunCompletionResolution> {
   const entry = subagentRuns.get(params.runId);
   if (!entry) {
-    return params;
+    return { action: "complete", params };
+  }
+  if (params.rearmOnStaleTerminal === true && isTerminalErrorOutcome(params.outcome)) {
+    const continuationAfterMs = await findTranscriptContinuationAfterTerminal({
+      childSessionKey: entry.childSessionKey,
+      endedAt: params.endedAt,
+      afterMs: params.rearmContinuationAfterMs,
+    });
+    if (continuationAfterMs !== undefined && hasStaleTerminalRearmBudget(params)) {
+      return { action: "rearm", continuationAfterMs };
+    }
+  }
+  if (!params.confirmOkTranscriptError) {
+    return { action: "complete", params };
   }
   const transcriptTerminal = await detectOkTranscriptErrorCandidate({
     childSessionKey: entry.childSessionKey,
     nowMs: Date.now(),
   });
   if (!transcriptTerminal) {
-    return params;
+    return { action: "complete", params };
   }
   return {
-    ...params,
-    endedAt: transcriptTerminal.endedAt ?? params.endedAt ?? Date.now(),
-    outcome: transcriptTerminal.outcome,
-    reason: SUBAGENT_ENDED_REASON_ERROR,
+    action: "complete",
+    params: {
+      ...params,
+      endedAt: transcriptTerminal.endedAt ?? params.endedAt ?? Date.now(),
+      outcome: transcriptTerminal.outcome,
+      reason: SUBAGENT_ENDED_REASON_ERROR,
+    },
   };
+}
+
+function isTerminalErrorOutcome(outcome: SubagentRunOutcome) {
+  return outcome.status === "error" || outcome.status === "timeout";
+}
+
+function hasStaleTerminalRearmBudget(params: ScheduleSubagentRunCompletionParams) {
+  const deadlineMs = asFiniteTimestampMs(params.rearmWaitDeadlineMs);
+  return typeof deadlineMs !== "number" || Date.now() < deadlineMs;
+}
+
+function rearmSubagentCompletionTracking(
+  params: ScheduleSubagentRunCompletionParams,
+  continuationAfterMs: number,
+) {
+  const entry = subagentRuns.get(params.runId);
+  if (!entry || typeof entry.endedAt === "number") {
+    return;
+  }
+  if (!hasStaleTerminalRearmBudget(params)) {
+    void completeSubagentRun(params);
+    return;
+  }
+  const deadlineMs = asFiniteTimestampMs(params.rearmWaitDeadlineMs);
+  entry.staleTerminalContinuationAfterMs = continuationAfterMs;
+  if (typeof deadlineMs === "number") {
+    entry.staleTerminalWaitDeadlineMs = deadlineMs;
+  } else {
+    entry.staleTerminalWaitDeadlineMs = undefined;
+  }
+  persistSubagentRuns();
+  const waitTimeoutMs =
+    typeof deadlineMs === "number"
+      ? Math.max(1, deadlineMs - Date.now())
+      : resolveSubagentWaitTimeoutMs(loadConfig(), entry.runTimeoutSeconds);
+  startSubagentCompletionWait({
+    runId: params.runId,
+    waitTimeoutMs,
+    deadlineMs,
+    staleContinuationAfterMs: continuationAfterMs,
+  });
 }
 
 function scheduleSubagentRunCompletion(params: ScheduleSubagentRunCompletionParams) {
@@ -299,8 +441,12 @@ function scheduleSubagentRunCompletion(params: ScheduleSubagentRunCompletionPara
   const timer = setTimeout(() => {
     pendingCompletionTimers.delete(params.runId);
     void (async () => {
-      const resolvedParams = await resolveScheduledSubagentRunCompletion(params);
-      await completeSubagentRun(resolvedParams);
+      const resolution = await resolveScheduledSubagentRunCompletion(params);
+      if (resolution.action === "rearm") {
+        rearmSubagentCompletionTracking(params, resolution.continuationAfterMs);
+        return;
+      }
+      await completeSubagentRun(resolution.params);
     })();
   }, delayMs);
   timer.unref?.();
@@ -391,8 +537,18 @@ function resumeSubagentRun(runId: string) {
 
   // Wait for completion again after restart.
   const cfg = loadConfig();
-  const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, entry.runTimeoutSeconds);
-  void waitForSubagentCompletion(runId, waitTimeoutMs);
+  const staleContinuationAfterMs = asFiniteTimestampMs(entry.staleTerminalContinuationAfterMs);
+  const staleDeadlineMs = asFiniteTimestampMs(entry.staleTerminalWaitDeadlineMs);
+  const waitTimeoutMs =
+    typeof staleDeadlineMs === "number"
+      ? Math.max(1, staleDeadlineMs - now)
+      : resolveSubagentWaitTimeoutMs(cfg, entry.runTimeoutSeconds);
+  startSubagentCompletionWait({
+    runId,
+    waitTimeoutMs,
+    deadlineMs: staleDeadlineMs,
+    staleContinuationAfterMs,
+  });
   resumedRuns.add(runId);
 }
 
@@ -449,11 +605,77 @@ function parseTranscriptTimestampMs(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function hasContinuationActivity(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const role = (message as { role?: unknown }).role;
+  if (role === "tool" || role === "toolResult") {
+    return true;
+  }
+  if (role !== "assistant") {
+    return false;
+  }
+  const stopReason = (message as { stopReason?: unknown }).stopReason;
+  const rawError = (message as { errorMessage?: unknown }).errorMessage;
+  if (stopReason === "error" || (typeof rawError === "string" && rawError.trim())) {
+    return false;
+  }
+  const assistantText = extractAssistantText(message)?.trim();
+  if (assistantText) {
+    return true;
+  }
+  const content = (message as { content?: unknown }).content;
+  return Array.isArray(content) ? content.length > 0 : Boolean(content);
+}
+
+async function findTranscriptContinuationAfterTerminal(params: {
+  childSessionKey: string;
+  endedAt?: number;
+  afterMs?: number;
+}): Promise<number | undefined> {
+  if (typeof params.endedAt !== "number" || !Number.isFinite(params.endedAt)) {
+    return undefined;
+  }
+  const history = await callGateway<{ messages?: Array<unknown> }>({
+    method: "chat.history",
+    params: {
+      sessionKey: params.childSessionKey,
+      limit: 50,
+    },
+    timeoutMs: 10_000,
+  }).catch(() => undefined);
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  const continuationCutoffMs = Math.max(
+    params.endedAt + SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS,
+    typeof params.afterMs === "number" && Number.isFinite(params.afterMs)
+      ? params.afterMs
+      : Number.NEGATIVE_INFINITY,
+  );
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const timestampMs = parseTranscriptTimestampMs(
+      (message as { timestamp?: unknown } | undefined)?.timestamp,
+    );
+    if (typeof timestampMs !== "number") {
+      continue;
+    }
+    if (timestampMs <= continuationCutoffMs) {
+      break;
+    }
+    if (hasContinuationActivity(message)) {
+      return timestampMs;
+    }
+  }
+  return undefined;
+}
+
 async function detectTerminalOutcomeFromTranscript(params: {
   childSessionKey: string;
   nowMs?: number;
   stabilizeMs?: number;
   requireLatestMessageAssistantError?: boolean;
+  afterMs?: number;
 }): Promise<TranscriptTerminalOutcome | undefined> {
   const history = await callGateway<{ messages?: Array<unknown> }>({
     method: "chat.history",
@@ -504,6 +726,7 @@ async function detectTerminalOutcomeFromTranscript(params: {
   }
 
   const minScanIndex = params.requireLatestMessageAssistantError ? messages.length - 1 : 0;
+  const afterMs = asFiniteTimestampMs(params.afterMs);
   for (let i = messages.length - 1; i >= minScanIndex; i -= 1) {
     const message = messages[i];
     if (!message || typeof message !== "object") {
@@ -530,6 +753,13 @@ async function detectTerminalOutcomeFromTranscript(params: {
     const messageTimestampMs = parseTranscriptTimestampMs(
       (message as { timestamp?: unknown }).timestamp,
     );
+    if (
+      typeof afterMs === "number" &&
+      typeof messageTimestampMs === "number" &&
+      messageTimestampMs <= afterMs
+    ) {
+      continue;
+    }
     if (
       stabilizeMs > 0 &&
       typeof messageTimestampMs === "number" &&
@@ -653,6 +883,12 @@ function ensureListener() {
         });
         confirmOkTranscriptError = transcriptTerminal !== undefined;
       }
+      const waitTimeoutMs = resolveSubagentWaitTimeoutMs(loadConfig(), entry.runTimeoutSeconds);
+      const rearmWaitDeadlineMs = resolveSubagentWaitDeadlineMs({
+        runId: evt.runId,
+        entry,
+        waitTimeoutMs,
+      });
       scheduleSubagentRunCompletion({
         runId: evt.runId,
         endedAt: resolvedEndedAt,
@@ -665,6 +901,8 @@ function ensureListener() {
         accountId: entry.requesterOrigin?.accountId,
         triggerCleanup: true,
         confirmOkTranscriptError,
+        rearmOnStaleTerminal: true,
+        rearmWaitDeadlineMs,
       });
     })();
   });
@@ -881,6 +1119,8 @@ export function replaceSubagentRunAfterSteer(params: {
     return false;
   }
 
+  clearPendingSubagentCompletion(previousRunId);
+  clearActiveSubagentWaiter(previousRunId);
   if (previousRunId !== nextRunId) {
     subagentRuns.delete(previousRunId);
     resumedRuns.delete(previousRunId);
@@ -908,6 +1148,8 @@ export function replaceSubagentRunAfterSteer(params: {
     suppressAnnounceReason: undefined,
     announceRetryCount: undefined,
     lastAnnounceRetryAt: undefined,
+    staleTerminalContinuationAfterMs: undefined,
+    staleTerminalWaitDeadlineMs: undefined,
     spawnMode,
     archiveAtMs,
     runTimeoutSeconds,
@@ -919,7 +1161,11 @@ export function replaceSubagentRunAfterSteer(params: {
   if (archiveAtMs) {
     startSweeper();
   }
-  void waitForSubagentCompletion(nextRunId, waitTimeoutMs);
+  startSubagentCompletionWait({
+    runId: nextRunId,
+    waitTimeoutMs,
+    resetDeadline: true,
+  });
   return true;
 }
 
@@ -978,18 +1224,30 @@ export function registerSubagentRun(params: {
   }
   // Wait for subagent completion via gateway RPC (cross-process).
   // The in-process lifecycle listener is a fallback for embedded runs.
-  void waitForSubagentCompletion(params.runId, waitTimeoutMs);
+  startSubagentCompletionWait({
+    runId: params.runId,
+    waitTimeoutMs,
+    resetDeadline: true,
+  });
 }
 
-async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
+async function waitForSubagentCompletion(params: {
+  runId: string;
+  token: symbol;
+  deadlineMs: number;
+  staleContinuationAfterMs?: number;
+}) {
+  const { runId, token, deadlineMs, staleContinuationAfterMs } = params;
   try {
-    const overallTimeoutMs = Math.max(1, Math.floor(waitTimeoutMs));
     let effectiveNowMs = Date.now();
-    const deadlineMs = effectiveNowMs + overallTimeoutMs;
 
     while (true) {
+      if (!isActiveSubagentWaiter(runId, token)) {
+        return;
+      }
       const entry = subagentRuns.get(runId);
       if (!entry) {
+        clearActiveSubagentWaiter(runId, token);
         return;
       }
 
@@ -1010,12 +1268,19 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         },
         timeoutMs: waitWindowMs + 10_000,
       });
+      if (!isActiveSubagentWaiter(runId, token)) {
+        return;
+      }
       if (wait?.status !== "ok" && wait?.status !== "error" && wait?.status !== "timeout") {
+        clearActiveSubagentWaiter(runId, token);
         return;
       }
       const waitElapsedMs = Math.max(0, Date.now() - rpcStartedAtMs);
       if (wait.status === "timeout" && waitElapsedMs < waitWindowMs) {
         await sleepMs(waitWindowMs - waitElapsedMs);
+        if (!isActiveSubagentWaiter(runId, token)) {
+          return;
+        }
       }
       effectiveNowMs = Date.now();
 
@@ -1032,7 +1297,11 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         const transcriptTerminal = await detectTerminalOutcomeFromTranscript({
           childSessionKey: entry.childSessionKey,
           nowMs: effectiveNowMs,
+          afterMs: staleContinuationAfterMs,
         });
+        if (!isActiveSubagentWaiter(runId, token)) {
+          return;
+        }
         if (transcriptTerminal) {
           scheduleSubagentRunCompletion({
             runId,
@@ -1045,11 +1314,17 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
             sendFarewell: true,
             accountId: entry.requesterOrigin?.accountId,
             triggerCleanup: true,
+            rearmOnStaleTerminal: isTerminalErrorOutcome(transcriptTerminal.outcome),
+            rearmWaitDeadlineMs: deadlineMs,
+            rearmContinuationAfterMs: staleContinuationAfterMs,
           });
           return;
         }
         effectiveNowMs = Math.max(effectiveNowMs, Date.now());
         if (effectiveNowMs < deadlineMs) {
+          if (!isActiveSubagentWaiter(runId, token)) {
+            return;
+          }
           continue;
         }
       }
@@ -1060,6 +1335,9 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
           childSessionKey: entry.childSessionKey,
           nowMs: effectiveNowMs,
         })) !== undefined;
+      if (!isActiveSubagentWaiter(runId, token)) {
+        return;
+      }
 
       const waitError = typeof wait.error === "string" ? wait.error : undefined;
       const outcome: SubagentRunOutcome =
@@ -1078,11 +1356,14 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         accountId: entry.requesterOrigin?.accountId,
         triggerCleanup: true,
         confirmOkTranscriptError,
+        rearmOnStaleTerminal: wait.status === "error" || wait.status === "timeout",
+        rearmWaitDeadlineMs: deadlineMs,
+        rearmContinuationAfterMs: staleContinuationAfterMs,
       });
       return;
     }
   } catch {
-    // ignore
+    clearActiveSubagentWaiter(runId, token);
   }
 }
 
@@ -1090,6 +1371,7 @@ export function resetSubagentRegistryForTests(opts?: { persist?: boolean }) {
   subagentRuns.clear();
   resumedRuns.clear();
   endedHookInFlightRunIds.clear();
+  activeSubagentWaiters.clear();
   for (const timer of pendingCompletionTimers.values()) {
     clearTimeout(timer);
   }
@@ -1113,6 +1395,7 @@ export function addSubagentRunForTests(entry: SubagentRunRecord) {
 
 export function releaseSubagentRun(runId: string) {
   const didDelete = subagentRuns.delete(runId);
+  clearActiveSubagentWaiter(runId);
   if (didDelete) {
     persistSubagentRuns();
   }
@@ -1192,6 +1475,7 @@ export function markSubagentRunTerminated(params: {
     entry.cleanupHandled = true;
     entry.cleanupCompletedAt = now;
     entry.suppressAnnounceReason = "killed";
+    clearActiveSubagentWaiter(runId);
     if (!entriesByChildSessionKey.has(entry.childSessionKey)) {
       entriesByChildSessionKey.set(entry.childSessionKey, entry);
     }

@@ -3,6 +3,8 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const noop = () => {};
 const callGatewayMock = vi.fn(async (_request: unknown) => ({}));
 const announceSpy = vi.fn(async (_params: unknown) => true);
+const loadSubagentRegistryFromDiskMock = vi.fn(() => new Map());
+const saveSubagentRegistryToDiskMock = vi.fn(() => {});
 
 vi.mock("../gateway/call.js", () => ({
   callGateway: callGatewayMock,
@@ -31,8 +33,8 @@ vi.mock("../plugins/hook-runner-global.js", () => ({
 }));
 
 vi.mock("./subagent-registry.store.js", () => ({
-  loadSubagentRegistryFromDisk: vi.fn(() => new Map()),
-  saveSubagentRegistryToDisk: vi.fn(() => {}),
+  loadSubagentRegistryFromDisk: loadSubagentRegistryFromDiskMock,
+  saveSubagentRegistryToDisk: saveSubagentRegistryToDiskMock,
 }));
 
 describe("subagent registry transcript fallback", () => {
@@ -46,6 +48,8 @@ describe("subagent registry transcript fallback", () => {
     vi.useRealTimers();
     callGatewayMock.mockReset().mockImplementation(async (_request: unknown) => ({}));
     announceSpy.mockReset().mockResolvedValue(true);
+    loadSubagentRegistryFromDiskMock.mockReset().mockReturnValue(new Map());
+    saveSubagentRegistryToDiskMock.mockReset();
     mod.resetSubagentRegistryForTests({ persist: false });
   });
 
@@ -331,6 +335,477 @@ describe("subagent registry transcript fallback", () => {
     };
     expect(announce.childRunId).toBe("run-stream-read-lagged-history");
     expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("re-arms completion tracking when a stale error snapshot has later tool result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let waitCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          return {
+            status: "error",
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+            endedAt: Date.parse("2026-06-25T10:27:59.000Z"),
+            error: "stream_read_error",
+          };
+        }
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:28:11.000Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stale-error-rearmed",
+      childSessionKey: "agent:researcher:subagent:stale-error-rearmed",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 30,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(announceSpy).toHaveBeenCalledTimes(0);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stale-error-rearmed");
+    expect(run?.outcome).toEqual({ status: "ok" });
+    expect(waitCalls).toBeGreaterThanOrEqual(2);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stale-error-rearmed");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("re-arms completion tracking when timeout polling finds a stale transcript error", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let waitCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string; params?: { timeoutMs?: unknown } };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          const timeoutMs =
+            typeof typed.params?.timeoutMs === "number" && Number.isFinite(typed.params.timeoutMs)
+              ? typed.params.timeoutMs
+              : 0;
+          if (timeoutMs > 0) {
+            vi.setSystemTime(Date.now() + timeoutMs);
+          }
+          return {
+            status: "timeout",
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          };
+        }
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:28:41.000Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-timeout-transcript-stale-error-rearmed",
+      childSessionKey: "agent:researcher:subagent:timeout-transcript-stale-error-rearmed",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 60,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(announceSpy).toHaveBeenCalledTimes(0);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-timeout-transcript-stale-error-rearmed");
+    expect(run?.outcome).toEqual({ status: "ok" });
+    expect(waitCalls).toBeGreaterThanOrEqual(2);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-timeout-transcript-stale-error-rearmed");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("ignores stale assistant errors during timeout polling after re-arm", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let waitCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string; params?: { timeoutMs?: unknown } };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          return {
+            status: "error",
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+            endedAt: Date.parse("2026-06-25T10:27:59.000Z"),
+            error: "stream_read_error",
+          };
+        }
+        if (waitCalls === 2) {
+          const timeoutMs =
+            typeof typed.params?.timeoutMs === "number" && Number.isFinite(typed.params.timeoutMs)
+              ? typed.params.timeoutMs
+              : 0;
+          if (timeoutMs > 0) {
+            vi.setSystemTime(Date.now() + timeoutMs);
+          }
+          return {
+            status: "timeout",
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          };
+        }
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:28:41.000Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stale-error-timeout-then-ok",
+      childSessionKey: "agent:researcher:subagent:stale-error-timeout-then-ok",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 60,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stale-error-timeout-then-ok");
+    expect(run?.outcome).toEqual({ status: "ok" });
+    expect(waitCalls).toBeGreaterThanOrEqual(3);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stale-error-timeout-then-ok");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("restores stale terminal re-arm state after registry restart", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:25.000Z"));
+    let waitCalls = 0;
+
+    loadSubagentRegistryFromDiskMock.mockReturnValue(
+      new Map([
+        [
+          "run-restored-stale-error",
+          {
+            runId: "run-restored-stale-error",
+            childSessionKey: "agent:researcher:subagent:restored-stale-error",
+            requesterSessionKey: "agent:main:main",
+            requesterDisplayKey: "main",
+            task: "research task",
+            cleanup: "keep",
+            expectsCompletionMessage: true,
+            runTimeoutSeconds: 60,
+            createdAt: Date.parse("2026-06-25T10:28:10.000Z"),
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+            staleTerminalContinuationAfterMs: Date.parse("2026-06-25T10:27:59.500Z"),
+            staleTerminalWaitDeadlineMs: Date.parse("2026-06-25T10:29:10.000Z"),
+          },
+        ],
+      ]),
+    );
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string; params?: { timeoutMs?: unknown } };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          const timeoutMs =
+            typeof typed.params?.timeoutMs === "number" && Number.isFinite(typed.params.timeoutMs)
+              ? typed.params.timeoutMs
+              : 0;
+          if (timeoutMs > 0) {
+            vi.setSystemTime(Date.now() + timeoutMs);
+          }
+          return {
+            status: "timeout",
+            startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          };
+        }
+        return {
+          status: "ok",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:28:41.000Z"),
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.initSubagentRegistry();
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-restored-stale-error");
+    expect(run?.outcome).toEqual({ status: "ok" });
+    expect(waitCalls).toBeGreaterThanOrEqual(2);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-restored-stale-error");
+    expect(announce.outcome).toEqual({ status: "ok" });
+  });
+
+  it("does not keep re-arming the same stale error without new transcript progress", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let waitCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        return {
+          status: "error",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:27:59.000Z"),
+          error: "stream_read_error",
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stale-error-no-new-progress",
+      childSessionKey: "agent:researcher:subagent:stale-error-no-new-progress",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 60,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(announceSpy).toHaveBeenCalledTimes(0);
+    expect(waitCalls).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stale-error-no-new-progress");
+    expect(run?.outcome).toEqual({ status: "error", error: "stream_read_error" });
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stale-error-no-new-progress");
+    expect(announce.outcome).toEqual({ status: "error", error: "stream_read_error" });
+  });
+
+  it("completes a stale error when the original wait deadline is exhausted", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-25T10:28:10.000Z"));
+    let waitCalls = 0;
+
+    callGatewayMock.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        return {
+          status: "error",
+          startedAt: Date.parse("2026-06-25T10:21:53.580Z"),
+          endedAt: Date.parse("2026-06-25T10:27:59.000Z"),
+          error: "stream_read_error",
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: "stream_read_error",
+              timestamp: "2026-06-25T10:27:59.000Z",
+            },
+            {
+              role: "toolResult",
+              content: [{ type: "text", text: "final artifact path: artifacts/report.md" }],
+              timestamp: "2026-06-25T10:27:59.500Z",
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    mod.registerSubagentRun({
+      runId: "run-stale-error-deadline-exhausted",
+      childSessionKey: "agent:researcher:subagent:stale-error-deadline-exhausted",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "research task",
+      cleanup: "keep",
+      expectsCompletionMessage: true,
+      runTimeoutSeconds: 1,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    const run = mod
+      .listSubagentRunsForRequester("agent:main:main")
+      .find((entry) => entry.runId === "run-stale-error-deadline-exhausted");
+    expect(run?.outcome).toEqual({ status: "error", error: "stream_read_error" });
+    expect(waitCalls).toBe(1);
+
+    expect(announceSpy).toHaveBeenCalledTimes(1);
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      outcome?: { status?: string; error?: string };
+    };
+    expect(announce.childRunId).toBe("run-stale-error-deadline-exhausted");
+    expect(announce.outcome).toEqual({ status: "error", error: "stream_read_error" });
   });
 
   it("treats assistant error text as terminal when error metadata is also present", async () => {
