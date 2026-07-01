@@ -246,6 +246,14 @@ function listStagedPaths(state) {
   return stagedPaths;
 }
 
+function listStateExportPathsForMatching(state) {
+  return Array.isArray(state?.exportPaths) && state.exportPaths.length > 0
+    ? state.exportPaths
+    : state?.exportPath
+      ? [state.exportPath]
+      : [];
+}
+
 function buildPendingState(handoff, event, ctx, api, peerOverride) {
   const exportEntries = extractHandoffExports(handoff, api);
   if (!hasExportFileHandoff(handoff, api) || exportEntries.length === 0) return null;
@@ -581,16 +589,22 @@ function listRawMediaPaths(params) {
   return values;
 }
 
+function listDeliveryAttachmentPaths(details) {
+  const values = [];
+  if (typeof details?.mediaUrl === "string") values.push(details.mediaUrl);
+  if (Array.isArray(details?.mediaUrls)) {
+    for (const item of details.mediaUrls) {
+      if (typeof item === "string") values.push(item);
+    }
+  }
+  return values;
+}
+
 function pathReferencesExport(value, state, options = {}) {
   const raw = asTrimmedString(value).replace(/\\/g, "/");
   if (!raw) return false;
   const allowBasenameFallback = options.allowBasenameFallback === true;
-  const exportPaths =
-    Array.isArray(state?.exportPaths) && state.exportPaths.length > 0
-      ? state.exportPaths
-      : state?.exportPath
-        ? [state.exportPath]
-        : [];
+  const exportPaths = listStateExportPathsForMatching(state);
   for (const exportPath of exportPaths) {
     const normalizedExportPath = asTrimmedString(exportPath).replace(/\\/g, "/");
     if (!normalizedExportPath) continue;
@@ -598,7 +612,7 @@ function pathReferencesExport(value, state, options = {}) {
     if (allowBasenameFallback) {
       const exportBase = path.basename(normalizedExportPath);
       if (exportBase && path.basename(raw) === exportBase) return true;
-      if (exportBase && raw.endsWith(exportBase)) return true;
+      if (exportBase && path.basename(raw).endsWith(`-${exportBase}`)) return true;
     }
   }
 
@@ -608,22 +622,56 @@ function pathReferencesExport(value, state, options = {}) {
   });
 }
 
+function pathReferencesSpecificExport(value, exportPath, stagedPaths, options = {}) {
+  const raw = asTrimmedString(value).replace(/\\/g, "/");
+  const normalizedExportPath = asTrimmedString(exportPath).replace(/\\/g, "/");
+  if (!raw || !normalizedExportPath) return false;
+  const allowBasenameFallback = options.allowBasenameFallback === true;
+  if (raw === normalizedExportPath || raw.endsWith(`/${normalizedExportPath}`)) return true;
+  if (allowBasenameFallback) {
+    const exportBase = path.basename(normalizedExportPath);
+    if (exportBase && path.basename(raw) === exportBase) return true;
+    if (exportBase && path.basename(raw).endsWith(`-${exportBase}`)) return true;
+  }
+  return stagedPaths.some((stagedPath) => {
+    if (raw === stagedPath) return true;
+    return allowBasenameFallback && path.basename(raw) === path.basename(stagedPath);
+  });
+}
+
+function pathsReferenceAllExports(values, state, options = {}) {
+  const exportPaths = listStateExportPathsForMatching(state);
+  if (exportPaths.length <= 1) {
+    return values.some((value) => pathReferencesExport(value, state, options));
+  }
+
+  const normalizedValues = values
+    .map((value) => asTrimmedString(value).replace(/\\/g, "/"))
+    .filter(Boolean);
+  if (normalizedValues.length < exportPaths.length) return false;
+
+  const stagedPaths = listStagedPaths(state);
+  const remainingValues = [...normalizedValues];
+  for (const exportPath of exportPaths) {
+    const matchIndex = remainingValues.findIndex((value) =>
+      pathReferencesSpecificExport(value, exportPath, stagedPaths, options),
+    );
+    if (matchIndex === -1) return false;
+    remainingValues.splice(matchIndex, 1);
+  }
+  return true;
+}
+
 function paramsReferencePendingExport(params, state, options = {}) {
-  return listRawMediaPaths(params).some((value) => pathReferencesExport(value, state, options));
+  return pathsReferenceAllExports(listRawMediaPaths(params), state, options);
 }
 
 function deliveryDetailsReferencePendingExport(details, state, options = {}) {
   if (!details || typeof details !== "object") return false;
-  if (pathReferencesExport(details.mediaUrl, state, options)) return true;
-  if (
-    Array.isArray(details.mediaUrls) &&
-    details.mediaUrls.some((item) => pathReferencesExport(item, state, options))
-  ) {
-    return true;
-  }
+  if (pathsReferenceAllExports(listDeliveryAttachmentPaths(details), state, options)) return true;
   if (
     Array.isArray(details.mirroredFileNames) &&
-    details.mirroredFileNames.some((item) => pathReferencesExport(item, state, options))
+    pathsReferenceAllExports(details.mirroredFileNames, state, options)
   ) {
     return true;
   }
@@ -696,6 +744,12 @@ function hasDeliveryAttachment(details) {
   return false;
 }
 
+function hasCompleteDeliveryAttachment(details, state, options = {}) {
+  const exportPaths = listStateExportPathsForMatching(state);
+  if (exportPaths.length <= 1) return hasDeliveryAttachment(details);
+  return deliveryDetailsReferencePendingExport(details, state, options);
+}
+
 async function updateStateFromMessageToolResult(event, ctx, api) {
   const details = extractDeliveryDetails(event);
   const peer = resolvePeerFromMessageToolEvent(event, ctx, details);
@@ -721,7 +775,23 @@ async function updateStateFromMessageToolResult(event, ctx, api) {
   }
 
   const messageId = extractMessageId(details);
-  if (!messageId || !hasDeliveryAttachment(details)) return;
+  if (
+    !messageId ||
+    !hasCompleteDeliveryAttachment(details, state, {
+      allowBasenameFallback: sameCall || paramsMatch,
+    })
+  ) {
+    const stagedPaths = Array.isArray(details?.mediaUrls)
+      ? details.mediaUrls.filter((item) => asTrimmedString(item))
+      : listStagedPaths(state);
+    if (stagedPaths.length > 0) {
+      await writePendingStatePatch(state, api, {
+        stagedPath: asTrimmedString(details?.mediaUrl) || state.stagedPath || "",
+        stagedPaths,
+      });
+    }
+    return;
+  }
   await writePendingStatePatch(state, api, {
     deliveryState: "sent",
     messageId,

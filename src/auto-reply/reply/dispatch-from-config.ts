@@ -145,7 +145,7 @@ export async function dispatchReplyFromConfig(params: {
 
   if (shouldSkipDuplicateInbound(ctx)) {
     recordProcessed("skipped", { reason: "duplicate" });
-    return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+    return { queuedFinal: false, counts: dispatcher.getQueuedCounts(), handled: true };
   }
 
   const inboundAudio = isInboundAudioContext(ctx);
@@ -353,6 +353,8 @@ export async function dispatchReplyFromConfig(params: {
       return { ...payload, text: undefined };
     };
 
+    const upstreamOnHandledWithoutReply = params.replyOptions?.onHandledWithoutReply;
+
     const replyResult = await (params.replyResolver ?? getReplyFromConfig)(
       ctx,
       {
@@ -405,8 +407,9 @@ export async function dispatchReplyFromConfig(params: {
           };
           return run();
         },
-        onHandledWithoutReply: (_reason) => {
+        onHandledWithoutReply: async (reason) => {
           handledWithoutReply = true;
+          await upstreamOnHandledWithoutReply?.(reason);
         },
       },
       cfg,

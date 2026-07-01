@@ -219,7 +219,7 @@ describe("dispatchReplyFromConfig", () => {
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions & {
-        onHandledWithoutReply?: (reason: "messaging_tool" | "silent") => void;
+        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
       },
       _cfg?: OpenClawConfig,
     ) => {
@@ -254,7 +254,7 @@ describe("dispatchReplyFromConfig", () => {
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions & {
-        onHandledWithoutReply?: (reason: "messaging_tool" | "silent") => void;
+        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
       },
       _cfg?: OpenClawConfig,
     ) => {
@@ -274,6 +274,44 @@ describe("dispatchReplyFromConfig", () => {
       counts: { final: 0, block: 0, tool: 0 },
       handled: true,
     });
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  });
+
+  it("marks dispatch handled when reply resolver queues the turn for later", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const onHandledWithoutReply = vi.fn();
+    const ctx = buildTestCtx({
+      Provider: "feishu",
+      ChatType: "group",
+    });
+
+    const replyResolver = async (
+      _ctx: MsgContext,
+      opts?: GetReplyOptions & {
+        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
+      },
+      _cfg?: OpenClawConfig,
+    ) => {
+      await opts?.onHandledWithoutReply?.("queued");
+      return undefined;
+    };
+
+    const result = await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyOptions: { onHandledWithoutReply },
+      replyResolver,
+    });
+
+    expect(result).toMatchObject({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("queued");
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
 
@@ -596,13 +634,25 @@ describe("dispatchReplyFromConfig", () => {
     });
     const replyResolver = vi.fn(async () => ({ text: "hi" }) as ReplyPayload);
 
-    await dispatchTwiceWithFreshDispatchers({
+    await dispatchReplyFromConfig({
       ctx,
       cfg,
+      dispatcher: createDispatcher(),
+      replyResolver,
+    });
+    const duplicateResult = await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher: createDispatcher(),
       replyResolver,
     });
 
     expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(duplicateResult).toMatchObject({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+      handled: true,
+    });
     expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "whatsapp",

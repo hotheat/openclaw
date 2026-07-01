@@ -256,6 +256,7 @@ export async function runPreparedReply(
     !baseBodyTrimmedRaw &&
     hasControlCommand(commandSource, cfg)
   ) {
+    await opts?.onHandledWithoutReply?.("silent");
     typing.cleanup();
     return undefined;
   }

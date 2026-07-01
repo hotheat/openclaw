@@ -1193,3 +1193,214 @@ test("tracks multi-export mediaUrls delivery state", async () => {
     assert.deepEqual(state.stagedPaths, [stagedCsv, stagedSummary]);
   });
 });
+
+test("marks multi-export sent from original params plus staged result mediaUrls", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const h = createHarness({ enabledChannels: ["feishu"] });
+    const csvPath = "artifacts/exports/feishu/demo/results.csv";
+    const summaryPath = "artifacts/exports/feishu/demo/summary.md";
+    const statePath = path.join(workspaceDir, ".artifacts/state/pending-researcher-export.json");
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          peer: "direct ou_test123",
+          exportPath: csvPath,
+          exportPaths: [csvPath, summaryPath],
+          title: "结果 CSV",
+          mime: "text/csv",
+          mode: "export-file",
+          deliveryState: "sending",
+          updatedAt: Date.now(),
+          lastTarget: "ou_test123",
+          lastToolCallId: "",
+          stagedPath: "",
+          stagedPaths: [],
+          messageId: "",
+          lastError: "",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const stagedCsv = path.join(
+      workspaceDir,
+      "ou_test123.outbox",
+      "1782285937519-abcd-results.csv",
+    );
+    const stagedSummary = path.join(
+      workspaceDir,
+      "ou_test123.outbox",
+      "1782285937519-efgh-summary.md",
+    );
+    await h.call(
+      "after_tool_call",
+      {
+        toolName: "message",
+        params: {
+          action: "send",
+          channel: "feishu",
+          target: "ou_test123",
+          mediaUrls: [csvPath, summaryPath],
+        },
+        result: {
+          details: {
+            channel: "feishu",
+            to: "ou_test123",
+            mediaUrl: stagedCsv,
+            mediaUrls: [stagedCsv, stagedSummary],
+            result: {
+              messageId: "om_multi_file_params",
+            },
+          },
+        },
+      },
+      { channelId: "feishu", agentId: "feishu-ou_test123", workspaceDir },
+    );
+
+    const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+    assert.equal(state.deliveryState, "sent");
+    assert.equal(state.messageId, "om_multi_file_params");
+    assert.deepEqual(state.stagedPaths, [stagedCsv, stagedSummary]);
+  });
+});
+
+test("keeps multi-export pending when message result only includes part of mediaUrls", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const h = createHarness({ enabledChannels: ["feishu"] });
+    const csvPath = "artifacts/exports/feishu/demo/results.csv";
+    const summaryPath = "artifacts/exports/feishu/demo/summary.md";
+    const statePath = path.join(workspaceDir, ".artifacts/state/pending-researcher-export.json");
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          peer: "direct ou_test123",
+          exportPath: csvPath,
+          exportPaths: [csvPath, summaryPath],
+          title: "结果 CSV",
+          mime: "text/csv",
+          mode: "export-file",
+          deliveryState: "sending",
+          updatedAt: Date.now(),
+          lastTarget: "ou_test123",
+          lastToolCallId: "call_send_files",
+          stagedPath: "",
+          stagedPaths: [],
+          messageId: "",
+          lastError: "",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const stagedCsv = path.join(workspaceDir, "ou_test123.outbox", "results.csv");
+    await h.call(
+      "after_tool_call",
+      {
+        toolName: "message",
+        toolCallId: "call_send_files",
+        params: {
+          action: "send",
+          channel: "feishu",
+          target: "ou_test123",
+          mediaUrls: [stagedCsv],
+        },
+        result: {
+          details: {
+            channel: "feishu",
+            to: "ou_test123",
+            mediaUrl: stagedCsv,
+            mediaUrls: [stagedCsv],
+            result: {
+              messageId: "om_partial_file",
+            },
+          },
+        },
+      },
+      { channelId: "feishu", agentId: "feishu-ou_test123", workspaceDir },
+    );
+
+    const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+    assert.equal(state.deliveryState, "sending");
+    assert.equal(state.messageId, "");
+    assert.equal(state.stagedPath, stagedCsv);
+    assert.deepEqual(state.stagedPaths, [stagedCsv]);
+  });
+});
+
+test("keeps multi-export pending when message result duplicates one mediaUrl", async () => {
+  await withTempDir(async (workspaceDir) => {
+    const h = createHarness({ enabledChannels: ["feishu"] });
+    const csvPath = "artifacts/exports/feishu/demo/results.csv";
+    const summaryPath = "artifacts/exports/feishu/demo/summary.md";
+    const statePath = path.join(workspaceDir, ".artifacts/state/pending-researcher-export.json");
+    await fs.mkdir(path.dirname(statePath), { recursive: true });
+    await fs.writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          peer: "direct ou_test123",
+          exportPath: csvPath,
+          exportPaths: [csvPath, summaryPath],
+          title: "结果 CSV",
+          mime: "text/csv",
+          mode: "export-file",
+          deliveryState: "sending",
+          updatedAt: Date.now(),
+          lastTarget: "ou_test123",
+          lastToolCallId: "call_send_files",
+          stagedPath: "",
+          stagedPaths: [],
+          messageId: "",
+          lastError: "",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const stagedCsv = path.join(
+      workspaceDir,
+      "ou_test123.outbox",
+      "1782285937519-abcd-results.csv",
+    );
+    await h.call(
+      "after_tool_call",
+      {
+        toolName: "message",
+        toolCallId: "call_send_files",
+        params: {
+          action: "send",
+          channel: "feishu",
+          target: "ou_test123",
+          mediaUrls: [stagedCsv, stagedCsv],
+        },
+        result: {
+          details: {
+            channel: "feishu",
+            to: "ou_test123",
+            mediaUrl: stagedCsv,
+            mediaUrls: [stagedCsv, stagedCsv],
+            result: {
+              messageId: "om_duplicate_file",
+            },
+          },
+        },
+      },
+      { channelId: "feishu", agentId: "feishu-ou_test123", workspaceDir },
+    );
+
+    const state = JSON.parse(await fs.readFile(statePath, "utf8"));
+    assert.equal(state.deliveryState, "sending");
+    assert.equal(state.messageId, "");
+    assert.deepEqual(state.stagedPaths, [stagedCsv, stagedCsv]);
+  });
+});

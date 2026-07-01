@@ -2,7 +2,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { MsgContext } from "../templating.js";
 import type { ElevatedLevel } from "../thinking.js";
-import type { ReplyPayload } from "../types.js";
+import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { buildStatusReply } from "./commands.js";
 import {
   applyInlineDirectivesFastLane,
@@ -69,6 +69,7 @@ export async function applyInlineDirectiveOverrides(params: {
   contextTokens: number;
   effectiveModelDirective?: string;
   typing: TypingController;
+  opts?: GetReplyOptions;
 }): Promise<ApplyDirectiveResult> {
   const {
     ctx,
@@ -145,6 +146,7 @@ export async function applyInlineDirectiveOverrides(params: {
     })
   ) {
     if (!command.isAuthorizedSender) {
+      await params.opts?.onHandledWithoutReply?.("silent");
       typing.cleanup();
       return { kind: "reply", reply: undefined };
     }

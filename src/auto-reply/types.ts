@@ -44,7 +44,7 @@ export type GetReplyOptions = {
   /** Called when a tool phase starts/updates, before summary payloads are emitted. */
   onToolStart?: (payload: { name?: string; phase?: string }) => Promise<void> | void;
   /** Called when a run completed user-visible work without dispatcher payloads. */
-  onHandledWithoutReply?: (reason: "messaging_tool" | "silent") => Promise<void> | void;
+  onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => Promise<void> | void;
   /** Called when the actual model is selected (including after fallback).
    * Use this to get model/provider/thinkLevel for responsePrefix template interpolation. */
   onModelSelected?: (ctx: ModelSelectedContext) => void;

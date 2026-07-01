@@ -1086,6 +1086,86 @@ describe("runReplyAgent messaging tool suppression", () => {
   });
 });
 
+describe("runReplyAgent busy queue handling", () => {
+  function createRun(params: {
+    runOptions?: Parameters<typeof runReplyAgent>[0]["opts"];
+    resolvedQueue?: QueueSettings;
+    shouldFollowup?: boolean;
+    isActive?: boolean;
+    isStreaming?: boolean;
+  }) {
+    const typing = createMockTypingController();
+    const sessionCtx = {
+      Provider: "feishu",
+      OriginatingTo: "chat:group",
+      AccountId: "primary",
+      MessageSid: "msg",
+    } as unknown as TemplateContext;
+    const resolvedQueue =
+      params.resolvedQueue ?? ({ mode: "collect", debounceMs: 0 } as unknown as QueueSettings);
+    const followupRun = {
+      prompt: "queued message",
+      summaryLine: "queued message",
+      enqueuedAt: Date.now(),
+      run: {
+        sessionId: "session",
+        sessionKey: "main",
+        messageProvider: "feishu",
+        sessionFile: "/tmp/session.jsonl",
+        workspaceDir: "/tmp",
+        config: {},
+        skillsSnapshot: {},
+        provider: "anthropic",
+        model: "claude",
+        thinkLevel: "low",
+        verboseLevel: "off",
+        elevatedLevel: "off",
+        bashElevated: {
+          enabled: false,
+          allowed: false,
+          defaultLevel: "off",
+        },
+        timeoutMs: 1_000,
+        blockReplyBreak: "message_end",
+      },
+    } as unknown as FollowupRun;
+
+    return runReplyAgent({
+      commandBody: "queued message",
+      followupRun,
+      queueKey: "main",
+      resolvedQueue,
+      shouldSteer: false,
+      shouldFollowup: params.shouldFollowup ?? true,
+      isActive: params.isActive ?? true,
+      isStreaming: params.isStreaming ?? false,
+      opts: params.runOptions,
+      typing,
+      sessionCtx,
+      sessionKey: "main",
+      defaultModel: "anthropic/claude-opus-4-5",
+      resolvedVerboseLevel: "off",
+      isNewSession: false,
+      blockStreamingEnabled: false,
+      resolvedBlockStreamingBreak: "message_end",
+      shouldInjectGroupIntro: false,
+      typingMode: "instant",
+    });
+  }
+
+  it("marks an active-session queued followup as handled without an immediate reply", async () => {
+    const onHandledWithoutReply = vi.fn();
+
+    const result = await createRun({
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("queued");
+    expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("runReplyAgent reminder commitment guard", () => {
   function createRun() {
     const typing = createMockTypingController();

@@ -447,6 +447,7 @@ export async function resolveReplyDirectives(params: {
     contextTokens,
     effectiveModelDirective,
     typing,
+    opts: params.opts,
   });
   if (applyResult.kind === "reply") {
     return { kind: "reply", reply: applyResult.reply };

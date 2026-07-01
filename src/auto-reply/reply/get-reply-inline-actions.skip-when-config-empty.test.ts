@@ -33,6 +33,7 @@ describe("handleInlineActions", () => {
       To: "whatsapp:+123",
       Body: "hi",
     });
+    const onHandledWithoutReply = vi.fn();
 
     const result = await handleInlineActions({
       ctx,
@@ -75,9 +76,11 @@ describe("handleInlineActions", () => {
       contextTokens: 0,
       abortedLastRun: false,
       sessionScope: "per-sender",
+      opts: { onHandledWithoutReply },
     });
 
     expect(result).toEqual({ kind: "reply", reply: undefined });
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("silent");
     expect(typing.cleanup).toHaveBeenCalled();
     expect(handleCommandsMock).not.toHaveBeenCalled();
   });

@@ -181,6 +181,7 @@ export async function handleInlineActions(params: {
       logVerbose(
         `Ignoring /${skillInvocation.command.name} from unauthorized sender: ${command.senderId || "<unknown>"}`,
       );
+      await opts?.onHandledWithoutReply?.("silent");
       typing.cleanup();
       return { kind: "reply", reply: undefined };
     }
@@ -359,6 +360,7 @@ export async function handleInlineActions(params: {
     command.to &&
     command.from !== command.to
   ) {
+    await opts?.onHandledWithoutReply?.("silent");
     typing.cleanup();
     return { kind: "reply", reply: undefined };
   }
@@ -370,6 +372,9 @@ export async function handleInlineActions(params: {
 
   const commandResult = await runCommands(command);
   if (!commandResult.shouldContinue) {
+    if (!commandResult.reply) {
+      await opts?.onHandledWithoutReply?.("silent");
+    }
     typing.cleanup();
     return { kind: "reply", reply: commandResult.reply };
   }
