@@ -14,6 +14,8 @@
 - Codex-local engineering notes: `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md`.
 - Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
 - Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
+- Deployment-local Feishu helper plugins belong in `~/.openclaw/extensions` and should be committed through the `openclaw-workspace` repo, not duplicated under this repo's `extensions/`. This includes `feishu-file-outbox-router`, `feishu-researcher-export-mirror`, `feishu-researcher-delegation-guard`, and `subagent-handoff-output-guard`.
+- Keep `openclaw-integration/extensions` for generic or productized plugins that should ship with the source tree. Keep current-deployment Feishu researcher policy/glue plugins in `~/.openclaw/extensions`; duplicating the same plugin id in both places causes duplicate plugin warnings and uncertain override behavior.
 - Feishu researcher export delivery:
   - For completion-mode subagents, `subagent_ended` is deliberately deferred until `runSubagentAnnounceFlow()` delivers the completion announcement to the parent session. Refs: `src/agents/subagent-registry.steer-restart.test.ts:168`, `src/agents/subagent-announce.ts:1054`.
   - Do not assume `subagent_ended` has run before the parent agent handles the completion System Message or calls `message`.
