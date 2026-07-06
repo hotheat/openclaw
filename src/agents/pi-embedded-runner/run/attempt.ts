@@ -6,6 +6,8 @@ import { streamSimple } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  estimateTokens,
+  type CompactionResult,
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
@@ -14,8 +16,10 @@ import { resolveChannelCapabilities } from "../../../config/channel-capabilities
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
+import type { HookRunner } from "../../../plugins/hooks.js";
 import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import type {
+  PluginHookLlmInputEvent,
   PluginHookAgentContext,
   PluginHookBeforeAgentStartResult,
   PluginHookBeforePromptBuildResult,
@@ -37,7 +41,6 @@ import {
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
 } from "../../channel-tools.js";
-import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import { resolveOpenClawDocsPath } from "../../docs-path.js";
 import { isTimeoutError } from "../../failover-error.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
@@ -94,6 +97,10 @@ import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
 import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
+import {
+  compactWithSafetyTimeout,
+  type CompactWithSafetyTimeoutOptions,
+} from "../compaction-safety-timeout.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
 import {
@@ -143,6 +150,64 @@ type PromptBuildHookRunner = {
   ) => Promise<PluginHookBeforeAgentStartResult | undefined>;
 };
 
+type PromptPreflightTokenEstimate = {
+  historyTokens: number;
+  promptTokens: number;
+  systemPromptTokens: number;
+  toolSchemaTokens: number;
+  imageTokens: number;
+  totalTokens: number;
+};
+
+const PREFLIGHT_CONTEXT_ESTIMATE_SAFETY_MARGIN = 1.2;
+const PREFLIGHT_IMAGE_TOKEN_ESTIMATE = 1_200;
+
+function estimateStringTokens(text: string | undefined): number {
+  if (!text) {
+    return 0;
+  }
+  return Math.ceil(text.length / 4);
+}
+
+export function estimatePromptPreflightTokens(params: {
+  messages: AgentMessage[];
+  prompt: string;
+  systemPrompt: string;
+  toolDefinitions: unknown[];
+  promptImageCount: number;
+}): PromptPreflightTokenEstimate {
+  let historyTokens = 0;
+  for (const message of params.messages) {
+    historyTokens += estimateTokens(message);
+  }
+
+  const promptTokens = estimateStringTokens(params.prompt);
+  const systemPromptTokens = estimateStringTokens(params.systemPrompt);
+  const toolSchemaTokens = estimateStringTokens(JSON.stringify(params.toolDefinitions));
+  const imageTokens = Math.max(0, params.promptImageCount) * PREFLIGHT_IMAGE_TOKEN_ESTIMATE;
+  const rawTotal =
+    historyTokens + promptTokens + systemPromptTokens + toolSchemaTokens + imageTokens;
+
+  return {
+    historyTokens,
+    promptTokens,
+    systemPromptTokens,
+    toolSchemaTokens,
+    imageTokens,
+    totalTokens: Math.ceil(rawTotal * PREFLIGHT_CONTEXT_ESTIMATE_SAFETY_MARGIN),
+  };
+}
+
+export function shouldCompactBeforePrompt(params: {
+  estimate: PromptPreflightTokenEstimate;
+  contextWindowTokens: number;
+  reserveTokens: number;
+}): boolean {
+  const contextWindowTokens = Math.max(1, Math.floor(params.contextWindowTokens));
+  const reserveTokens = Math.max(0, Math.floor(params.reserveTokens));
+  return params.estimate.totalTokens > Math.max(0, contextWindowTokens - reserveTokens);
+}
+
 export function injectHistoryImagesIntoMessages(
   messages: AgentMessage[],
   historyImagesByIndex: Map<number, ImageContent[]>,
@@ -189,6 +254,93 @@ export function injectHistoryImagesIntoMessages(
   }
 
   return didMutate;
+}
+
+export async function rebuildPromptHistoryImagesAfterPreflightCompaction(params: {
+  rebuiltMessages: AgentMessage[];
+  prompt: string;
+  workspaceDir: string;
+  model: { input?: string[] };
+  existingImages?: ImageContent[];
+  inboundMediaPaths?: string[];
+  maxBytes?: number;
+  maxDimensionPx?: number;
+  workspaceOnly?: boolean;
+  sandbox?: Parameters<typeof detectAndLoadPromptImages>[0]["sandbox"];
+}): Promise<AgentMessage[]> {
+  const rebuiltMessages = params.rebuiltMessages;
+  const imageResult = await detectAndLoadPromptImages({
+    prompt: params.prompt,
+    workspaceDir: params.workspaceDir,
+    model: params.model,
+    existingImages: params.existingImages,
+    historyMessages: rebuiltMessages,
+    inboundMediaPaths: params.inboundMediaPaths,
+    maxBytes: params.maxBytes,
+    maxDimensionPx: params.maxDimensionPx,
+    workspaceOnly: params.workspaceOnly,
+    sandbox: params.sandbox,
+  });
+  injectHistoryImagesIntoMessages(rebuiltMessages, imageResult.historyImagesByIndex);
+  return rebuiltMessages;
+}
+
+export async function runPreflightCompactionToSettled(params: {
+  compact: () => Promise<CompactionResult>;
+  abortCompaction: () => void;
+  timeoutMs?: CompactWithSafetyTimeoutOptions["timeoutMs"];
+  signal?: AbortSignal;
+}): Promise<CompactionResult> {
+  const compactPromise = params.compact();
+  try {
+    return await compactWithSafetyTimeout(() => compactPromise, {
+      timeoutMs: params.timeoutMs,
+      signal: params.signal,
+    });
+  } catch (err) {
+    try {
+      params.abortCompaction();
+    } catch (abortErr) {
+      log.warn(`preflight compaction abort failed: ${String(abortErr)}`);
+    }
+    await compactPromise.catch(() => undefined);
+    throw err;
+  }
+}
+
+export function buildLlmInputEvent(params: {
+  runId: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  systemPrompt?: string;
+  prompt: string;
+  historyMessages: AgentMessage[];
+  imagesCount: number;
+}): PluginHookLlmInputEvent {
+  return {
+    runId: params.runId,
+    sessionId: params.sessionId,
+    provider: params.provider,
+    model: params.model,
+    systemPrompt: params.systemPrompt,
+    prompt: params.prompt,
+    historyMessages: params.historyMessages,
+    imagesCount: params.imagesCount,
+  };
+}
+
+export function emitLlmInputHook(params: {
+  hookRunner?: HookRunner | null;
+  event: PluginHookLlmInputEvent;
+  ctx: PluginHookAgentContext;
+}): void {
+  if (!params.hookRunner?.hasHooks("llm_input")) {
+    return;
+  }
+  params.hookRunner.runLlmInput(params.event, params.ctx).catch((err) => {
+    log.warn(`llm_input hook failed: ${String(err)}`);
+  });
 }
 
 export async function resolvePromptBuildHookResult(params: {
@@ -735,6 +887,7 @@ export async function runEmbeddedAttempt(
         : [];
 
       const allCustomTools = [...customTools, ...clientToolDefs];
+      const modelFacingToolDefinitions = [...builtInTools, ...allCustomTools];
 
       ({ session } = await createAgentSession({
         cwd: resolvedWorkspace,
@@ -754,14 +907,13 @@ export async function runEmbeddedAttempt(
         throw new Error("Embedded agent session missing");
       }
       const activeSession = session;
+      const effectiveContextWindowTokens = Math.max(
+        1,
+        Math.floor(params.effectiveContextWindowTokens),
+      );
       removeToolResultContextGuard = installToolResultContextGuard({
         agent: activeSession.agent,
-        contextWindowTokens: Math.max(
-          1,
-          Math.floor(
-            params.model.contextWindow ?? params.model.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
-          ),
-        ),
+        contextWindowTokens: effectiveContextWindowTokens,
       });
       const cacheTrace = createCacheTrace({
         cfg: params.config,
@@ -997,6 +1149,11 @@ export async function runEmbeddedAttempt(
           );
         });
       };
+      const throwIfRunAborted = () => {
+        if (runAbortController.signal.aborted) {
+          throw makeAbortError(runAbortController.signal);
+        }
+      };
 
       const subscription = subscribeEmbeddedPiSession({
         session: activeSession,
@@ -1036,6 +1193,7 @@ export async function runEmbeddedAttempt(
         getLastToolError,
         getUsageTotals,
         getCompactionCount,
+        getSdkAutoCompactionCount,
       } = subscription;
 
       const queueHandle: EmbeddedPiQueueHandle = {
@@ -1211,7 +1369,7 @@ export async function runEmbeddedAttempt(
             imageResult.historyImagesByIndex,
           );
           if (didMutate) {
-            // Persist message mutations (e.g., injected history images) so we don't re-scan/reload.
+            // Persist the prompt-facing message state so follow-up prompt work reuses injected images.
             activeSession.agent.replaceMessages(activeSession.messages);
           }
 
@@ -1240,32 +1398,124 @@ export async function runEmbeddedAttempt(
             );
           }
 
-          if (hookRunner?.hasHooks("llm_input")) {
-            hookRunner
-              .runLlmInput(
-                {
-                  runId: params.runId,
-                  sessionId: params.sessionId,
-                  provider: params.provider,
-                  model: params.modelId,
-                  systemPrompt: systemPromptText,
-                  prompt: effectivePrompt,
-                  historyMessages: activeSession.messages,
-                  imagesCount: imageResult.images.length,
-                },
-                {
-                  agentId: hookAgentId,
-                  sessionKey: params.sessionKey,
-                  sessionId: params.sessionId,
-                  workspaceDir: params.workspaceDir,
-                  messageProvider: params.messageProvider ?? undefined,
-                },
-              )
-              .catch((err) => {
-                log.warn(`llm_input hook failed: ${String(err)}`);
-              });
+          const contextWindowTokens = effectiveContextWindowTokens;
+          const compactionSettings = settingsManager.getCompactionSettings();
+          const preflightEstimate = estimatePromptPreflightTokens({
+            messages: activeSession.messages,
+            prompt: effectivePrompt,
+            systemPrompt: systemPromptText,
+            toolDefinitions: modelFacingToolDefinitions,
+            promptImageCount: imageResult.images.length,
+          });
+          const shouldPreflightCompact =
+            compactionSettings.enabled &&
+            shouldCompactBeforePrompt({
+              estimate: preflightEstimate,
+              contextWindowTokens,
+              reserveTokens: compactionSettings.reserveTokens,
+            });
+
+          if (log.isEnabled("debug")) {
+            log.debug(
+              `[context-preflight] runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                `provider=${params.provider}/${params.modelId} estimatedTokens=${preflightEstimate.totalTokens} ` +
+                `historyTokens=${preflightEstimate.historyTokens} promptTokens=${preflightEstimate.promptTokens} ` +
+                `systemPromptTokens=${preflightEstimate.systemPromptTokens} toolSchemaTokens=${preflightEstimate.toolSchemaTokens} ` +
+                `imageTokens=${preflightEstimate.imageTokens} contextWindow=${contextWindowTokens} ` +
+                `reserveTokens=${compactionSettings.reserveTokens} willCompact=${shouldPreflightCompact}`,
+            );
           }
 
+          if (shouldPreflightCompact) {
+            log.warn(
+              `[context-preflight] estimated prompt context is near limit; compacting before prompt ` +
+                `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                `estimatedTokens=${preflightEstimate.totalTokens} contextWindow=${contextWindowTokens} ` +
+                `reserveTokens=${compactionSettings.reserveTokens}`,
+            );
+            subscription.emitCompactionStart?.();
+            try {
+              const compactResult = await runPreflightCompactionToSettled({
+                compact: () =>
+                  activeSession.compact("Preflight compaction before sending an oversized prompt."),
+                abortCompaction: () => activeSession.abortCompaction(),
+                signal: runAbortController.signal,
+              });
+              const rebuiltPromptHistory = await rebuildPromptHistoryImagesAfterPreflightCompaction(
+                {
+                  rebuiltMessages: sessionManager.buildSessionContext().messages,
+                  prompt: effectivePrompt,
+                  workspaceDir: effectiveWorkspace,
+                  model: params.model,
+                  existingImages: params.images,
+                  inboundMediaPaths: params.inboundMediaPaths,
+                  maxBytes: MAX_IMAGE_BYTES,
+                  maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
+                  workspaceOnly: resolveEffectiveToolFsWorkspaceOnly({
+                    cfg: params.config,
+                    agentId: sessionAgentId,
+                  }),
+                  sandbox:
+                    sandbox?.enabled && sandbox?.fsBridge
+                      ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+                      : undefined,
+                },
+              );
+              activeSession.agent.replaceMessages(rebuiltPromptHistory);
+              subscription.emitCompactionEnd?.({
+                willRetry: false,
+                countSdkAutoCompaction: false,
+              });
+              log.info(
+                `[context-preflight] pre-prompt compaction complete ` +
+                  `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                  `tokensBefore=${compactResult.tokensBefore}`,
+              );
+            } catch (compactErr) {
+              const errorMessage = describeUnknownError(compactErr);
+              const abortReason = runAbortController.signal.aborted
+                ? getAbortReason(runAbortController.signal)
+                : undefined;
+              const isCompactionTimeout = isTimeoutError(compactErr) || isTimeoutError(abortReason);
+              const shouldStopPrompt =
+                isRunnerAbortError(compactErr) ||
+                isCompactionTimeout ||
+                runAbortController.signal.aborted;
+              const stopError =
+                runAbortController.signal.aborted &&
+                !isRunnerAbortError(compactErr) &&
+                !isCompactionTimeout
+                  ? makeAbortError(runAbortController.signal)
+                  : compactErr;
+              if (isCompactionTimeout) {
+                timedOut = true;
+                timedOutDuringCompaction = true;
+              }
+              subscription.emitCompactionEnd?.({
+                willRetry: false,
+                errorMessage,
+                countCompaction: false,
+                countSdkAutoCompaction: false,
+              });
+              if (shouldStopPrompt) {
+                promptError = stopError;
+                promptErrorSource = "compaction";
+                log.warn(
+                  `[context-preflight] pre-prompt compaction stopped; aborting prompt ` +
+                    `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                    `error=${errorMessage}`,
+                );
+                throw stopError;
+              }
+              log.warn(
+                `[context-preflight] pre-prompt compaction failed; continuing prompt ` +
+                  `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                  `error=${errorMessage}`,
+              );
+            }
+          }
+
+          throwIfRunAborted();
           promptStartMessageCount = activeSession.messages.length;
           const startedGenerationTrace = await traceRun?.startGeneration?.({
             provider: params.provider,
@@ -1284,18 +1534,43 @@ export async function runEmbeddedAttempt(
           // This avoids potential issues with models that don't expect the images parameter
           await runWithAgentTraceRun(traceRun, async () => {
             await runWithAgentTraceParent(currentTraceParent, async () => {
+              throwIfRunAborted();
+              emitLlmInputHook({
+                hookRunner,
+                event: buildLlmInputEvent({
+                  runId: params.runId,
+                  sessionId: params.sessionId,
+                  provider: params.provider,
+                  model: params.modelId,
+                  systemPrompt: systemPromptText,
+                  prompt: effectivePrompt,
+                  historyMessages: activeSession.messages,
+                  imagesCount: imageResult.images.length,
+                }),
+                ctx: {
+                  agentId: hookAgentId,
+                  sessionKey: params.sessionKey,
+                  sessionId: params.sessionId,
+                  workspaceDir: params.workspaceDir,
+                  messageProvider: params.messageProvider ?? undefined,
+                },
+              });
               if (imageResult.images.length > 0) {
-                await abortable(
-                  activeSession.prompt(effectivePrompt, { images: imageResult.images }),
-                );
+                const promptPromise = activeSession.prompt(effectivePrompt, {
+                  images: imageResult.images,
+                });
+                await abortable(promptPromise);
                 return;
               }
-              await abortable(activeSession.prompt(effectivePrompt));
+              const promptPromise = activeSession.prompt(effectivePrompt);
+              await abortable(promptPromise);
             });
           });
         } catch (err) {
-          promptError = err;
-          promptErrorSource = "prompt";
+          if (!promptError) {
+            promptError = err;
+            promptErrorSource = "prompt";
+          }
         } finally {
           log.debug(
             `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
@@ -1523,6 +1798,7 @@ export async function runEmbeddedAttempt(
         ),
         attemptUsage: getUsageTotals(),
         compactionCount: getCompactionCount(),
+        sdkAutoCompactionCount: getSdkAutoCompactionCount(),
         // Client tool call detected (OpenResponses hosted tools)
         clientToolCall: clientToolCallDetected ?? undefined,
       };

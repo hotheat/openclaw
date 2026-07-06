@@ -157,6 +157,39 @@ describe("overflow compaction in run loop", () => {
     expect(result.meta.error).toBeUndefined();
   });
 
+  it("does not treat preflight compaction count as SDK auto-compaction for overflow recovery", async () => {
+    const overflowError = makeOverflowError();
+
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          promptError: overflowError,
+          compactionCount: 1,
+          sdkAutoCompactionCount: 0,
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ promptError: null }));
+
+    mockedCompactDirect.mockResolvedValueOnce(
+      makeCompactionSuccess({
+        summary: "Explicit overflow compaction",
+        firstKeptEntryId: "entry-9",
+        tokensBefore: 170000,
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(mockedCompactDirect).toHaveBeenCalledTimes(1);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "context overflow detected (attempt 1/3); attempting auto-compaction",
+      ),
+    );
+    expect(result.meta.error).toBeUndefined();
+  });
+
   it("retries compaction up to 3 times before giving up", async () => {
     const overflowError = makeOverflowError();
 

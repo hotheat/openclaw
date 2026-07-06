@@ -11,6 +11,10 @@ import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+import {
+  handleAutoCompactionEnd,
+  handleAutoCompactionStart,
+} from "./pi-embedded-subscribe.handlers.compaction.js";
 import { createEmbeddedPiSessionEventHandler } from "./pi-embedded-subscribe.handlers.js";
 import type {
   EmbeddedPiSubscribeContext,
@@ -87,6 +91,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     total: 0,
   };
   let compactionCount = 0;
+  let sdkAutoCompactionCount = 0;
 
   const assistantTexts = state.assistantTexts;
   const toolMetas = state.toolMetas;
@@ -292,6 +297,9 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   };
   const incrementCompactionCount = () => {
     compactionCount += 1;
+  };
+  const incrementSdkAutoCompactionCount = () => {
+    sdkAutoCompactionCount += 1;
   };
 
   const blockChunking = params.blockReplyChunking;
@@ -632,8 +640,10 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     maybeResolveCompactionWait,
     recordAssistantUsage,
     incrementCompactionCount,
+    incrementSdkAutoCompactionCount,
     getUsageTotals,
     getCompactionCount: () => compactionCount,
+    getSdkAutoCompactionCount: () => sdkAutoCompactionCount,
   };
 
   const sessionUnsubscribe = params.session.subscribe(createEmbeddedPiSessionEventHandler(ctx));
@@ -691,6 +701,21 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     getLastToolError: () => (state.lastToolError ? { ...state.lastToolError } : undefined),
     getUsageTotals,
     getCompactionCount: () => compactionCount,
+    getSdkAutoCompactionCount: () => sdkAutoCompactionCount,
+    emitCompactionStart: () => handleAutoCompactionStart(ctx),
+    emitCompactionEnd: (evt?: {
+      willRetry?: unknown;
+      errorMessage?: string;
+      countCompaction?: boolean;
+      countSdkAutoCompaction?: boolean;
+    }) =>
+      handleAutoCompactionEnd(ctx, {
+        type: "auto_compaction_end",
+        willRetry: evt?.willRetry,
+        errorMessage: evt?.errorMessage,
+        countCompaction: evt?.countCompaction,
+        countSdkAutoCompaction: evt?.countSdkAutoCompaction,
+      } as never),
     waitForCompactionRetry: () => {
       // Reject after unsubscribe so callers treat it as cancellation, not success
       if (state.unsubscribed) {

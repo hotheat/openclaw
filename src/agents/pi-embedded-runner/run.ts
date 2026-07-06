@@ -924,6 +924,7 @@ export async function runEmbeddedPiAgent(
               provider,
               modelId,
               model,
+              effectiveContextWindowTokens: ctxInfo.tokens,
               authStorage,
               modelRegistry,
               agentId: workspaceResolution.agentId,
@@ -975,6 +976,7 @@ export async function runEmbeddedPiAgent(
             lastRunPromptUsage = lastAssistantUsage ?? attemptUsage;
             const lastTurnTotal = lastAssistantUsage?.total ?? attemptUsage?.total;
             const attemptCompactionCount = Math.max(0, attempt.compactionCount ?? 0);
+            const attemptSdkAutoCompactionCount = Math.max(0, attempt.sdkAutoCompactionCount ?? 0);
             autoCompactionCount += attemptCompactionCount;
             const activeErrorContext = resolveActiveErrorContext({
               lastAssistant,
@@ -1032,7 +1034,7 @@ export async function runEmbeddedPiAgent(
                   `error=${errorText.slice(0, 200)}`,
               );
               const isCompactionFailure = isCompactionFailureError(errorText);
-              const hadAttemptLevelCompaction = attemptCompactionCount > 0;
+              const hadAttemptLevelCompaction = attemptSdkAutoCompactionCount > 0;
               // If this attempt already compacted (SDK auto-compaction), avoid immediately
               // running another explicit compaction for the same overflow trigger.
               if (

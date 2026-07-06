@@ -35,12 +35,24 @@ export function handleAutoCompactionStart(ctx: EmbeddedPiSubscribeContext) {
 
 export function handleAutoCompactionEnd(
   ctx: EmbeddedPiSubscribeContext,
-  evt: AgentEvent & { willRetry?: unknown },
+  evt: AgentEvent & {
+    willRetry?: unknown;
+    countCompaction?: unknown;
+    countSdkAutoCompaction?: unknown;
+    errorMessage?: unknown;
+  },
 ) {
   ctx.state.compactionInFlight = false;
   const willRetry = Boolean(evt.willRetry);
-  if (!willRetry) {
+  const hasErrorMessage = evt.errorMessage != null;
+  const didCompact = !willRetry && evt.countCompaction !== false && !hasErrorMessage;
+  const didSdkAutoCompact =
+    evt.countSdkAutoCompaction !== false && evt.countCompaction !== false && !hasErrorMessage;
+  if (didCompact) {
     ctx.incrementCompactionCount?.();
+  }
+  if (didSdkAutoCompact) {
+    ctx.incrementSdkAutoCompactionCount?.();
   }
   if (willRetry) {
     ctx.noteCompactionRetry();
@@ -60,7 +72,7 @@ export function handleAutoCompactionEnd(
   });
 
   // Run after_compaction plugin hook (fire-and-forget)
-  if (!willRetry) {
+  if (didCompact) {
     const hookRunnerEnd = getGlobalHookRunner();
     if (hookRunnerEnd?.hasHooks("after_compaction")) {
       void hookRunnerEnd

@@ -112,4 +112,30 @@ describe("compaction hook wiring", () => {
 
     expect(hookMocks.runner.runAfterCompaction).not.toHaveBeenCalled();
   });
+
+  it("does not call runAfterCompaction when compaction did not complete", () => {
+    hookMocks.runner.hasHooks.mockReturnValue(true);
+
+    const ctx = {
+      params: { runId: "r4", session: { messages: [] } },
+      state: { compactionInFlight: true },
+      log: { debug: vi.fn(), warn: vi.fn() },
+      maybeResolveCompactionWait: vi.fn(),
+      incrementCompactionCount: vi.fn(),
+      getCompactionCount: () => 0,
+    };
+
+    handleAutoCompactionEnd(
+      ctx as never,
+      {
+        type: "auto_compaction_end",
+        willRetry: false,
+        countCompaction: false,
+        errorMessage: "Nothing to compact",
+      } as never,
+    );
+
+    expect(ctx.incrementCompactionCount).not.toHaveBeenCalled();
+    expect(hookMocks.runner.runAfterCompaction).not.toHaveBeenCalled();
+  });
 });

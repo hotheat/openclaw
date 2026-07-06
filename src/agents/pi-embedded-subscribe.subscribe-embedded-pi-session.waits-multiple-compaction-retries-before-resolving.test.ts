@@ -37,12 +37,46 @@ describe("subscribeEmbeddedPiSession", () => {
 
     emit({ type: "auto_compaction_start" });
     expect(subscription.getCompactionCount()).toBe(0);
+    expect(subscription.getSdkAutoCompactionCount()).toBe(0);
 
     emit({ type: "auto_compaction_end", willRetry: true });
     expect(subscription.getCompactionCount()).toBe(0);
+    expect(subscription.getSdkAutoCompactionCount()).toBe(1);
 
     emit({ type: "auto_compaction_end", willRetry: false });
     expect(subscription.getCompactionCount()).toBe(1);
+    expect(subscription.getSdkAutoCompactionCount()).toBe(2);
+  });
+
+  it("separates manual preflight compactions from SDK auto-compactions", async () => {
+    const { subscription } = createSubscribedSessionHarness({
+      runId: "run-preflight-compaction-count",
+    });
+
+    subscription.emitCompactionStart();
+    subscription.emitCompactionEnd({
+      willRetry: false,
+      countSdkAutoCompaction: false,
+    });
+
+    expect(subscription.getCompactionCount()).toBe(1);
+    expect(subscription.getSdkAutoCompactionCount()).toBe(0);
+  });
+
+  it("does not count failed manual compaction events", async () => {
+    const { subscription } = createSubscribedSessionHarness({
+      runId: "run-manual-compaction-count",
+    });
+
+    subscription.emitCompactionStart();
+    subscription.emitCompactionEnd({
+      willRetry: false,
+      countCompaction: false,
+      errorMessage: "Nothing to compact",
+    });
+
+    expect(subscription.getCompactionCount()).toBe(0);
+    expect(subscription.getSdkAutoCompactionCount()).toBe(0);
   });
 
   it("emits compaction events on the agent event bus", async () => {

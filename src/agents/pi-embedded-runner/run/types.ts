@@ -17,6 +17,7 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   provider: string;
   modelId: string;
   model: Model<Api>;
+  effectiveContextWindowTokens: number;
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;
   thinkLevel: ThinkLevel;
@@ -52,6 +53,7 @@ export type EmbeddedRunAttemptResult = {
   cloudCodeAssistFormatError: boolean;
   attemptUsage?: NormalizedUsage;
   compactionCount?: number;
+  sdkAutoCompactionCount?: number;
   /** Client tool call detected (OpenResponses hosted tools). */
   clientToolCall?: { name: string; params: Record<string, unknown> };
 };

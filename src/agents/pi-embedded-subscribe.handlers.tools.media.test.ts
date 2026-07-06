@@ -54,8 +54,10 @@ function createMockContext(overrides?: {
     maybeResolveCompactionWait: vi.fn(),
     recordAssistantUsage: vi.fn(),
     incrementCompactionCount: vi.fn(),
+    incrementSdkAutoCompactionCount: vi.fn(),
     getUsageTotals: vi.fn(() => undefined),
     getCompactionCount: vi.fn(() => 0),
+    getSdkAutoCompactionCount: vi.fn(() => 0),
   } as unknown as EmbeddedPiSubscribeContext;
 }
 
