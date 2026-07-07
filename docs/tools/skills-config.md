@@ -40,8 +40,8 @@ All skills-related configuration lives under `skills` in `~/.openclaw/openclaw.j
 
 - `allowBundled`: optional allowlist for **bundled** skills only. When set, only
   bundled skills in the list are eligible (managed/workspace skills unaffected).
-  The current bundled catalog contains `coding-agent`; other skills should be
-  installed as managed/workspace skills or provided by plugins.
+  The current bundled catalog contains `coding-agent`; other
+  skills should be installed as managed/workspace skills or provided by plugins.
 - `load.extraDirs`: additional skill directories to scan (lowest precedence).
 - `load.watch`: watch skill folders and refresh the skills snapshot (default: true).
 - `load.watchDebounceMs`: debounce for skill watcher events in milliseconds (default: 250).

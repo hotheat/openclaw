@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
+import { revokeTaskFlowAccessForSessionKey } from "../../agents/taskflow/lifecycle.js";
 import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
 import { loadConfig } from "../../config/config.js";
@@ -139,11 +140,21 @@ function archiveSessionTranscriptsForSession(params: {
 }
 
 async function emitSessionUnboundLifecycleEvent(params: {
+  cfg: ReturnType<typeof loadConfig>;
   targetSessionKey: string;
   reason: "session-reset" | "session-delete";
   emitHooks?: boolean;
 }) {
   const targetKind = isSubagentSessionKey(params.targetSessionKey) ? "subagent" : "acp";
+  try {
+    await revokeTaskFlowAccessForSessionKey({
+      cfg: params.cfg,
+      targetSessionKey: params.targetSessionKey,
+      revokeReason: "session_deleted",
+    });
+  } catch {
+    // Best-effort cleanup only.
+  }
   unbindThreadBindingsBySessionKey({
     targetSessionKey: params.targetSessionKey,
     targetKind,
@@ -408,6 +419,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     });
     if (hadExistingEntry) {
       await emitSessionUnboundLifecycleEvent({
+        cfg,
         targetSessionKey: target.canonicalKey ?? key,
         reason: "session-reset",
       });
@@ -469,6 +481,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     if (deleted) {
       const emitLifecycleHooks = p.emitLifecycleHooks !== false;
       await emitSessionUnboundLifecycleEvent({
+        cfg,
         targetSessionKey: target.canonicalKey ?? key,
         reason: "session-delete",
         emitHooks: emitLifecycleHooks,

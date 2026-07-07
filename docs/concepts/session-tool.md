@@ -156,6 +156,9 @@ Parameters:
 - `thread?` (default false; request thread-bound routing for this spawn when supported by the channel/plugin)
 - `mode?` (`run|session`; defaults to `run`, but defaults to `session` when `thread=true`; `mode="session"` requires `thread=true`)
 - `cleanup?` (`delete|keep`, default `keep`)
+- `taskFlowId?` (optional shared TaskFlow id)
+- `taskFlowScope?` (`shared`; omit for normal local child TaskFlows)
+- `taskFlowAccess?` (`read|write_assigned|write_all`, default `write_assigned` when `taskFlowScope="shared"`)
 
 Allowlist:
 
@@ -178,6 +181,15 @@ Behavior:
 - Announce replies are normalized to `Status`/`Result`/`Notes`; `Status` comes from runtime outcome (not model text).
 - Sub-agent sessions are auto-archived after `agents.defaults.subagents.archiveAfterMinutes` (default: 60).
 - Announce replies include a stats line (runtime, tokens, sessionKey/sessionId, transcript path, and optional cost).
+
+TaskFlow boundary:
+
+- `sessions_spawn` does not pass the parent session’s active TaskFlow by default.
+- A child agent creates its own local TaskFlow when its own work needs progress tracking.
+- Shared TaskFlow access is granted only when `taskFlowScope="shared"` and `taskFlowId` are provided.
+- `write_assigned` lets the child update assigned items, child items under those assigned items, and evidence. `write_all` must be explicit.
+- The child task prompt receives a short TaskFlow Context block with the id and access level.
+- Non-authorized child sessions cannot read or write another session’s TaskFlow even if they know the id.
 
 ## Sandbox Session Visibility
 

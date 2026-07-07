@@ -6,6 +6,7 @@ import {
   SUBAGENT_SPAWN_MODES,
   spawnSubagentDirect,
 } from "../subagent-spawn.js";
+import { TASK_FLOW_ACCESSES } from "../taskflow/types.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 
@@ -68,6 +69,20 @@ const SessionsSpawnToolSchema = Type.Object({
     description:
       "auto may deliver the completion directly to the bound channel. direct requires direct completion delivery when a target is available. parent forces completion through the requester session so the parent can run post-completion checks or tool-mediated delivery.",
   }),
+  taskFlowId: Type.Optional(
+    Type.String({
+      description:
+        "Optional shared TaskFlow id. Only use together with taskFlowScope=shared when this child must read or update a shared TaskFlow.",
+    }),
+  ),
+  taskFlowAccess: optionalStringEnum(TASK_FLOW_ACCESSES, {
+    description:
+      "Shared TaskFlow access for this child. Defaults to write_assigned when taskFlowScope=shared.",
+  }),
+  taskFlowScope: optionalStringEnum(["shared"] as const, {
+    description:
+      "Set to shared only when explicitly passing a shared TaskFlow to the child. Omit for normal local child TaskFlows.",
+  }),
 });
 
 export function createSessionsSpawnTool(opts?: {
@@ -117,6 +132,14 @@ export function createSessionsSpawnTool(opts?: {
           ? Math.max(0, Math.floor(timeoutSecondsCandidate))
           : undefined;
       const thread = params.thread === true;
+      const taskFlowId = readStringParam(params, "taskFlowId");
+      const taskFlowScope = params.taskFlowScope === "shared" ? "shared" : undefined;
+      const taskFlowAccess =
+        params.taskFlowAccess === "read" ||
+        params.taskFlowAccess === "write_assigned" ||
+        params.taskFlowAccess === "write_all"
+          ? params.taskFlowAccess
+          : undefined;
 
       const result = await spawnSubagentDirect(
         {
@@ -131,6 +154,9 @@ export function createSessionsSpawnTool(opts?: {
           cleanup,
           expectsCompletionMessage: true,
           completionDelivery,
+          taskFlowId,
+          taskFlowScope,
+          taskFlowAccess,
           toolCallId,
         },
         {

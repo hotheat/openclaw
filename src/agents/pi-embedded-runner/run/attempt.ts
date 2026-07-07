@@ -83,6 +83,7 @@ import {
 } from "../../skills.js";
 import { buildSystemPromptParams } from "../../system-prompt-params.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
+import { buildTaskFlowPromptContext } from "../../taskflow/prompt.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../tool-fs-policy.js";
 import {
@@ -1296,12 +1297,22 @@ export async function runEmbeddedAttempt(
           hookRunner,
           legacyBeforeAgentStartResult: params.legacyBeforeAgentStartResult,
         });
+        const taskFlowContext = await buildTaskFlowPromptContext({
+          config: params.config,
+          agentDir,
+          agentId: hookAgentId,
+          sessionKey: params.sessionKey,
+        }).catch((taskFlowErr: unknown) => {
+          log.warn(`taskflow prompt context failed: ${String(taskFlowErr)}`);
+          return undefined;
+        });
         {
-          if (hookResult?.prependContext) {
-            effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
-            log.debug(
-              `hooks: prepended context to prompt (${hookResult.prependContext.length} chars)`,
-            );
+          const prependContext = [taskFlowContext, hookResult?.prependContext]
+            .filter((value): value is string => Boolean(value))
+            .join("\n\n");
+          if (prependContext) {
+            effectivePrompt = `${prependContext}\n\n${params.prompt}`;
+            log.debug(`hooks: prepended context to prompt (${prependContext.length} chars)`);
           }
           const legacySystemPrompt =
             typeof hookResult?.systemPrompt === "string" ? hookResult.systemPrompt.trim() : "";

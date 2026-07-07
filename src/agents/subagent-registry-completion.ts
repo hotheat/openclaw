@@ -9,6 +9,7 @@ import {
   type SubagentLifecycleEndedReason,
 } from "./subagent-lifecycle-events.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { revokeTaskFlowAccessForSubagentRun } from "./taskflow/lifecycle.js";
 import { recordSubagentLifecycleTraceEvent } from "./tracing/context.js";
 
 export function runOutcomesEqual(
@@ -51,6 +52,7 @@ export async function emitSubagentEndedHookOnce(params: {
   error?: string;
   inFlightRunIds: Set<string>;
   persist: () => void;
+  revokeTaskFlowAccess?: (entry: SubagentRunRecord) => Promise<void>;
 }) {
   const runId = params.entry.runId.trim();
   if (!runId) {
@@ -65,6 +67,14 @@ export async function emitSubagentEndedHookOnce(params: {
 
   params.inFlightRunIds.add(runId);
   try {
+    if (params.entry.taskFlowId && params.entry.spawnMode !== "session") {
+      try {
+        await (params.revokeTaskFlowAccess ?? revokeTaskFlowAccessForSubagentRun)(params.entry);
+      } catch {
+        // Lifecycle hooks and trace markers should still run if best-effort ACL cleanup fails.
+      }
+    }
+
     const hookRunner = getGlobalHookRunner();
     if (hookRunner?.hasHooks("subagent_ended")) {
       await hookRunner.runSubagentEnded(

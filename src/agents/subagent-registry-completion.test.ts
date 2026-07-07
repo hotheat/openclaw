@@ -110,6 +110,56 @@ describe("emitSubagentEndedHookOnce", () => {
     );
   });
 
+  it("revokes shared TaskFlow access when the run carries a taskFlowId", async () => {
+    lifecycleMocks.getGlobalHookRunner.mockReturnValue({
+      hasHooks: () => true,
+      runSubagentEnded: lifecycleMocks.runSubagentEnded,
+    });
+
+    const revokeTaskFlowAccess = vi.fn(async () => {});
+    const entry = { ...createRunEntry(), taskFlowId: "tf_1" };
+    const params = createEmitParams({ entry, revokeTaskFlowAccess });
+    const emitted = await emitSubagentEndedHookOnce(params);
+
+    expect(emitted).toBe(true);
+    expect(revokeTaskFlowAccess).toHaveBeenCalledTimes(1);
+    expect(revokeTaskFlowAccess).toHaveBeenCalledWith(entry);
+    expect(lifecycleMocks.runSubagentEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not revoke TaskFlow access when the run has no taskFlowId", async () => {
+    lifecycleMocks.getGlobalHookRunner.mockReturnValue({
+      hasHooks: () => true,
+      runSubagentEnded: lifecycleMocks.runSubagentEnded,
+    });
+
+    const revokeTaskFlowAccess = vi.fn(async () => {});
+    const params = createEmitParams({ revokeTaskFlowAccess });
+    const emitted = await emitSubagentEndedHookOnce(params);
+
+    expect(emitted).toBe(true);
+    expect(revokeTaskFlowAccess).not.toHaveBeenCalled();
+  });
+
+  it("still emits the ended hook when TaskFlow revocation fails", async () => {
+    lifecycleMocks.getGlobalHookRunner.mockReturnValue({
+      hasHooks: () => true,
+      runSubagentEnded: lifecycleMocks.runSubagentEnded,
+    });
+
+    const revokeTaskFlowAccess = vi.fn(async () => {
+      throw new Error("revoke failed");
+    });
+    const entry = { ...createRunEntry(), taskFlowId: "tf_1" };
+    const params = createEmitParams({ entry, revokeTaskFlowAccess });
+    const emitted = await emitSubagentEndedHookOnce(params);
+
+    expect(emitted).toBe(true);
+    expect(revokeTaskFlowAccess).toHaveBeenCalledTimes(1);
+    expect(lifecycleMocks.runSubagentEnded).toHaveBeenCalledTimes(1);
+    expect(typeof params.entry.endedHookEmittedAt).toBe("number");
+  });
+
   it("returns false when runId is blank", async () => {
     const params = createEmitParams({
       entry: { ...createRunEntry(), runId: "   " },

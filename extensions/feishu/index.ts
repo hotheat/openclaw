@@ -6,6 +6,7 @@ import { registerFeishuDocTools } from "./src/docx.js";
 import { registerFeishuDriveTools } from "./src/drive.js";
 import { registerFeishuPermTools } from "./src/perm.js";
 import { setFeishuRuntime } from "./src/runtime.js";
+import { TaskFlowFeishuPublisher } from "./src/taskflow-progress.js";
 import { registerFeishuWikiTools } from "./src/wiki.js";
 
 export { monitorFeishuProvider } from "./src/monitor.js";
@@ -51,6 +52,14 @@ const plugin = {
   configSchema: emptyPluginConfigSchema(),
   register(api: OpenClawPluginApi) {
     setFeishuRuntime(api.runtime);
+    const taskFlowPublisher = new TaskFlowFeishuPublisher({
+      cfg: api.config,
+      log: (message) => api.logger.info(message),
+      error: (message) => api.logger.error(message),
+    });
+    api.on("taskflow_updated", async (event) => {
+      await taskFlowPublisher.publish(event);
+    });
     api.registerChannel({ plugin: feishuPlugin });
     registerFeishuDocTools(api);
     registerFeishuWikiTools(api);

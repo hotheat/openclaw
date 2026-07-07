@@ -1184,6 +1184,7 @@ export function registerSubagentRun(params: {
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentRunRecord["completionDelivery"];
   spawnMode?: "run" | "session";
+  taskFlowId?: string;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -1212,6 +1213,7 @@ export function registerSubagentRun(params: {
     sessionLabel: params.sessionLabel,
     model: params.model,
     runTimeoutSeconds,
+    taskFlowId: params.taskFlowId,
     createdAt: now,
     startedAt: now,
     archiveAtMs,

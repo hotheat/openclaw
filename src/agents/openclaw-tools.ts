@@ -19,6 +19,8 @@ import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
 import { createSubagentsTool } from "./tools/subagents-tool.js";
+import { createTaskFlowReadTool } from "./tools/taskflow-read-tool.js";
+import { createTaskFlowUpdateTool } from "./tools/taskflow-update-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import {
   createGrokSearchTool,
@@ -186,6 +188,22 @@ export function createOpenClawTools(options?: {
       agentSessionKey: options?.agentSessionKey,
       config: options?.config,
     }),
+    ...(options?.agentSessionKey && options?.agentDir
+      ? [
+          createTaskFlowReadTool({
+            agentId: requesterAgentId,
+            agentSessionKey: options.agentSessionKey,
+            agentDir: options.agentDir,
+            config: options?.config,
+          }),
+          createTaskFlowUpdateTool({
+            agentId: requesterAgentId,
+            agentSessionKey: options.agentSessionKey,
+            agentDir: options.agentDir,
+            config: options?.config,
+          }),
+        ]
+      : []),
     ...(webSearchTool ? [webSearchTool] : []),
     ...(grokSearchTool ? [grokSearchTool] : []),
     ...(webFetchTool ? [webFetchTool] : []),

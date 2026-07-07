@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Command } from "commander";
 import type { AuthProfileCredential, OAuthCredential } from "../agents/auth-profiles/types.js";
+import type { TaskFlow } from "../agents/taskflow/types.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { AgentTraceSink } from "../agents/tracing/types.js";
 import type { ReplyPayload } from "../auto-reply/types.js";
@@ -337,6 +338,7 @@ export type PluginHookName =
   | "subagent_delivery_target"
   | "subagent_spawned"
   | "subagent_ended"
+  | "taskflow_updated"
   | "gateway_start"
   | "gateway_stop";
 
@@ -679,6 +681,23 @@ export type PluginHookSubagentEndedEvent = {
   error?: string;
 };
 
+// TaskFlow context
+export type PluginHookTaskFlowContext = {
+  agentId?: string;
+  sessionKey?: string;
+};
+
+// taskflow_updated hook
+export type PluginHookTaskFlowUpdatedEvent = {
+  taskFlowId: string;
+  revision: number;
+  operation: string;
+  changedItems: string[];
+  warnings?: string[];
+  snapshot: TaskFlow;
+  markdown: string;
+};
+
 // Gateway context
 export type PluginHookGatewayContext = {
   port?: number;
@@ -783,6 +802,10 @@ export type PluginHookHandlerMap = {
   subagent_ended: (
     event: PluginHookSubagentEndedEvent,
     ctx: PluginHookSubagentContext,
+  ) => Promise<void> | void;
+  taskflow_updated: (
+    event: PluginHookTaskFlowUpdatedEvent,
+    ctx: PluginHookTaskFlowContext,
   ) => Promise<void> | void;
   gateway_start: (
     event: PluginHookGatewayStartEvent,

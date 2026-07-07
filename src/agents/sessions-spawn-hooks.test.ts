@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-helpers/fast-core-tools.js";
 import {
@@ -7,7 +10,11 @@ import {
   getSessionsSpawnTool,
   setSessionsSpawnConfigOverride,
 } from "./openclaw-tools.subagents.sessions-spawn.test-harness.js";
-import { resetSubagentRegistryForTests } from "./subagent-registry.js";
+import {
+  listSubagentRunsForRequester,
+  resetSubagentRegistryForTests,
+} from "./subagent-registry.js";
+import { createTaskFlowStore } from "./taskflow/store.js";
 import { runWithAgentTraceRun } from "./tracing/context.js";
 
 const hookRunnerMocks = vi.hoisted(() => ({
@@ -450,5 +457,161 @@ describe("sessions_spawn subagent lifecycle hooks", () => {
       deleteTranscript: true,
       emitLifecycleHooks: true,
     });
+  });
+});
+
+describe("sessions_spawn shared TaskFlow grants", () => {
+  let tempDir: string;
+  const ownerSessionKey = "main";
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-spawn-taskflow-"));
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempDir);
+    resetSubagentRegistryForTests();
+    hookRunnerMocks.hasSubagentEndedHook = true;
+    hookRunnerMocks.runSubagentSpawning.mockClear();
+    hookRunnerMocks.runSubagentSpawned.mockClear();
+    hookRunnerMocks.runSubagentEnded.mockClear();
+    setSessionsSpawnConfigOverride({
+      session: {
+        mainKey: "main",
+        scope: "per-sender",
+      },
+    });
+    const callGatewayMock = getCallGatewayMock();
+    callGatewayMock.mockClear();
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "agent") {
+        return { runId: "run-1", status: "accepted", acceptedAt: 1 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "run-1", status: "running" };
+      }
+      return {};
+    });
+  });
+
+  afterEach(async () => {
+    resetSubagentRegistryForTests();
+    vi.unstubAllEnvs();
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  function makeOwnerStore() {
+    return createTaskFlowStore({
+      agentDir: path.join(tempDir, "agents", "main", "agent"),
+      stateDir: tempDir,
+      idFactory: () => "tf_shared",
+    });
+  }
+
+  it("rolls back the shared grant when the child agent fails to start", async () => {
+    const store = makeOwnerStore();
+    const created = await store.createTaskFlow({
+      agentId: "main",
+      ownerSessionKey,
+      scope: "shared",
+      title: "Shared",
+      items: [{ id: "item_a", title: "A", assigneeAgentId: "main" }],
+    });
+    expect(created.status).toBe("success");
+
+    mockAgentStartFailure();
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "main",
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+    const result = await tool.execute("tf-fail", {
+      task: "do thing",
+      runTimeoutSeconds: 1,
+      taskFlowId: "tf_shared",
+      taskFlowScope: "shared",
+    });
+
+    expect(result.details).toMatchObject({ status: "error" });
+    const details = result.details as { childSessionKey?: string };
+    expect(details.childSessionKey).toBeTruthy();
+
+    const read = await store.readTaskFlow({
+      taskFlowId: "tf_shared",
+      agentId: "main",
+      sessionKey: ownerSessionKey,
+    });
+    expect(read.status).toBe("success");
+    if (read.status !== "success") {
+      return;
+    }
+    const permission = read.snapshot.permissions.find(
+      (candidate) => candidate.sessionKey === details.childSessionKey,
+    );
+    expect(permission).toBeDefined();
+    expect(permission?.revokedReason).toBe("subagent_ended");
+    expect(typeof permission?.revokedAt).toBe("string");
+  });
+
+  it("applies a TTL to run-mode grants and records taskFlowId on the run", async () => {
+    const store = makeOwnerStore();
+    const created = await store.createTaskFlow({
+      agentId: "main",
+      ownerSessionKey,
+      scope: "shared",
+      title: "Shared",
+      items: [{ id: "item_a", title: "A", assigneeAgentId: "main" }],
+    });
+    expect(created.status).toBe("success");
+
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "main",
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+    const result = await tool.execute("tf-ok", {
+      task: "do thing",
+      runTimeoutSeconds: 60,
+      taskFlowId: "tf_shared",
+      taskFlowScope: "shared",
+    });
+
+    expect(result.details).toMatchObject({ status: "accepted" });
+    const details = result.details as { childSessionKey?: string };
+
+    const read = await store.readTaskFlow({
+      taskFlowId: "tf_shared",
+      agentId: "main",
+      sessionKey: ownerSessionKey,
+    });
+    expect(read.status).toBe("success");
+    if (read.status !== "success") {
+      return;
+    }
+    const permission = read.snapshot.permissions.find(
+      (candidate) => candidate.sessionKey === details.childSessionKey,
+    );
+    expect(permission?.access).toBe("write_assigned");
+    expect(typeof permission?.expiresAt).toBe("string");
+    expect(Date.parse(permission?.expiresAt ?? "")).toBeGreaterThan(Date.now() + 60_000);
+
+    const runs = listSubagentRunsForRequester("main");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.taskFlowId).toBe("tf_shared");
+  });
+
+  it("cleans up the provisional session when the shared grant fails", async () => {
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "main",
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+    const result = await tool.execute("tf-grant-fail", {
+      task: "do thing",
+      runTimeoutSeconds: 1,
+      taskFlowId: "tf_missing",
+      taskFlowScope: "shared",
+    });
+
+    expect(result.details).toMatchObject({ status: "error" });
+    expectSessionsDeleteWithoutAgentStart();
   });
 });

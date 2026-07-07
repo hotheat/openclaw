@@ -39,6 +39,12 @@ const threadBindingMocks = vi.hoisted(() => ({
   unbindThreadBindingsBySessionKey: vi.fn((_params?: unknown) => []),
 }));
 
+const taskFlowLifecycleMocks = vi.hoisted(() => ({
+  revokeTaskFlowAccessForSessionKey: vi.fn(async (_params?: unknown) => ({
+    revokedTaskFlowIds: [] as string[],
+  })),
+}));
+
 vi.mock("../auto-reply/reply/queue.js", async () => {
   const actual = await vi.importActual<typeof import("../auto-reply/reply/queue.js")>(
     "../auto-reply/reply/queue.js",
@@ -87,6 +93,15 @@ vi.mock("../discord/monitor/thread-bindings.js", async (importOriginal) => {
     ...actual,
     unbindThreadBindingsBySessionKey: (params: unknown) =>
       threadBindingMocks.unbindThreadBindingsBySessionKey(params),
+  };
+});
+
+vi.mock("../agents/taskflow/lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/taskflow/lifecycle.js")>();
+  return {
+    ...actual,
+    revokeTaskFlowAccessForSessionKey: (params: unknown) =>
+      taskFlowLifecycleMocks.revokeTaskFlowAccessForSessionKey(params),
   };
 });
 
@@ -639,10 +654,13 @@ describe("gateway server sessions", () => {
     embeddedRunMock.activeIds.add("sess-active");
     embeddedRunMock.waitResults.set("sess-active", true);
 
+    taskFlowLifecycleMocks.revokeTaskFlowAccessForSessionKey.mockClear();
+
     const { ws } = await openClient();
 
     const mainDelete = await rpcReq(ws, "sessions.delete", { key: "main" });
     expect(mainDelete.ok).toBe(false);
+    expect(taskFlowLifecycleMocks.revokeTaskFlowAccessForSessionKey).not.toHaveBeenCalled();
 
     const deleted = await rpcReq<{ ok: true; deleted: boolean }>(ws, "sessions.delete", {
       key: "discord:group:dev",
@@ -674,6 +692,13 @@ describe("gateway server sessions", () => {
       reason: "session-delete",
       sendFarewell: true,
     });
+    expect(taskFlowLifecycleMocks.revokeTaskFlowAccessForSessionKey).toHaveBeenCalledTimes(1);
+    expect(taskFlowLifecycleMocks.revokeTaskFlowAccessForSessionKey).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetSessionKey: "agent:main:discord:group:dev",
+        revokeReason: "session_deleted",
+      }),
+    );
 
     ws.close();
   });

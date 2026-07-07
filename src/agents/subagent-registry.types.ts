@@ -16,6 +16,7 @@ export type SubagentRunRecord = {
   model?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;
+  taskFlowId?: string;
   createdAt: number;
   startedAt?: number;
   endedAt?: number;

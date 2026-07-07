@@ -52,6 +52,7 @@ import {
   resolveImmediateModelFailoverHttpStatus,
   type FailoverReason,
 } from "../pi-embedded-helpers.js";
+import { finalizeForegroundTaskFlow } from "../taskflow/finalization.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
@@ -264,6 +265,44 @@ function hasPayloadVisibleResult(
       Boolean(payload.mediaUrl) ||
       Boolean(payload.mediaUrls?.length),
   );
+}
+
+async function finalizeForegroundTaskFlowIfNeeded(params: {
+  agentId: string;
+  agentDir: string;
+  sessionKey?: string;
+  aborted?: boolean;
+  timedOut?: boolean;
+  attempt: {
+    assistantTexts?: string[];
+    didSendViaMessagingTool?: boolean;
+  };
+}): Promise<void> {
+  const sessionKey = params.sessionKey?.trim();
+  if (!sessionKey) {
+    return;
+  }
+  if (params.aborted || params.timedOut) {
+    return;
+  }
+  if (!hasAttemptVisibleResultOrSideEffect(params.attempt)) {
+    return;
+  }
+  const result = await finalizeForegroundTaskFlow({
+    agentId: params.agentId,
+    agentDir: params.agentDir,
+    sessionKey,
+  });
+  if (result.status === "parked") {
+    log.warn(
+      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=park revision=${result.revision}`,
+    );
+  }
+  if (result.status === "exempt") {
+    log.info(
+      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=skip reason=${result.reason}`,
+    );
+  }
 }
 
 function createAssistantFailoverError(params: {
@@ -1659,6 +1698,14 @@ export async function runEmbeddedPiAgent(
                 agentDir: params.agentDir,
               });
             }
+            await finalizeForegroundTaskFlowIfNeeded({
+              agentId: workspaceResolution.agentId,
+              agentDir,
+              sessionKey: params.sessionKey,
+              aborted,
+              timedOut,
+              attempt,
+            });
             return withCompletionContractTerminal({
               enabled: completionContractEnabled,
               emittedRef: completionContractTerminalEmitted,

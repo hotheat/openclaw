@@ -9,12 +9,16 @@ import { SESSION_LABEL_MAX_LENGTH } from "../sessions/session-label.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { isDeliverableMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentConfig } from "./agent-scope.js";
+import { resolveAgentDir } from "./agent-scope.js";
 import { AGENT_LANE_SUBAGENT } from "./lanes.js";
 import { resolveSubagentSpawnModelSelection } from "./model-selection.js";
 import { resolveSubagentAllowlist } from "./subagent-allowlist.js";
 import { buildSubagentSystemPrompt } from "./subagent-announce.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import { countActiveRunsForSession, registerSubagentRun } from "./subagent-registry.js";
+import { dispatchTaskFlowCommitHook } from "./taskflow/store-hook.js";
+import { createTaskFlowStore } from "./taskflow/store.js";
+import type { TaskFlowAccess } from "./taskflow/types.js";
 import { readStringParam } from "./tools/common.js";
 import {
   resolveDisplaySessionKey,
@@ -32,6 +36,9 @@ export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
 export const SUBAGENT_COMPLETION_DELIVERIES = ["auto", "parent", "direct"] as const;
 export type SubagentCompletionDelivery = (typeof SUBAGENT_COMPLETION_DELIVERIES)[number];
 
+const SHARED_TASKFLOW_RUN_GRANT_TTL_BUFFER_MS = 5 * 60_000;
+const SHARED_TASKFLOW_RUN_GRANT_DEFAULT_TTL_MS = 24 * 60 * 60_000;
+
 export type SpawnSubagentParams = {
   task: string;
   label?: string;
@@ -44,6 +51,9 @@ export type SpawnSubagentParams = {
   cleanup?: "delete" | "keep";
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentCompletionDelivery;
+  taskFlowId?: string;
+  taskFlowAccess?: TaskFlowAccess;
+  taskFlowScope?: "shared";
   toolCallId?: string;
 };
 
@@ -308,6 +318,25 @@ export async function spawnSubagentDirect(
   const childDepth = callerDepth + 1;
   const spawnedByKey = requesterInternalKey;
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
+  const sharedTaskFlowId =
+    params.taskFlowScope === "shared" && params.taskFlowId?.trim()
+      ? params.taskFlowId.trim()
+      : undefined;
+  const sharedTaskFlowAccess = params.taskFlowAccess ?? "write_assigned";
+  const sharedTaskFlowGrantExpiresAt =
+    sharedTaskFlowId && spawnMode !== "session"
+      ? new Date(
+          Date.now() +
+            (runTimeoutSeconds > 0
+              ? runTimeoutSeconds * 1000 + SHARED_TASKFLOW_RUN_GRANT_TTL_BUFFER_MS
+              : SHARED_TASKFLOW_RUN_GRANT_DEFAULT_TTL_MS),
+        ).toISOString()
+      : undefined;
+  const ownerAgentDir = sharedTaskFlowId ? resolveAgentDir(cfg, requesterAgentId) : undefined;
+  const ownerTaskFlowStore = ownerAgentDir
+    ? createTaskFlowStore({ agentDir: ownerAgentDir, onCommitted: dispatchTaskFlowCommitHook })
+    : undefined;
+  let sharedTaskFlowGrantCreated = false;
   let lifecycleStarted = false;
   let lifecycleEnded = false;
   const emitLifecycleSpawning = async () => {
@@ -340,6 +369,36 @@ export async function spawnSubagentDirect(
       outcome: "error",
       error: params.error,
     });
+  };
+  const deleteProvisionalChildSession = async (emitLifecycleHooks: boolean) => {
+    try {
+      await callGateway({
+        method: "sessions.delete",
+        params: {
+          key: childSessionKey,
+          deleteTranscript: true,
+          emitLifecycleHooks,
+        },
+        timeoutMs: 10_000,
+      });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  };
+  const revokeSharedTaskFlowGrant = async () => {
+    if (!sharedTaskFlowId || !sharedTaskFlowGrantCreated || !ownerTaskFlowStore) {
+      return;
+    }
+    try {
+      await ownerTaskFlowStore.revokeAccessForSession({
+        taskFlowId: sharedTaskFlowId,
+        targetSessionKey: childSessionKey,
+        requesterSessionKey: requesterInternalKey,
+        revokeReason: "subagent_ended",
+      });
+    } catch {
+      // Best-effort cleanup only.
+    }
   };
   await emitLifecycleSpawning();
   const resolvedModel = resolveSubagentSpawnModelSelection({
@@ -441,15 +500,7 @@ export async function spawnSubagentDirect(
       },
     });
     if (bindResult.status === "error") {
-      try {
-        await callGateway({
-          method: "sessions.delete",
-          params: { key: childSessionKey, emitLifecycleHooks: false },
-          timeoutMs: 10_000,
-        });
-      } catch {
-        // Best-effort cleanup only.
-      }
+      await deleteProvisionalChildSession(false);
       await emitLifecycleEndedError({ error: bindResult.error });
       return {
         status: "error",
@@ -458,6 +509,30 @@ export async function spawnSubagentDirect(
       };
     }
     threadBindingReady = true;
+  }
+  if (sharedTaskFlowId) {
+    const grantResult = await ownerTaskFlowStore?.grantAccess({
+      agentId: requesterAgentId,
+      sessionKey: requesterInternalKey,
+      taskFlowId: sharedTaskFlowId,
+      targetSessionKey: childSessionKey,
+      access: sharedTaskFlowAccess,
+      expiresAt: sharedTaskFlowGrantExpiresAt,
+    });
+    if (grantResult?.status !== "success") {
+      const error =
+        grantResult?.status === "error"
+          ? grantResult.message
+          : `Unable to grant shared TaskFlow access: ${grantResult?.code ?? "error"}`;
+      await deleteProvisionalChildSession(false);
+      await emitLifecycleEndedError({ error });
+      return {
+        status: "error",
+        error,
+        childSessionKey,
+      };
+    }
+    sharedTaskFlowGrantCreated = true;
   }
   const childSystemPrompt = buildSubagentSystemPrompt({
     requesterSessionKey,
@@ -472,6 +547,9 @@ export async function spawnSubagentDirect(
     `[Subagent Context] You are running as a subagent (depth ${childDepth}/${maxSpawnDepth}). Results auto-announce to your requester; do not busy-poll for status.`,
     spawnMode === "session"
       ? "[Subagent Context] This subagent session is persistent and remains available for thread follow-up messages."
+      : undefined,
+    sharedTaskFlowId
+      ? `[TaskFlow Context]\ntaskFlowId=${sharedTaskFlowId}\naccess=${sharedTaskFlowAccess}\nUse taskflow_read before modifying shared state.\nUse taskflow_update with expectedRevision when status changes.`
       : undefined,
     `[Subagent Task]: ${task}`,
   ]
@@ -510,6 +588,7 @@ export async function spawnSubagentDirect(
     }
   } catch (err) {
     await emitLifecycleEndedError({ runId: childRunId, error: "Session failed to start" });
+    await revokeSharedTaskFlowGrant();
     if (threadBindingReady) {
       const hasEndedHook = hookRunner?.hasHooks("subagent_ended") === true;
       let endedHookEmitted = false;
@@ -539,19 +618,9 @@ export async function spawnSubagentDirect(
       }
       // Always delete the provisional child session after a failed spawn attempt.
       // If we already emitted subagent_ended above, suppress a duplicate lifecycle hook.
-      try {
-        await callGateway({
-          method: "sessions.delete",
-          params: {
-            key: childSessionKey,
-            deleteTranscript: true,
-            emitLifecycleHooks: !endedHookEmitted,
-          },
-          timeoutMs: 10_000,
-        });
-      } catch {
-        // Best-effort only.
-      }
+      await deleteProvisionalChildSession(!endedHookEmitted);
+    } else {
+      await deleteProvisionalChildSession(true);
     }
     const messageText = summarizeError(err);
     return {
@@ -577,6 +646,7 @@ export async function spawnSubagentDirect(
     expectsCompletionMessage,
     completionDelivery,
     spawnMode,
+    taskFlowId: sharedTaskFlowId,
   });
 
   if (hookRunner?.hasHooks("subagent_spawned")) {

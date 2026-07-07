@@ -43,6 +43,8 @@ import type {
   PluginHookSubagentSpawningResult,
   PluginHookSubagentEndedEvent,
   PluginHookSubagentSpawnedEvent,
+  PluginHookTaskFlowContext,
+  PluginHookTaskFlowUpdatedEvent,
   PluginHookToolContext,
   PluginHookToolResultPersistContext,
   PluginHookToolResultPersistEvent,
@@ -90,6 +92,8 @@ export type {
   PluginHookSubagentSpawningResult,
   PluginHookSubagentSpawnedEvent,
   PluginHookSubagentEndedEvent,
+  PluginHookTaskFlowContext,
+  PluginHookTaskFlowUpdatedEvent,
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
@@ -669,6 +673,13 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     return runVoidHook("subagent_ended", event, ctx);
   }
 
+  async function runTaskFlowUpdated(
+    event: PluginHookTaskFlowUpdatedEvent,
+    ctx: PluginHookTaskFlowContext,
+  ): Promise<void> {
+    return runVoidHook("taskflow_updated", event, ctx);
+  }
+
   // =========================================================================
   // Gateway Hooks
   // =========================================================================
@@ -741,6 +752,7 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runSubagentDeliveryTarget,
     runSubagentSpawned,
     runSubagentEnded,
+    runTaskFlowUpdated,
     // Gateway hooks
     runGatewayStart,
     runGatewayStop,

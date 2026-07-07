@@ -60,7 +60,23 @@ wired end-to-end.
 
 - System prompt is built from OpenClaw’s base prompt, skills prompt, bootstrap context, and per-run overrides.
 - Model-specific limits and compaction reserve tokens are enforced.
+- Foreground TaskFlow state is read from the file-backed TaskFlow store and prepended as dynamic context when the current session has an `active` or `blocked` TaskFlow.
+- Parked TaskFlows are summarized by count and id only. Completed and canceled TaskFlows are not injected into the next prompt.
 - See [System prompt](/concepts/system-prompt) for what the model sees.
+
+## TaskFlow state injection
+
+TaskFlow state is owned by local JSON snapshots under the owner agent directory. The transcript is not the source of truth.
+
+Execution order:
+
+1. The model calls `taskflow_update(operation="create")` when the task needs durable progress tracking.
+2. The TaskFlow store writes the snapshot, increments `revision`, then appends an audit JSONL event.
+3. Successful updates emit the `taskflow_updated` plugin hook with the committed snapshot and Markdown rendering.
+4. Channel integrations can publish progress from that hook. Feishu uses its streaming card primitive for subscribers.
+5. On the next turn, `before_prompt_build` reads the current foreground TaskFlow and prepends a Markdown snapshot.
+
+The injected Markdown keeps `Revision` so the model can use `expectedRevision`. It omits `updatedAt` to avoid cache churn. Within a single turn, prompt context is not rebuilt after a TaskFlow update; the model uses the tool return value until the next turn.
 
 ## Hook points (where you can intercept)
 
@@ -90,6 +106,7 @@ These run inside the agent loop or gateway pipeline:
 - **`tool_result_persist`**: synchronously transform tool results before they are written to the session transcript.
 - **`message_received` / `message_sending` / `message_sent`**: inbound + outbound message hooks.
 - **`session_start` / `session_end`**: session lifecycle boundaries.
+- **`taskflow_updated`**: observes committed TaskFlow revisions for progress publishers and integrations.
 - **`gateway_start` / `gateway_stop`**: gateway lifecycle events.
 
 See [Plugins](/tools/plugin#plugin-hooks) for the hook API and registration details.
