@@ -137,6 +137,7 @@ export type ToolHandlerParams = Pick<
   "runId" | "onBlockReplyFlush" | "onAgentEvent" | "onToolResult" | "config" | "sessionKey"
 > & {
   session?: SubscribeEmbeddedPiSessionParams["session"];
+  abortRun?: SubscribeEmbeddedPiSessionParams["abortRun"];
 };
 
 export type ToolHandlerState = Pick<

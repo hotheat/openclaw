@@ -77,7 +77,7 @@ Per-agent override (optional):
 - `criticalThreshold`: stronger threshold that can block no-progress patterns.
 - `globalCircuitBreakerThreshold`: hard stop for any repeated no-progress outcome.
 - `schemaValidationWarningThreshold`: repeated schema validation failures before warning.
-- `schemaValidationCriticalThreshold`: repeated schema validation failures before blocking.
+- `schemaValidationCriticalThreshold`: repeated schema validation failures before blocking. Missing-required-field schema errors inject a repair warning after 3 matching failures and abort after the 4th matching failure. Cross-tool schema failures abort after 5 consecutive failures.
 - `detectors.genericRepeat`: detects repeated same-tool/same-args calls.
 - `detectors.knownPollNoProgress`: detects known polling-like loops with unchanged output.
 - `detectors.pingPong`: detects alternating no-progress pair patterns.

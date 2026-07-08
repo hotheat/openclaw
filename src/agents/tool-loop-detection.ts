@@ -31,6 +31,9 @@ export const CRITICAL_THRESHOLD = 20;
 export const GLOBAL_CIRCUIT_BREAKER_THRESHOLD = 30;
 export const SCHEMA_VALIDATION_WARNING_THRESHOLD = 3;
 export const SCHEMA_VALIDATION_CRITICAL_THRESHOLD = 5;
+export const SAME_REQUIRED_SCHEMA_VALIDATION_REPAIR_THRESHOLD = 3;
+export const SAME_REQUIRED_SCHEMA_VALIDATION_ABORT_THRESHOLD = 4;
+export const CROSS_TOOL_SCHEMA_VALIDATION_ABORT_THRESHOLD = 5;
 const LOOP_WARNING_BUCKET_SIZE = 10;
 const MAX_LOOP_WARNING_KEYS = 256;
 const DEFAULT_LOOP_DETECTION_CONFIG = {
@@ -458,6 +461,26 @@ function getSchemaValidationErrorStreak(
   return { count, signature };
 }
 
+function getConsecutiveSchemaValidationErrorStreak(
+  history: Array<{ outcomeKind?: string; outcomeSignature?: string }>,
+): { count: number } {
+  let count = 0;
+
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const record = history[i];
+    if (!record || record.outcomeKind !== "schema_validation_error" || !record.outcomeSignature) {
+      break;
+    }
+    count += 1;
+  }
+
+  return { count };
+}
+
+function isMissingRequiredSchemaValidationSignature(signature: string): boolean {
+  return /(?:^|[|:])required:[^|:]+/.test(signature);
+}
+
 function getPingPongStreak(
   history: Array<{ toolName: string; argsHash: string; resultHash?: string }>,
   currentSignature: string,
@@ -702,11 +725,6 @@ export function detectSchemaValidationErrorLoop(
   },
 ): LoopDetectionResult {
   const resolvedConfig = resolveLoopDetectionConfig(params.config);
-  // Respect `enabled` as a master off-switch so that
-  // `loopDetection: { enabled: false }` fully disables all detectors.
-  if (!resolvedConfig.enabled) {
-    return { stuck: false };
-  }
   const schemaGuardEnabled =
     params.config?.detectors?.schemaValidationError ??
     DEFAULT_LOOP_DETECTION_CONFIG.detectors.schemaValidationError;
@@ -720,6 +738,55 @@ export function detectSchemaValidationErrorLoop(
     params.toolName,
     params.outcomeSignature,
   );
+  const crossToolSchemaValidation = getConsecutiveSchemaValidationErrorStreak(history);
+
+  if (
+    schemaValidation.count >= SAME_REQUIRED_SCHEMA_VALIDATION_ABORT_THRESHOLD &&
+    isMissingRequiredSchemaValidationSignature(schemaValidation.signature)
+  ) {
+    log.error(
+      `Critical required-field schema validation loop detected: ${params.toolName} repeated ${schemaValidation.count} times`,
+    );
+    return {
+      stuck: true,
+      level: "critical",
+      detector: "schema_validation_error_repeat",
+      count: schemaValidation.count,
+      message: `CRITICAL: ${params.toolName} has failed schema validation ${schemaValidation.count} times with the same missing required field after a repair warning. Session execution aborted to prevent repeated invalid tool calls.`,
+      warningKey: `schema:${params.toolName}:${schemaValidation.signature}`,
+    };
+  }
+
+  if (crossToolSchemaValidation.count >= CROSS_TOOL_SCHEMA_VALIDATION_ABORT_THRESHOLD) {
+    log.error(
+      `Critical cross-tool schema validation loop detected: ${crossToolSchemaValidation.count} consecutive failures`,
+    );
+    return {
+      stuck: true,
+      level: "critical",
+      detector: "schema_validation_error_repeat",
+      count: crossToolSchemaValidation.count,
+      message: `CRITICAL: Tool calls have failed schema validation ${crossToolSchemaValidation.count} consecutive times across tools. Session execution aborted to prevent repeated invalid tool calls.`,
+      warningKey: "schema:cross-tool",
+    };
+  }
+
+  if (
+    schemaValidation.count >= SAME_REQUIRED_SCHEMA_VALIDATION_REPAIR_THRESHOLD &&
+    isMissingRequiredSchemaValidationSignature(schemaValidation.signature)
+  ) {
+    log.warn(
+      `Schema validation repair warning: ${params.toolName} repeated ${schemaValidation.count} times`,
+    );
+    return {
+      stuck: true,
+      level: "warning",
+      detector: "schema_validation_error_repeat",
+      count: schemaValidation.count,
+      message: `WARNING: ${params.toolName} has failed schema validation ${schemaValidation.count} times with the same missing required field. The error has been added to context so the next tool call must use corrected arguments. If the same missing field repeats again, the run will be aborted.`,
+      warningKey: `schema:${params.toolName}:${schemaValidation.signature}`,
+    };
+  }
 
   if (schemaValidation.count >= resolvedConfig.schemaValidationCriticalThreshold) {
     log.error(

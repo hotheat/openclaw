@@ -1,12 +1,18 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { MessageActionRunResult } from "../../infra/outbound/message-action-runner.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createMessageTool } from "./message-tool.js";
 
 const mocks = vi.hoisted(() => ({
+  loadOpenClawPlugins: vi.fn(),
   runMessageAction: vi.fn(),
+}));
+
+vi.mock("../../plugins/loader.js", () => ({
+  loadOpenClawPlugins: mocks.loadOpenClawPlugins,
 }));
 
 vi.mock("../../infra/outbound/message-action-runner.js", async () => {
@@ -19,8 +25,13 @@ vi.mock("../../infra/outbound/message-action-runner.js", async () => {
   };
 });
 
+beforeEach(() => {
+  mocks.loadOpenClawPlugins.mockReset();
+  mocks.runMessageAction.mockReset();
+  setActivePluginRegistry(createTestRegistry([]));
+});
+
 function mockSendResult(overrides: { channel?: string; to?: string } = {}) {
-  mocks.runMessageAction.mockClear();
   mocks.runMessageAction.mockResolvedValue({
     kind: "send",
     action: "send",
@@ -30,6 +41,30 @@ function mockSendResult(overrides: { channel?: string; to?: string } = {}) {
     payload: {},
     dryRun: true,
   } satisfies MessageActionRunResult);
+}
+
+const feishuPlugin: ChannelPlugin = {
+  id: "feishu",
+  meta: {
+    id: "feishu",
+    label: "Feishu",
+    selectionLabel: "Feishu",
+    docsPath: "/channels/feishu",
+    blurb: "Feishu test plugin.",
+  },
+  capabilities: { chatTypes: ["direct", "group"], media: true },
+  config: {
+    listAccountIds: () => ["default"],
+    resolveAccount: () => ({}),
+    isConfigured: () => true,
+  },
+  actions: {
+    listActions: () => ["send", "delete"] as const,
+  },
+};
+
+function createFeishuRegistry() {
+  return createTestRegistry([{ pluginId: "feishu", source: "test", plugin: feishuPlugin }]);
 }
 
 function getToolProperties(tool: ReturnType<typeof createMessageTool>) {
@@ -98,6 +133,85 @@ describe("message tool path passthrough", () => {
     const call = mocks.runMessageAction.mock.calls[0]?.[0];
     expect(call?.params?.filePath).toBe("./tmp/note.m4a");
     expect(call?.params?.media).toBeUndefined();
+  });
+});
+
+describe("message tool channel context", () => {
+  it("loads plugins before shaping the current Feishu schema and description", () => {
+    const cfg = { plugins: { allow: ["feishu"] } } as OpenClawConfig;
+    const registry = createFeishuRegistry();
+    mocks.loadOpenClawPlugins.mockImplementationOnce(() => {
+      setActivePluginRegistry(registry);
+      return registry;
+    });
+
+    const tool = createMessageTool({
+      config: cfg,
+      workspaceDir: "/tmp/openclaw-workspace",
+      currentChannelProvider: "feishu",
+    });
+    const properties = getToolProperties(tool);
+    const actionEnum = getActionEnum(properties);
+
+    expect(mocks.loadOpenClawPlugins).toHaveBeenCalledWith({
+      config: cfg,
+      workspaceDir: "/tmp/openclaw-workspace",
+    });
+    expect(actionEnum).toContain("send");
+    expect(actionEnum).toContain("delete");
+    expect(tool.description).toContain("Current channel (feishu) supports: delete, send.");
+  });
+
+  it("loads plugins before injecting the current Feishu channel", async () => {
+    mockSendResult({ channel: "feishu", to: "feishu:ou_123" });
+    const cfg = { plugins: { allow: ["feishu"] } } as OpenClawConfig;
+    const registry = createFeishuRegistry();
+    mocks.loadOpenClawPlugins.mockImplementationOnce(() => {
+      setActivePluginRegistry(registry);
+      return registry;
+    });
+
+    const tool = createMessageTool({
+      config: cfg,
+      workspaceDir: "/tmp/openclaw-workspace",
+      currentChannelProvider: "feishu",
+    });
+
+    await tool.execute("1", {
+      action: "send",
+      target: "feishu:ou_123",
+      message: "hi",
+    });
+
+    expect(mocks.loadOpenClawPlugins).toHaveBeenCalledWith({
+      config: cfg,
+      workspaceDir: "/tmp/openclaw-workspace",
+    });
+    expect(mocks.loadOpenClawPlugins.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.runMessageAction.mock.invocationCallOrder[0],
+    );
+    const call = mocks.runMessageAction.mock.calls[0]?.[0];
+    expect(call?.params?.channel).toBe("feishu");
+    expect(call?.toolContext?.currentChannelProvider).toBe("feishu");
+  });
+
+  it("does not load plugins or inject a channel when plugins are disabled", async () => {
+    mockSendResult({ to: "feishu:ou_123" });
+
+    const tool = createMessageTool({
+      config: { plugins: { enabled: false } } as OpenClawConfig,
+      currentChannelProvider: "feishu",
+    });
+
+    await tool.execute("1", {
+      action: "send",
+      target: "feishu:ou_123",
+      message: "hi",
+    });
+
+    expect(mocks.loadOpenClawPlugins).not.toHaveBeenCalled();
+    const call = mocks.runMessageAction.mock.calls[0]?.[0];
+    expect(call?.params?.channel).toBeUndefined();
   });
 });
 

@@ -131,6 +131,9 @@ function recordToolLoopDetectionOutcome(params: {
           `tool loop critical steer failed: tool=${params.toolName} error=${String(err)}`,
         );
       });
+    const abortReason = new Error(loopResult.message);
+    abortReason.name = "ToolLoopAbortError";
+    params.ctx.params.abortRun?.(abortReason);
     return;
   }
 
@@ -148,6 +151,13 @@ function recordToolLoopDetectionOutcome(params: {
     count: loopResult.count,
     message: loopResult.message,
   });
+  params.ctx.params.session
+    ?.steer(buildToolLoopSteerMessage({ toolName: params.toolName, message: loopResult.message }))
+    .catch((err) => {
+      params.ctx.log.warn(
+        `tool loop warning steer failed: tool=${params.toolName} error=${String(err)}`,
+      );
+    });
 }
 
 function isCronAddAction(args: unknown): boolean {

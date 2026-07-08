@@ -100,6 +100,8 @@ async function expectSpawnUsesConfiguredModel(params: {
   runId: string;
   callId: string;
   expectedModel: string;
+  currentModel?: string;
+  agentSessionKey?: string;
 }) {
   if (params.config) {
     setSessionsSpawnConfigOverride(params.config);
@@ -110,8 +112,9 @@ async function expectSpawnUsesConfiguredModel(params: {
   mockPatchAndSingleAgentRun({ calls, runId: params.runId });
 
   const tool = await getSessionsSpawnTool({
-    agentSessionKey: "agent:research:main",
+    agentSessionKey: params.agentSessionKey ?? "agent:research:main",
     agentChannel: "discord",
+    currentModel: params.currentModel,
   });
 
   const result = await tool.execute(params.callId, {
@@ -301,7 +304,48 @@ describe("openclaw-tools: subagents (sessions_spawn model + thinking)", () => {
     });
   });
 
-  it("sessions_spawn falls back to runtime default model when no model config is set", async () => {
+  it("sessions_spawn inherits the caller run model when no subagent model config is set", async () => {
+    await expectSpawnUsesConfiguredModel({
+      runId: "run-inherited-model",
+      callId: "call-inherited-model",
+      agentSessionKey: "agent:main:main",
+      currentModel: "otr/gpt-5.5",
+      expectedModel: "otr/gpt-5.5",
+    });
+  });
+
+  it("sessions_spawn inherits slash-bearing caller run models without duplicating the provider", async () => {
+    resetSessionsSpawnConfigOverride();
+    const calls: GatewayCall[] = [];
+    mockPatchAndSingleAgentRun({ calls, runId: "run-openrouter-native-model" });
+
+    const { createOpenClawCodingTools } = await import("./pi-tools.js");
+    const tool = createOpenClawCodingTools({
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      messageProvider: "discord",
+      modelProvider: "openrouter",
+      modelId: "openrouter/aurora-alpha",
+    }).find((candidate) => candidate.name === "sessions_spawn");
+    expect(tool).toBeDefined();
+
+    const result = await tool?.execute("call-openrouter-native-model", {
+      task: "do thing",
+    });
+    expect(result?.details).toMatchObject({
+      status: "accepted",
+      modelApplied: true,
+    });
+
+    const patchCall = calls.find(
+      (call) => call.method === "sessions.patch" && (call.params as { model?: string })?.model,
+    );
+    expect(patchCall?.params).toMatchObject({
+      model: "openrouter/aurora-alpha",
+    });
+  });
+
+  it("sessions_spawn falls back to runtime default model when no model config or caller model is set", async () => {
     await expectSpawnUsesConfiguredModel({
       runId: "run-runtime-default-model",
       callId: "call-runtime-default-model",

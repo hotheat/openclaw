@@ -67,6 +67,7 @@ export type SpawnSubagentContext = {
   agentGroupChannel?: string | null;
   agentGroupSpace?: string | null;
   requesterAgentIdOverride?: string;
+  inheritedModel?: string;
 };
 
 export const SUBAGENT_SPAWN_ACCEPTED_NOTE =
@@ -405,6 +406,7 @@ export async function spawnSubagentDirect(
     cfg,
     agentId: targetAgentId,
     modelOverride,
+    inheritedModel: targetAgentId === requesterAgentId ? ctx.inheritedModel : undefined,
   });
 
   const resolvedThinkingDefaultRaw =

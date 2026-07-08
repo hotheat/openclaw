@@ -16,9 +16,13 @@ import { loadConfig } from "../../config/config.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../../gateway/protocol/client-info.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
 import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
+import { loadOpenClawPlugins } from "../../plugins/loader.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import { stripReasoningTagsFromText } from "../../shared/text/reasoning-tags.js";
-import { normalizeMessageChannel } from "../../utils/message-channel.js";
+import {
+  isDeliverableMessageChannel,
+  normalizeMessageChannel,
+} from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { listChannelSupportedActions } from "../channel-tools.js";
 import { channelTargetSchema, channelTargetsSchema, stringEnum } from "../schema/typebox.js";
@@ -422,6 +426,7 @@ type MessageToolOptions = {
   agentAccountId?: string;
   agentSessionKey?: string;
   config?: OpenClawConfig;
+  workspaceDir?: string;
   currentChannelId?: string;
   currentChannelProvider?: string;
   currentThreadTs?: string;
@@ -485,6 +490,38 @@ function buildMessageToolSchema(params: {
     includeCards,
     includeComponents,
   });
+}
+
+function ensureMessagePluginRegistry(params: { cfg: OpenClawConfig; workspaceDir?: string }) {
+  if (params.cfg.plugins?.enabled === false) {
+    return;
+  }
+  loadOpenClawPlugins({
+    config: params.cfg,
+    workspaceDir: params.workspaceDir,
+  });
+}
+
+function resolveCurrentToolChannel(raw?: string) {
+  const normalized = normalizeMessageChannel(raw);
+  if (!normalized || !isDeliverableMessageChannel(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function injectCurrentToolChannel(
+  params: Record<string, unknown>,
+  currentChannelProvider?: string,
+) {
+  const explicitChannel = readStringParam(params, "channel");
+  if (explicitChannel) {
+    return;
+  }
+  const currentChannel = resolveCurrentToolChannel(currentChannelProvider);
+  if (currentChannel) {
+    params.channel = currentChannel;
+  }
 }
 
 function resolveAgentAccountId(value?: string): string | undefined {
@@ -560,15 +597,22 @@ function buildMessageToolDescription(options?: {
 
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   const agentAccountId = resolveAgentAccountId(options?.agentAccountId);
-  const schema = options?.config
+  const constructionConfig = options?.config;
+  if (constructionConfig) {
+    ensureMessagePluginRegistry({
+      cfg: constructionConfig,
+      workspaceDir: options?.workspaceDir,
+    });
+  }
+  const schema = constructionConfig
     ? buildMessageToolSchema({
-        cfg: options.config,
+        cfg: constructionConfig,
         currentChannelProvider: options.currentChannelProvider,
         currentChannelId: options.currentChannelId,
       })
     : MessageToolSchema;
   const description = buildMessageToolDescription({
-    config: options?.config,
+    config: constructionConfig,
     currentChannel: options?.currentChannelProvider,
     currentChannelId: options?.currentChannelId,
   });
@@ -597,6 +641,13 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       }
 
       const cfg = options?.config ?? loadConfig();
+      if (!constructionConfig) {
+        ensureMessagePluginRegistry({
+          cfg,
+          workspaceDir: options?.workspaceDir,
+        });
+      }
+      injectCurrentToolChannel(params, options?.currentChannelProvider);
       const action = readStringParam(params, "action", {
         required: true,
       }) as ChannelMessageActionName;

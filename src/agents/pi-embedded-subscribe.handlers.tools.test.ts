@@ -66,12 +66,15 @@ function createTestContext(): {
   return { ctx, warn, onBlockReplyFlush };
 }
 
-function createSchemaValidationResult(field = "content") {
+function createSchemaValidationResult(field = "content", issue = "must have required property") {
   return {
     content: [
       {
         type: "text",
-        text: `Validation failed for tool "write":\n  - ${field}: must have required property '${field}'\n\nReceived arguments: {}`,
+        text:
+          issue === "invalid"
+            ? `Validation failed for tool "write":\n  - ${field}: invalid value\n\nReceived arguments: {}`
+            : `Validation failed for tool "write":\n  - ${field}: must have required property '${field}'\n\nReceived arguments: {}`,
       },
     ],
     details: {},
@@ -123,7 +126,7 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
     resetDiagnosticEventsForTest();
   });
 
-  it("records schema validation errors from tool events and emits warning at the third failure", async () => {
+  it("records schema validation errors from tool events and emits warning at the third non-required failure", async () => {
     const emitted: DiagnosticToolLoopEvent[] = [];
     const stop = onDiagnosticEvent((evt) => {
       if (evt.type === "tool.loop") {
@@ -132,7 +135,7 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
     });
     const { ctx } = createTestContext();
     ctx.params.sessionKey = "agent:main:test";
-    ctx.params.config = {};
+    ctx.params.config = { tools: { loopDetection: { enabled: true } } };
 
     try {
       for (let i = 0; i < 3; i += 1) {
@@ -148,7 +151,7 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
           toolName: "write",
           toolCallId,
           isError: true,
-          result: createSchemaValidationResult(),
+          result: createSchemaValidationResult("content", "invalid"),
         });
       }
     } finally {
@@ -167,7 +170,7 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
     );
   });
 
-  it("steers the session once when repeated schema validation failures stay critical", async () => {
+  it("steers without aborting on the third repeated missing-required schema failure", async () => {
     const emitted: DiagnosticToolLoopEvent[] = [];
     const stop = onDiagnosticEvent((evt) => {
       if (evt.type === "tool.loop") {
@@ -176,12 +179,14 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
     });
     const { ctx } = createTestContext();
     const steer = vi.fn().mockResolvedValue(undefined);
+    const abortRun = vi.fn();
     ctx.params.sessionKey = "agent:main:test";
-    ctx.params.config = {};
+    ctx.params.config = { tools: { loopDetection: { enabled: true } } };
     ctx.params.session = { steer } as never;
+    ctx.params.abortRun = abortRun;
 
     try {
-      for (let i = 0; i < 6; i += 1) {
+      for (let i = 0; i < 3; i += 1) {
         const toolCallId = `tool-schema-critical-${i}`;
         await handleToolExecutionStart(ctx, {
           type: "tool_execution_start",
@@ -201,7 +206,63 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
       stop();
     }
 
+    const warningEvents = emitted.filter((evt) => evt.level === "warning");
+    expect(warningEvents).toHaveLength(1);
+    expect(warningEvents[0]).toEqual(
+      expect.objectContaining({
+        toolName: "write",
+        level: "warning",
+        action: "warn",
+        detector: "schema_validation_error_repeat",
+        count: 3,
+      }),
+    );
+    expect(steer).toHaveBeenCalledTimes(1);
+    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("tool-loop protection triggered");
+    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("write");
+    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("will be aborted");
+    expect(abortRun).not.toHaveBeenCalled();
+  });
+
+  it("aborts and steers when the same missing-required schema failure repeats after repair warning", async () => {
+    const emitted: DiagnosticToolLoopEvent[] = [];
+    const stop = onDiagnosticEvent((evt) => {
+      if (evt.type === "tool.loop") {
+        emitted.push(evt);
+      }
+    });
+    const { ctx } = createTestContext();
+    const steer = vi.fn().mockResolvedValue(undefined);
+    const abortRun = vi.fn();
+    ctx.params.sessionKey = "agent:main:test";
+    ctx.params.config = { tools: { loopDetection: { enabled: true } } };
+    ctx.params.session = { steer } as never;
+    ctx.params.abortRun = abortRun;
+
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        const toolCallId = `tool-schema-critical-${i}`;
+        await handleToolExecutionStart(ctx, {
+          type: "tool_execution_start",
+          toolName: "write",
+          toolCallId,
+          args: i % 2 === 0 ? {} : { path: "/tmp/out.txt" },
+        });
+        await handleToolExecutionEnd(ctx, {
+          type: "tool_execution_end",
+          toolName: "write",
+          toolCallId,
+          isError: true,
+          result: createSchemaValidationResult(),
+        });
+      }
+    } finally {
+      stop();
+    }
+
+    const warningEvents = emitted.filter((evt) => evt.level === "warning");
     const criticalEvents = emitted.filter((evt) => evt.level === "critical");
+    expect(warningEvents).toHaveLength(1);
     expect(criticalEvents).toHaveLength(1);
     expect(criticalEvents[0]).toEqual(
       expect.objectContaining({
@@ -209,12 +270,14 @@ describe("handleToolExecutionEnd schema validation loop tracking", () => {
         level: "critical",
         action: "block",
         detector: "schema_validation_error_repeat",
-        count: 5,
+        count: 4,
       }),
     );
-    expect(steer).toHaveBeenCalledTimes(1);
-    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("tool-loop protection triggered");
-    expect(String(steer.mock.calls[0]?.[0] ?? "")).toContain("write");
+    expect(steer).toHaveBeenCalledTimes(2);
+    expect(abortRun).toHaveBeenCalledTimes(1);
+    const abortReason = abortRun.mock.calls[0]?.[0];
+    expect(abortReason).toBeInstanceOf(Error);
+    expect(String((abortReason as Error).message)).toContain("after a repair warning");
   });
 
   it("does not mix start data across runs with the same toolCallId", async () => {

@@ -1111,7 +1111,11 @@ export async function runEmbeddedAttempt(
       };
       const makeAbortError = (signal: AbortSignal): Error => {
         const reason = getAbortReason(signal);
-        const err = reason ? new Error("aborted", { cause: reason }) : new Error("aborted");
+        const reasonMessage =
+          reason instanceof Error && reason.message.trim() ? reason.message.trim() : undefined;
+        const err = reason
+          ? new Error(reasonMessage ?? "aborted", { cause: reason })
+          : new Error("aborted");
         err.name = "AbortError";
         return err;
       };
@@ -1179,6 +1183,7 @@ export async function runEmbeddedAttempt(
         enforceFinalTag: params.enforceFinalTag,
         config: params.config,
         sessionKey: params.sessionKey ?? params.sessionId,
+        abortRun: (reason) => abortRun(false, reason),
       });
 
       const {

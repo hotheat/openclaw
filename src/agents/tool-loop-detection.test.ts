@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { ToolLoopDetectionConfig } from "../config/types.tools.js";
 import type { SessionState } from "../logging/diagnostic-session-state.js";
 import {
+  CROSS_TOOL_SCHEMA_VALIDATION_ABORT_THRESHOLD,
   CRITICAL_THRESHOLD,
   GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
+  SAME_REQUIRED_SCHEMA_VALIDATION_ABORT_THRESHOLD,
+  SAME_REQUIRED_SCHEMA_VALIDATION_REPAIR_THRESHOLD,
   TOOL_CALL_HISTORY_SIZE,
   WARNING_THRESHOLD,
   detectSchemaValidationErrorLoop,
@@ -59,6 +62,18 @@ function createSchemaValidationResult(field = "content") {
   };
 }
 
+function createSchemaValidationResultForTool(toolName: string, field = "content") {
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Validation failed for tool "${toolName}":\n  - ${field}: must have required property '${field}'\n\nReceived arguments: {}`,
+      },
+    ],
+    details: {},
+  };
+}
+
 function recordSchemaValidationFailure(
   state: SessionState,
   params: unknown,
@@ -75,6 +90,32 @@ function recordSchemaValidationFailure(
     result: createSchemaValidationResult(field),
     config,
   });
+}
+
+function recordToolSchemaValidationFailure(
+  state: SessionState,
+  toolName: string,
+  params: unknown,
+  index: number,
+  field = "content",
+  config: ToolLoopDetectionConfig = enabledLoopDetectionConfig,
+): string {
+  const toolCallId = `${toolName}-schema-${index}`;
+  recordToolCall(state, toolName, params, toolCallId, config);
+  const result = createSchemaValidationResultForTool(toolName, field);
+  recordToolCallOutcome(state, {
+    toolName,
+    toolParams: params,
+    toolCallId,
+    result,
+    config,
+  });
+  const outcomeSignature = extractSchemaValidationOutcomeSignature({
+    toolName,
+    result,
+  });
+  expect(outcomeSignature).toBeDefined();
+  return outcomeSignature ?? "";
 }
 
 function detectSchemaValidationLoop(
@@ -591,11 +632,12 @@ describe("tool-loop-detection", () => {
       expect(result.stuck).toBe(false);
     });
 
-    it("warns on the third repeated schema validation error", () => {
+    it("warns on the third repeated missing-required schema validation error", () => {
       const state = createState();
 
-      recordSchemaValidationFailure(state, {}, 0);
-      recordSchemaValidationFailure(state, { path: "/tmp/out.txt" }, 1);
+      for (let i = 0; i < SAME_REQUIRED_SCHEMA_VALIDATION_REPAIR_THRESHOLD - 1; i += 1) {
+        recordSchemaValidationFailure(state, i === 0 ? {} : { path: "/tmp/out.txt" }, i);
+      }
 
       recordSchemaValidationFailure(state, { path: "/tmp/other.txt" }, 2);
       const loopResult = detectSchemaValidationLoop(state);
@@ -604,7 +646,26 @@ describe("tool-loop-detection", () => {
       if (loopResult.stuck) {
         expect(loopResult.level).toBe("warning");
         expect(loopResult.detector).toBe("schema_validation_error_repeat");
-        expect(loopResult.count).toBe(3);
+        expect(loopResult.count).toBe(SAME_REQUIRED_SCHEMA_VALIDATION_REPAIR_THRESHOLD);
+        expect(loopResult.message).toContain("will be aborted");
+      }
+    });
+
+    it("blocks on the fourth repeated missing-required schema validation error", () => {
+      const state = createState();
+
+      for (let i = 0; i < SAME_REQUIRED_SCHEMA_VALIDATION_ABORT_THRESHOLD; i += 1) {
+        recordSchemaValidationFailure(state, i % 2 === 0 ? {} : { path: "/tmp/out.txt" }, i);
+      }
+
+      const loopResult = detectSchemaValidationLoop(state);
+
+      expect(loopResult.stuck).toBe(true);
+      if (loopResult.stuck) {
+        expect(loopResult.level).toBe("critical");
+        expect(loopResult.detector).toBe("schema_validation_error_repeat");
+        expect(loopResult.count).toBe(SAME_REQUIRED_SCHEMA_VALIDATION_ABORT_THRESHOLD);
+        expect(loopResult.message).toContain("after a repair warning");
       }
     });
 
@@ -636,6 +697,36 @@ describe("tool-loop-detection", () => {
       recordSchemaValidationFailure(state, {}, 2, "content");
       const loopResult = detectSchemaValidationLoop(state, "content");
       expect(loopResult.stuck).toBe(false);
+    });
+
+    it("blocks on the fifth consecutive schema validation error across tools", () => {
+      const state = createState();
+      const tools = ["write", "exec", "message", "read", "browser"];
+      let outcomeSignature = "";
+
+      for (let i = 0; i < CROSS_TOOL_SCHEMA_VALIDATION_ABORT_THRESHOLD; i += 1) {
+        outcomeSignature = recordToolSchemaValidationFailure(
+          state,
+          tools[i] ?? "write",
+          {},
+          i,
+          i === 1 ? "command" : "content",
+        );
+      }
+
+      const loopResult = detectSchemaValidationErrorLoop(state, {
+        toolName: tools.at(-1) ?? "browser",
+        outcomeSignature,
+        config: enabledLoopDetectionConfig,
+      });
+
+      expect(loopResult.stuck).toBe(true);
+      if (loopResult.stuck) {
+        expect(loopResult.level).toBe("critical");
+        expect(loopResult.detector).toBe("schema_validation_error_repeat");
+        expect(loopResult.count).toBe(CROSS_TOOL_SCHEMA_VALIDATION_ABORT_THRESHOLD);
+        expect(loopResult.message).toContain("across tools");
+      }
     });
 
     it("keeps schema validation guard active when general loop detection is disabled", () => {

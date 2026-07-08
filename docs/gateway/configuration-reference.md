@@ -1579,7 +1579,7 @@ Settings can be defined globally in `tools.loopDetection` and overridden per-age
 - `criticalThreshold`: higher repeating threshold for blocking critical loops.
 - `globalCircuitBreakerThreshold`: hard stop threshold for any no-progress run.
 - `schemaValidationWarningThreshold`: repeated schema validation error threshold for warnings.
-- `schemaValidationCriticalThreshold`: repeated schema validation error threshold for blocking.
+- `schemaValidationCriticalThreshold`: repeated schema validation error threshold for blocking. Missing-required-field schema errors inject a repair warning after 3 matching failures and abort after the 4th matching failure. Cross-tool schema failures abort after 5 consecutive failures.
 - `detectors.genericRepeat`: warn on repeated same-tool/same-args calls.
 - `detectors.knownPollNoProgress`: warn/block on known poll tools (`process.poll`, `command_status`, etc.).
 - `detectors.pingPong`: warn/block on alternating no-progress pair patterns.

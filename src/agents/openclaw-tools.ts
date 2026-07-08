@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { resolvePluginTools } from "../plugins/tools.js";
-import type { GatewayMessageChannel } from "../utils/message-channel.js";
+import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
@@ -33,7 +33,7 @@ export function createOpenClawTools(options?: {
   sandboxBrowserBridgeUrl?: string;
   allowHostBrowserControl?: boolean;
   agentSessionKey?: string;
-  agentChannel?: GatewayMessageChannel;
+  agentChannel?: string;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   agentTo?: string;
@@ -73,8 +73,11 @@ export function createOpenClawTools(options?: {
   requesterSenderId?: string | null;
   /** Whether the requesting sender is an owner. */
   senderIsOwner?: boolean;
+  /** Resolved provider/model for the active run, for subagent model inheritance. */
+  currentModel?: string;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
+  const agentGatewayChannel = resolveGatewayMessageChannel(options?.agentChannel);
   const requesterAgentId =
     options?.requesterAgentIdOverride ??
     resolveSessionAgentId({
@@ -116,6 +119,7 @@ export function createOpenClawTools(options?: {
         currentChannelId: options?.currentChannelId,
         currentChannelProvider: options?.agentChannel,
         currentThreadTs: options?.currentThreadTs,
+        workspaceDir,
         replyToMode: options?.replyToMode,
         hasRepliedRef: options?.hasRepliedRef,
         sandboxRoot: options?.sandboxRoot,
@@ -137,7 +141,7 @@ export function createOpenClawTools(options?: {
     }),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
-      agentChannel: options?.agentChannel,
+      agentChannel: agentGatewayChannel,
       config: options?.config,
     }),
     createGatewayTool({
@@ -166,12 +170,12 @@ export function createOpenClawTools(options?: {
     }),
     createSessionsSendTool({
       agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
+      agentChannel: agentGatewayChannel,
       sandboxed: options?.sandboxed,
     }),
     createSessionsSpawnTool({
       agentSessionKey: options?.agentSessionKey,
-      agentChannel: options?.agentChannel,
+      agentChannel: agentGatewayChannel,
       agentAccountId: options?.agentAccountId,
       agentTo: options?.agentTo,
       agentThreadId: options?.agentThreadId,
@@ -180,6 +184,7 @@ export function createOpenClawTools(options?: {
       agentGroupSpace: options?.agentGroupSpace,
       sandboxed: options?.sandboxed,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
+      currentModel: options?.currentModel,
     }),
     createSubagentsTool({
       agentSessionKey: options?.agentSessionKey,

@@ -11,7 +11,7 @@ import { resolveMergedSafeBinProfileFixtures } from "../infra/exec-safe-bin-runt
 import { logWarn } from "../logger.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
-import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
+import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import {
@@ -23,6 +23,7 @@ import {
 import { listChannelAgentTools } from "./channel-tools.js";
 import { resolveImageSanitizationLimits } from "./image-sanitization.js";
 import type { ModelAuthMode } from "./model-auth.js";
+import { normalizeModelRefWithConfig } from "./model-selection.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
 import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
@@ -92,6 +93,27 @@ function isApplyPatchAllowedForModel(params: {
     }
     return normalized === normalizedModelId || normalized === normalizedFull;
   });
+}
+
+function resolveCurrentRunModelSelection(params: {
+  cfg?: OpenClawConfig;
+  modelProvider?: string;
+  modelId?: string;
+}): string | undefined {
+  const provider = params.modelProvider?.trim();
+  const model = params.modelId?.trim();
+  if (!provider || !model) {
+    return undefined;
+  }
+  const normalized = normalizeModelRefWithConfig({
+    provider,
+    model,
+    cfg: params.cfg,
+  });
+  if (normalized.provider === "openrouter" && normalized.model.startsWith("openrouter/")) {
+    return normalized.model;
+  }
+  return `${normalized.provider}/${normalized.model}`;
 }
 
 function resolveExecConfig(params: { cfg?: OpenClawConfig; agentId?: string }) {
@@ -227,6 +249,7 @@ export function createOpenClawCodingTools(options?: {
 }): AnyAgentTool[] {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
+  const messageChannelHint = normalizeMessageChannel(options?.messageProvider);
   const {
     agentId,
     globalPolicy,
@@ -447,7 +470,7 @@ export function createOpenClawCodingTools(options?: {
       sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
       allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
       agentSessionKey: options?.sessionKey,
-      agentChannel: resolveGatewayMessageChannel(options?.messageProvider),
+      agentChannel: messageChannelHint,
       agentAccountId: options?.agentAccountId,
       agentTo: options?.messageTo,
       agentThreadId: options?.messageThreadId,
@@ -482,6 +505,11 @@ export function createOpenClawCodingTools(options?: {
       requesterAgentIdOverride: agentId,
       requesterSenderId: options?.senderId,
       senderIsOwner: options?.senderIsOwner,
+      currentModel: resolveCurrentRunModelSelection({
+        cfg: options?.config,
+        modelProvider: options?.modelProvider,
+        modelId: options?.modelId,
+      }),
     }),
   ];
   // Security: treat unknown/undefined as unauthorized (opt-in, not opt-out)
