@@ -52,6 +52,7 @@ function expectResolvedForwardCompatFallback(params: {
 }) {
   const result = resolveModel(params.provider, params.id, "/tmp/agent", params.cfg);
   expect(result.error).toBeUndefined();
+  expect(result.modelResolutionSource).toBe("forward_compat");
   expect(result.model).toMatchObject(params.expectedModel);
 }
 
@@ -169,6 +170,48 @@ describe("resolveModel", () => {
     expect(result.model?.baseUrl).toBe("http://localhost:9000");
     expect(result.model?.provider).toBe("custom");
     expect(result.model?.id).toBe("missing-model");
+    expect(result.modelResolutionSource).toBe("provider_config_fallback");
+  });
+
+  it("leaves contextWindow undefined for fallback models (resolved via resolveContextWindowInfo)", () => {
+    // Provider-config fallback models no longer borrow a contextWindow onto the model object;
+    // the single-source budget is resolved at consumption time through resolveContextWindowInfo
+    // (modelsConfig > models.defaultContextWindow > 200k default, capped by contextTokens), so
+    // pruning/compaction/read paging all share one base.
+    const cfg = {
+      models: {
+        defaultContextWindow: 96_000,
+        providers: {
+          custom: {
+            baseUrl: "http://localhost:9000",
+            models: [],
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const result = resolveModel("custom", "dynamic-model", "/tmp/agent", cfg);
+
+    expect(result.model?.contextWindow).toBeUndefined();
+    expect(result.modelResolutionSource).toBe("provider_config_fallback");
+  });
+
+  it("marks exact workspace config models as inline config models", () => {
+    const cfg = {
+      models: {
+        providers: {
+          custom: {
+            baseUrl: "http://localhost:9000",
+            models: [makeModel("custom-model")],
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const result = resolveModel("custom", "custom-model", "/tmp/agent", cfg);
+
+    expect(result.error).toBeUndefined();
+    expect(result.modelResolutionSource).toBe("inline_config");
   });
 
   it("builds an openai-codex fallback for gpt-5.3-codex", () => {
@@ -177,6 +220,7 @@ describe("resolveModel", () => {
     const result = resolveModel("openai-codex", "gpt-5.3-codex", "/tmp/agent");
 
     expect(result.error).toBeUndefined();
+    expect(result.modelResolutionSource).toBe("forward_compat");
     expect(result.model).toMatchObject(buildOpenAICodexForwardCompatExpectation("gpt-5.3-codex"));
   });
 

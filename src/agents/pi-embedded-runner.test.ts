@@ -155,7 +155,9 @@ const makeOpenAiConfig = (modelIds: string[]) =>
             reasoning: false,
             input: ["text"],
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-            contextWindow: 16_000,
+            // Use a realistic window well above the default compaction reserve (16_384) so the
+            // preflight/emergency-compaction path is not spuriously triggered for small prompts.
+            contextWindow: 200_000,
             maxTokens: 2048,
           })),
         },

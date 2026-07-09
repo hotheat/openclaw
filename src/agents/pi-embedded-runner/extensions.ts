@@ -10,7 +10,7 @@ import { setContextPruningRuntime } from "../pi-extensions/context-pruning/runti
 import { computeEffectiveSettings } from "../pi-extensions/context-pruning/settings.js";
 import { makeToolPrunablePredicate } from "../pi-extensions/context-pruning/tools.js";
 import { ensurePiCompactionReserveTokens } from "../pi-settings.js";
-import { isCacheTtlEligibleProvider, readLastCacheTtlTimestamp } from "./cache-ttl.js";
+import { readLastCacheTtlTimestamp, shouldTrackContextPruningTtlForModel } from "./cache-ttl.js";
 
 function resolveContextWindowTokens(params: {
   cfg: OpenClawConfig | undefined;
@@ -35,10 +35,7 @@ function buildContextPruningFactory(params: {
   model: Model<Api> | undefined;
 }): ExtensionFactory | undefined {
   const raw = params.cfg?.agents?.defaults?.contextPruning;
-  if (raw?.mode !== "cache-ttl") {
-    return undefined;
-  }
-  if (!isCacheTtlEligibleProvider(params.provider, params.modelId)) {
+  if (!shouldTrackContextPruningTtlForModel(params.cfg, params.provider, params.modelId)) {
     return undefined;
   }
 

@@ -87,6 +87,7 @@ export const BedrockDiscoverySchema = z
 export const ModelsConfigSchema = z
   .object({
     mode: z.union([z.literal("merge"), z.literal("replace")]).optional(),
+    defaultContextWindow: z.number().int().positive().optional(),
     providers: z.record(z.string(), ModelProviderSchema).optional(),
     bedrockDiscovery: BedrockDiscoverySchema,
   })

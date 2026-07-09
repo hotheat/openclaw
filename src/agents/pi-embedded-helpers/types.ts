@@ -7,4 +7,5 @@ export type FailoverReason =
   | "billing"
   | "timeout"
   | "model_not_found"
+  | "model_config"
   | "unknown";

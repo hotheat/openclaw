@@ -14,6 +14,7 @@ export type CacheTraceStage =
   | "session:limited"
   | "prompt:before"
   | "prompt:images"
+  | "prompt:preflight-prune"
   | "stream:context"
   | "session:after";
 

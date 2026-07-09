@@ -18,16 +18,16 @@ x-i18n:
 
 ## 运行时机
 
-- 当启用 `mode: "cache-ttl"` 且该会话的最后一次 Anthropic 调用早于 `ttl` 时。
+- 当启用 `mode: "cache-ttl"` 且该会话的最后一次剪枝 touch 早于 `ttl` 时。
 - 仅影响该请求发送给模型的消息。
-- 仅对 Anthropic API 调用（和 OpenRouter Anthropic 模型）生效。
-- 为获得最佳效果，请将 `ttl` 与你的模型 `cacheControlTtl` 匹配。
+- 显式启用剪枝后可作用于任何 provider。Anthropic prompt cache eligibility 单独判断。
+- 调 Anthropic prompt cache 时，可将 `ttl` 与模型 `cacheControlTtl` 匹配。
 - 剪枝后，TTL 窗口会重置，因此后续请求会保持缓存直到 `ttl` 再次过期。
 
 ## 智能默认值（Anthropic）
 
-- **OAuth 或 setup-token** 配置文件：启用 `cache-ttl` 剪枝并将心跳设置为 `1h`。
-- **API 密钥**配置文件：启用 `cache-ttl` 剪枝，将心跳设置为 `30m`，并将 Anthropic 模型的 `cacheControlTtl` 默认为 `1h`。
+- **OAuth 或 setup-token** 配置文件：启用 `cache-ttl` 剪枝，将剪枝 `ttl` 设为 `5m`，并将心跳设置为 `1h`。
+- **API 密钥**配置文件：启用 `cache-ttl` 剪枝，将剪枝 `ttl` 设为 `5m`，将心跳设置为 `30m`，并将 Anthropic 模型的 `cacheControlTtl` 默认为 `1h`。
 - 如果你显式设置了这些值中的任何一个，OpenClaw **不会**覆盖它们。
 
 ## 改进内容（成本 + 缓存行为）
@@ -36,6 +36,7 @@ x-i18n:
 - **什么变得更便宜：** 剪枝减少了 TTL 过期后第一个请求的 **cacheWrite** 大小。
 - **为什么 TTL 重置很重要：** 一旦剪枝运行，缓存窗口会重置，因此后续请求可以重用新缓存的提示，而不是再次重新缓存完整历史。
 - **它不做什么：** 剪枝不会添加 token 或"双倍"成本；它只改变该 TTL 后第一个请求缓存的内容。
+- **对非 Anthropic provider：** 即使没有 provider 侧 prompt cache，剪枝仍会在模型调用前减少过大的工具历史。
 
 ## 可以剪枝的内容
 
@@ -59,7 +60,7 @@ x-i18n:
 
 ### cache-ttl
 
-- 仅当最后一次 Anthropic 调用早于 `ttl`（默认 `5m`）时才运行剪枝。
+- 仅当最后一次剪枝 touch 早于 `ttl`（默认 `5m`）时才运行剪枝。
 - 运行时：与之前相同的软修剪 + 硬清除行为。
 
 ## 软剪枝 vs 硬剪枝

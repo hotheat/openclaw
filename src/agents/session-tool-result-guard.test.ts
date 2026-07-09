@@ -12,13 +12,18 @@ const toolCallMessage = asAppendMessage({
   content: [{ type: "toolCall", id: "call_1", name: "read", arguments: {} }],
 });
 
-function appendToolResultText(sm: SessionManager, text: string) {
-  sm.appendMessage(toolCallMessage);
+function appendToolResultText(sm: SessionManager, text: string, toolName = "read") {
+  sm.appendMessage(
+    asAppendMessage({
+      role: "assistant",
+      content: [{ type: "toolCall", id: "call_1", name: toolName, arguments: {} }],
+    }),
+  );
   sm.appendMessage(
     asAppendMessage({
       role: "toolResult",
       toolCallId: "call_1",
-      toolName: "read",
+      toolName,
       content: [{ type: "text", text }],
       isError: false,
       timestamp: Date.now(),
@@ -257,6 +262,18 @@ describe("installSessionToolResultGuard", () => {
 
     const text = getToolResultText(getPersistedMessages(sm));
     expect(text.length).toBeLessThan(500_000);
+    expect(text.length).toBeLessThanOrEqual(40_000);
+    expect(text).toContain("truncated");
+  });
+
+  it("uses the stricter persistence cap for exec tool results", () => {
+    const sm = SessionManager.inMemory();
+    installSessionToolResultGuard(sm);
+
+    appendToolResultText(sm, "x".repeat(100_000), "exec");
+
+    const text = getToolResultText(getPersistedMessages(sm));
+    expect(text.length).toBeLessThanOrEqual(20_000);
     expect(text).toContain("truncated");
   });
 
@@ -308,6 +325,29 @@ describe("installSessionToolResultGuard", () => {
 
     const text = getToolResultText(getPersistedMessages(sm));
     expect(text).toBe("rewritten by hook");
+  });
+
+  it("caps tool result text after before_message_write mutations", () => {
+    const sm = SessionManager.inMemory();
+    installSessionToolResultGuard(sm, {
+      beforeMessageWriteHook: ({ message }) => {
+        if ((message as { role?: string }).role !== "toolResult") {
+          return undefined;
+        }
+        return {
+          message: {
+            ...(message as unknown as Record<string, unknown>),
+            content: [{ type: "text", text: "x".repeat(100_000) }],
+          } as unknown as AgentMessage,
+        };
+      },
+    });
+
+    appendToolResultText(sm, "original", "read");
+
+    const text = getToolResultText(getPersistedMessages(sm));
+    expect(text.length).toBeLessThanOrEqual(40_000);
+    expect(text).toContain("truncated");
   });
 
   it("applies before_message_write to synthetic tool-result flushes", () => {

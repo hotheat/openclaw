@@ -29,8 +29,14 @@ import { resolveSessionAgentIds } from "../agent-scope.js";
 import type { ExecElevatedDefaults } from "../bash-tools.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "../bootstrap-files.js";
 import { listChannelSupportedActions, resolveChannelMessageToolHints } from "../channel-tools.js";
+import {
+  CONTEXT_WINDOW_HARD_MIN_TOKENS,
+  CONTEXT_WINDOW_WARN_BELOW_TOKENS,
+  evaluateContextWindowGuard,
+  resolveContextWindowInfo,
+} from "../context-window-guard.js";
 import { formatUserTime, resolveUserTimeFormat, resolveUserTimezone } from "../date-time.js";
-import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
+import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { resolveOpenClawDocsPath } from "../docs-path.js";
 import { getApiKeyForModel, resolveModelAuthMode } from "../model-auth.js";
 import { ensureOpenClawModelsJson } from "../models-config.js";
@@ -63,7 +69,9 @@ import { resolveTranscriptPolicy } from "../transcript-policy.js";
 import {
   compactWithSafetyTimeout,
   EMBEDDED_COMPACTION_TIMEOUT_MS,
+  waitForCompactionAbortSettlement,
 } from "./compaction-safety-timeout.js";
+import { appendEmergencyCompaction } from "./emergency-compaction.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
 import {
   logToolSchemasForGoogle,
@@ -322,7 +330,7 @@ export async function compactEmbeddedPiSessionDirect(
   };
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
   await ensureOpenClawModelsJson(params.config, agentDir);
-  const { model, error, authStorage, modelRegistry } = resolveModel(
+  const { model, modelResolutionSource, error, authStorage, modelRegistry } = resolveModel(
     provider,
     modelId,
     agentDir,
@@ -331,6 +339,39 @@ export async function compactEmbeddedPiSessionDirect(
   if (!model) {
     const reason = error ?? `Unknown model: ${provider}/${modelId}`;
     return fail(reason);
+  }
+  const modelContextWindowForGuard =
+    modelResolutionSource === "provider_config_fallback" ? undefined : model.contextWindow;
+  const contextWindowInfo = resolveContextWindowInfo({
+    cfg: params.config,
+    provider,
+    modelId,
+    modelContextWindow: modelContextWindowForGuard,
+    defaultTokens: DEFAULT_CONTEXT_TOKENS,
+  });
+  const contextWindowGuard = evaluateContextWindowGuard({
+    info: contextWindowInfo,
+    warnBelowTokens: CONTEXT_WINDOW_WARN_BELOW_TOKENS,
+    hardMinTokens: CONTEXT_WINDOW_HARD_MIN_TOKENS,
+    defaultTokens: DEFAULT_CONTEXT_TOKENS,
+  });
+  if (contextWindowGuard.shouldBlock) {
+    return fail(
+      `Model context window too small (${contextWindowGuard.tokens} tokens). Minimum is ${CONTEXT_WINDOW_HARD_MIN_TOKENS}.`,
+    );
+  }
+  // Custom-provider models that fall back to the 200k default run on that budget but warn, so
+  // the silent guess stays visible. Mirrors the run/preflight path.
+  if (
+    (modelResolutionSource === "provider_config_fallback" ||
+      modelResolutionSource === "inline_config") &&
+    contextWindowGuard.source === "default"
+  ) {
+    log.warn(
+      `explicit compaction using default context window: ${provider}/${modelId} ` +
+        `ctx=${contextWindowGuard.tokens} source=${contextWindowGuard.source} resolution=${modelResolutionSource}. ` +
+        `Set models.defaultContextWindow or models.providers.${provider}.models[].contextWindow for tighter budgets.`,
+    );
   }
   try {
     const apiKeyInfo = await getApiKeyForModel({
@@ -435,7 +476,7 @@ export async function compactEmbeddedPiSessionDirect(
       abortSignal: runAbortController.signal,
       modelProvider: model.provider,
       modelId,
-      modelContextWindowTokens: model.contextWindow,
+      modelContextWindowTokens: contextWindowInfo.tokens,
       modelAuthMode: resolveModelAuthMode(model.provider, params.config),
     });
     const tools = sanitizeToolsForGoogle({ tools: toolsRaw, provider });
@@ -713,9 +754,61 @@ export async function compactEmbeddedPiSessionDirect(
         }
 
         const compactStartedAt = Date.now();
-        const result = await compactWithSafetyTimeout(() =>
-          session.compact(params.customInstructions),
-        );
+        const preLeafId = sessionManager.getLeafId();
+        const preCompactionCount = sessionManager
+          .getEntries()
+          .filter((entry) => entry.type === "compaction").length;
+        const compactPromise = session.compact(params.customInstructions);
+        const result = await compactWithSafetyTimeout(() => compactPromise).catch(async (err) => {
+          try {
+            session.abortCompaction();
+          } catch (abortErr) {
+            log.warn(`explicit compaction abort failed: ${String(abortErr)}`);
+          }
+          const abortWait = await waitForCompactionAbortSettlement(compactPromise);
+          if (abortWait === "timed_out") {
+            log.warn("explicit compaction did not settle after abort grace; continuing recovery");
+          }
+          const reasonText = describeUnknownError(err);
+          // Resolve the effective context window (honoring
+          // models.providers.*.models[].contextWindow and
+          // agents.defaults.contextTokens) instead of raw model metadata. Raw
+          // model.contextWindow is undefined for workspace/custom models and
+          // would leave the emergency tail budget as NaN, so the recovery keeps
+          // the oversized tail. Mirrors the run/preflight path.
+          const emergencyContextWindowTokens = resolveContextWindowInfo({
+            cfg: params.config,
+            provider,
+            modelId,
+            modelContextWindow: modelContextWindowForGuard,
+            defaultTokens: DEFAULT_CONTEXT_TOKENS,
+          }).tokens;
+          const emergency = await appendEmergencyCompaction({
+            sessionManager,
+            runId,
+            reason: reasonText.toLowerCase().includes("timeout") ? "timeout" : "compaction_error",
+            contextWindowTokens: emergencyContextWindowTokens,
+            keepRecentTokens: settingsManager.getCompactionSettings().keepRecentTokens,
+            repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
+            preLeafId,
+            preCompactionCount,
+          });
+          session.agent.replaceMessages(emergency.rebuiltMessages);
+          log.warn(
+            `[compaction-diag] explicit compaction failed; installed emergency compaction ` +
+              `runId=${runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+              `diagId=${diagId} reason=${emergency.reason} appended=${emergency.appended}`,
+          );
+          return {
+            summary: "Emergency compaction",
+            firstKeptEntryId: emergency.firstKeptEntryId ?? "",
+            tokensBefore: emergency.tokensBefore,
+            details: {
+              emergency: true,
+              reason: emergency.reason,
+            },
+          };
+        });
         // Estimate tokens after compaction by summing token estimates for remaining messages
         let tokensAfter: number | undefined;
         try {

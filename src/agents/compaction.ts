@@ -13,9 +13,50 @@ export const MIN_CHUNK_RATIO = 0.15;
 export const SAFETY_MARGIN = 1.2; // 20% buffer for estimateTokens() inaccuracy
 const DEFAULT_SUMMARY_FALLBACK = "No prior history.";
 const DEFAULT_PARTS = 2;
+const DEFAULT_MAX_SUMMARY_CHUNKS = 2;
 const MERGE_SUMMARIES_INSTRUCTIONS =
   "Merge these partial summaries into a single cohesive summary. Preserve decisions," +
   " TODOs, open questions, and any constraints.";
+
+export type SummaryCallBudget = {
+  maxCalls: number;
+  usedCalls: number;
+  tryConsume: (label: string) => boolean;
+};
+
+export class SummaryCallBudgetExhaustedError extends Error {
+  constructor(
+    readonly label: string,
+    readonly budget: Pick<SummaryCallBudget, "maxCalls" | "usedCalls">,
+  ) {
+    super(`Summary call budget exhausted before ${label}`);
+    this.name = "SummaryCallBudgetExhaustedError";
+  }
+}
+
+export function createSummaryCallBudget(maxCalls: number): SummaryCallBudget {
+  const budget = {
+    maxCalls: Math.max(0, Math.floor(maxCalls)),
+    usedCalls: 0,
+    tryConsume(label: string): boolean {
+      void label;
+      if (budget.usedCalls >= budget.maxCalls) {
+        return false;
+      }
+      budget.usedCalls += 1;
+      return true;
+    },
+  };
+  return budget;
+}
+
+function makeDroppedNoteMessage(note: string): AgentMessage {
+  return {
+    role: "user",
+    content: note,
+    timestamp: 0,
+  };
+}
 
 export function estimateMessagesTokens(messages: AgentMessage[]): number {
   // SECURITY: toolResult.details can contain untrusted/verbose payloads; never include in LLM-facing compaction.
@@ -122,6 +163,50 @@ export function chunkMessagesByMaxTokens(
   return chunks;
 }
 
+function formatDroppedChunkNote(params: {
+  droppedChunks: number;
+  droppedMessages: number;
+  droppedTokens: number;
+}): string {
+  return (
+    `[Summarization input pruned: omitted ${params.droppedMessages} older message(s) ` +
+    `from ${params.droppedChunks} chunk(s), approx ${params.droppedTokens} token(s).]`
+  );
+}
+
+function limitSummaryChunks(
+  chunks: AgentMessage[][],
+  maxChunks = DEFAULT_MAX_SUMMARY_CHUNKS,
+): {
+  chunks: AgentMessage[][];
+  droppedChunks: number;
+  droppedMessages: number;
+  droppedTokens: number;
+} {
+  const normalizedMaxChunks = Math.max(1, Math.floor(maxChunks));
+  if (chunks.length <= normalizedMaxChunks) {
+    return { chunks, droppedChunks: 0, droppedMessages: 0, droppedTokens: 0 };
+  }
+
+  const dropped = chunks.slice(0, chunks.length - normalizedMaxChunks);
+  const kept = chunks.slice(chunks.length - normalizedMaxChunks);
+  const droppedMessages = dropped.flat();
+  const droppedTokens = estimateMessagesTokens(droppedMessages);
+  const note = makeDroppedNoteMessage(
+    formatDroppedChunkNote({
+      droppedChunks: dropped.length,
+      droppedMessages: droppedMessages.length,
+      droppedTokens,
+    }),
+  );
+  return {
+    chunks: [[note, ...kept[0]], ...kept.slice(1)],
+    droppedChunks: dropped.length,
+    droppedMessages: droppedMessages.length,
+    droppedTokens,
+  };
+}
+
 /**
  * Compute adaptive chunk ratio based on average message size.
  * When messages are large, we use smaller chunks to avoid exceeding model limits.
@@ -165,6 +250,8 @@ async function summarizeChunks(params: {
   maxChunkTokens: number;
   customInstructions?: string;
   previousSummary?: string;
+  summaryBudget?: SummaryCallBudget;
+  maxChunks?: number;
 }): Promise<string> {
   if (params.messages.length === 0) {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
@@ -172,10 +259,22 @@ async function summarizeChunks(params: {
 
   // SECURITY: never feed toolResult.details into summarization prompts.
   const safeMessages = stripToolResultDetails(params.messages);
-  const chunks = chunkMessagesByMaxTokens(safeMessages, params.maxChunkTokens);
+  const chunkLimit = limitSummaryChunks(
+    chunkMessagesByMaxTokens(safeMessages, params.maxChunkTokens),
+    params.maxChunks,
+  );
+  const chunks = chunkLimit.chunks;
   let summary = params.previousSummary;
 
   for (const chunk of chunks) {
+    // Consume one budget slot per chunk BEFORE retrying. Tying tryConsume to the retry
+    // callback previously let a single flaky chunk burn up to `attempts` slots, starving
+    // later chunks and deterministically exhausting the staged path's budget. Per-chunk
+    // consumption makes one summary == one slot regardless of transient retries.
+    const label = "compaction/generateSummary";
+    if (params.summaryBudget && !params.summaryBudget.tryConsume(label)) {
+      throw new SummaryCallBudgetExhaustedError(label, params.summaryBudget);
+    }
     summary = await retryAsync(
       () =>
         generateSummary(
@@ -192,7 +291,7 @@ async function summarizeChunks(params: {
         minDelayMs: 500,
         maxDelayMs: 5000,
         jitter: 0.2,
-        label: "compaction/generateSummary",
+        label,
         shouldRetry: (err) => !(err instanceof Error && err.name === "AbortError"),
       },
     );
@@ -215,6 +314,8 @@ export async function summarizeWithFallback(params: {
   contextWindow: number;
   customInstructions?: string;
   previousSummary?: string;
+  summaryBudget?: SummaryCallBudget;
+  maxChunks?: number;
 }): Promise<string> {
   const { messages, contextWindow } = params;
 
@@ -226,6 +327,9 @@ export async function summarizeWithFallback(params: {
   try {
     return await summarizeChunks(params);
   } catch (fullError) {
+    if (fullError instanceof SummaryCallBudgetExhaustedError) {
+      throw fullError;
+    }
     log.warn(
       `Full summarization failed, trying partial: ${
         fullError instanceof Error ? fullError.message : String(fullError)
@@ -258,6 +362,9 @@ export async function summarizeWithFallback(params: {
       const notes = oversizedNotes.length > 0 ? `\n\n${oversizedNotes.join("\n")}` : "";
       return partialSummary + notes;
     } catch (partialError) {
+      if (partialError instanceof SummaryCallBudgetExhaustedError) {
+        throw partialError;
+      }
       log.warn(
         `Partial summarization also failed: ${
           partialError instanceof Error ? partialError.message : String(partialError)
@@ -285,8 +392,14 @@ export async function summarizeInStages(params: {
   previousSummary?: string;
   parts?: number;
   minMessagesForSplit?: number;
+  summaryBudget?: SummaryCallBudget;
+  maxChunks?: number;
 }): Promise<string> {
-  const { messages } = params;
+  const inputPrune = pruneMessagesForSummarizationBudget({
+    messages: params.messages,
+    contextWindow: params.contextWindow,
+  });
+  const { messages } = inputPrune;
   if (messages.length === 0) {
     return params.previousSummary ?? DEFAULT_SUMMARY_FALLBACK;
   }
@@ -295,20 +408,35 @@ export async function summarizeInStages(params: {
   const parts = normalizeParts(params.parts ?? DEFAULT_PARTS, messages.length);
   const totalTokens = estimateMessagesTokens(messages);
 
+  // Each phase self-budgets when the caller doesn't provide one. A staged phase needs
+  // `parts` partial summaries plus one merge, and each summarizeWithFallback call may
+  // internally fan out to up to `maxChunks` chunks — so (parts + 1) * maxChunks is the
+  // tight upper bound for one phase. Callers (compaction-safeguard) previously shared a
+  // single budget(2), which a normal 3-call staged phase deterministically exhausted,
+  // forcing every phase into the truncation fallback. Per-phase budgeting lets each
+  // phase complete independently while still bounding runaway calls.
+  const maxChunks = params.maxChunks ?? DEFAULT_MAX_SUMMARY_CHUNKS;
+  const summaryBudget = params.summaryBudget ?? createSummaryCallBudget((parts + 1) * maxChunks);
+  const callParams = { ...params, summaryBudget };
+
   if (parts <= 1 || messages.length < minMessagesForSplit || totalTokens <= params.maxChunkTokens) {
-    return summarizeWithFallback(params);
+    return summarizeWithFallback({ ...callParams, messages });
   }
 
-  const splits = splitMessagesByTokenShare(messages, parts).filter((chunk) => chunk.length > 0);
+  const splitLimit = limitSummaryChunks(
+    splitMessagesByTokenShare(messages, parts).filter((chunk) => chunk.length > 0),
+    params.maxChunks,
+  );
+  const splits = splitLimit.chunks;
   if (splits.length <= 1) {
-    return summarizeWithFallback(params);
+    return summarizeWithFallback({ ...callParams, messages });
   }
 
   const partialSummaries: string[] = [];
   for (const chunk of splits) {
     partialSummaries.push(
       await summarizeWithFallback({
-        ...params,
+        ...callParams,
         messages: chunk,
         previousSummary: undefined,
       }),
@@ -330,7 +458,7 @@ export async function summarizeInStages(params: {
     : MERGE_SUMMARIES_INSTRUCTIONS;
 
   return summarizeWithFallback({
-    ...params,
+    ...callParams,
     messages: summaryMessages,
     customInstructions: mergeInstructions,
   });
@@ -397,6 +525,43 @@ export function pruneHistoryForContextShare(params: {
     droppedTokens,
     keptTokens: estimateMessagesTokens(keptMessages),
     budgetTokens,
+  };
+}
+
+export function pruneMessagesForSummarizationBudget(params: {
+  messages: AgentMessage[];
+  contextWindow: number;
+  maxHistoryShare?: number;
+  parts?: number;
+}): {
+  messages: AgentMessage[];
+  droppedMessagesList: AgentMessage[];
+  droppedChunks: number;
+  droppedMessages: number;
+  droppedTokens: number;
+  keptTokens: number;
+  budgetTokens: number;
+  droppedNote?: string;
+} {
+  const pruned = pruneHistoryForContextShare({
+    messages: params.messages,
+    maxContextTokens: params.contextWindow,
+    maxHistoryShare: params.maxHistoryShare ?? 0.5,
+    parts: params.parts,
+  });
+  if (pruned.droppedMessages === 0) {
+    return { ...pruned, droppedNote: undefined };
+  }
+
+  const droppedNote =
+    `[Summarization input pruned: dropped ${pruned.droppedMessages} older message(s) ` +
+    `from ${pruned.droppedChunks} chunk(s), approx ${pruned.droppedTokens} token(s); ` +
+    `kept ${pruned.keptTokens}/${pruned.budgetTokens} budget token(s).]`;
+
+  return {
+    ...pruned,
+    messages: [makeDroppedNoteMessage(droppedNote), ...pruned.messages],
+    droppedNote,
   };
 }
 

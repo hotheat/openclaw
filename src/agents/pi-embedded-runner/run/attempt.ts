@@ -6,7 +6,6 @@ import { streamSimple } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
   DefaultResourceLoader,
-  estimateTokens,
   type CompactionResult,
   SessionManager,
   SettingsManager,
@@ -97,11 +96,13 @@ import type { AgentTraceObservationHandle, AgentTraceRunHandle } from "../../tra
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
-import { appendCacheTtlTimestamp, isCacheTtlEligibleProvider } from "../cache-ttl.js";
+import { appendCacheTtlTimestamp, shouldTrackContextPruningTtlForModel } from "../cache-ttl.js";
 import {
   compactWithSafetyTimeout,
   type CompactWithSafetyTimeoutOptions,
+  waitForCompactionAbortSettlement,
 } from "../compaction-safety-timeout.js";
+import { appendEmergencyCompaction } from "../emergency-compaction.js";
 import { buildEmbeddedExtensionFactories } from "../extensions.js";
 import { applyExtraParamsToAgent } from "../extra-params.js";
 import {
@@ -112,7 +113,9 @@ import {
 } from "../google.js";
 import { getDmHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
+import { estimateAgentMessagesTokens } from "../message-token-estimate.js";
 import { buildModelAliasLines } from "../model.js";
+import { DEFAULT_TARGET_RATIO, pruneMessagesBeforePreflight } from "../preflight-pruning.js";
 import {
   clearActiveEmbeddedRun,
   type EmbeddedPiQueueHandle,
@@ -177,10 +180,7 @@ export function estimatePromptPreflightTokens(params: {
   toolDefinitions: unknown[];
   promptImageCount: number;
 }): PromptPreflightTokenEstimate {
-  let historyTokens = 0;
-  for (const message of params.messages) {
-    historyTokens += estimateTokens(message);
-  }
+  const historyTokens = estimateAgentMessagesTokens(params.messages);
 
   const promptTokens = estimateStringTokens(params.prompt);
   const systemPromptTokens = estimateStringTokens(params.systemPrompt);
@@ -199,6 +199,86 @@ export function estimatePromptPreflightTokens(params: {
   };
 }
 
+export function prunePromptHistoryAfterEmergencyCompaction(params: {
+  messages: AgentMessage[];
+  prompt: string;
+  systemPrompt: string;
+  toolDefinitions: unknown[];
+  promptImageCount: number;
+  contextWindowTokens: number;
+  reserveTokens: number;
+  repairToolUseResultPairing: boolean;
+}): {
+  messages: AgentMessage[];
+  pruned: boolean;
+  withinBudget: boolean;
+  estimateBefore: PromptPreflightTokenEstimate;
+  estimateAfter: PromptPreflightTokenEstimate;
+  targetHistoryTokens: number;
+} {
+  const estimateBefore = estimatePromptPreflightTokens({
+    messages: params.messages,
+    prompt: params.prompt,
+    systemPrompt: params.systemPrompt,
+    toolDefinitions: params.toolDefinitions,
+    promptImageCount: params.promptImageCount,
+  });
+  if (
+    !shouldCompactBeforePrompt({
+      estimate: estimateBefore,
+      contextWindowTokens: params.contextWindowTokens,
+      reserveTokens: params.reserveTokens,
+    })
+  ) {
+    return {
+      messages: params.messages,
+      pruned: false,
+      withinBudget: true,
+      estimateBefore,
+      estimateAfter: estimateBefore,
+      targetHistoryTokens: 0,
+    };
+  }
+
+  // Deterministic recovery target leaves room for the non-history components and
+  // reserve; if those already exceed the window, targetHistoryTokens clamps to 1 and
+  // the post-prune re-check below reports withinBudget=false.
+  const targetHistoryTokens = computePreflightHistoryTarget({
+    estimate: estimateBefore,
+    contextWindowTokens: params.contextWindowTokens,
+    reserveTokens: params.reserveTokens,
+  });
+
+  const pruned = pruneMessagesBeforePreflight({
+    messages: params.messages,
+    contextWindowTokens: params.contextWindowTokens,
+    repairToolUseResultPairing: params.repairToolUseResultPairing,
+    targetHistoryTokens,
+    protectedAssistantTurns: 1,
+  });
+  const messages = pruned.messages;
+  const estimateAfter = estimatePromptPreflightTokens({
+    messages,
+    prompt: params.prompt,
+    systemPrompt: params.systemPrompt,
+    toolDefinitions: params.toolDefinitions,
+    promptImageCount: params.promptImageCount,
+  });
+  const withinBudget = !shouldCompactBeforePrompt({
+    estimate: estimateAfter,
+    contextWindowTokens: params.contextWindowTokens,
+    reserveTokens: params.reserveTokens,
+  });
+  return {
+    messages,
+    pruned: pruned.pruned,
+    withinBudget,
+    estimateBefore,
+    estimateAfter,
+    targetHistoryTokens,
+  };
+}
+
 export function shouldCompactBeforePrompt(params: {
   estimate: PromptPreflightTokenEstimate;
   contextWindowTokens: number;
@@ -207,6 +287,58 @@ export function shouldCompactBeforePrompt(params: {
   const contextWindowTokens = Math.max(1, Math.floor(params.contextWindowTokens));
   const reserveTokens = Math.max(0, Math.floor(params.reserveTokens));
   return params.estimate.totalTokens > Math.max(0, contextWindowTokens - reserveTokens);
+}
+
+/**
+ * Budget-aware history target for deterministic preflight pruning. Returns the most
+ * history (in tokens) we can keep while leaving room for the non-history components
+ * (prompt, system prompt, tool schemas, images) and the reserve, after backing out
+ * the preflight safety margin. The default prune ratio (0.6 of the window) acts as a
+ * conservative ceiling; the real remaining budget tightens it further when the prompt,
+ * system prompt, tool schemas, or images are themselves large. When the non-history
+ * components already exceed the window the result clamps to 1 (pruning cannot help).
+ */
+export function computePreflightHistoryTarget(params: {
+  estimate: PromptPreflightTokenEstimate;
+  contextWindowTokens: number;
+  reserveTokens: number;
+}): number {
+  const nonHistoryTokens =
+    params.estimate.promptTokens +
+    params.estimate.systemPromptTokens +
+    params.estimate.toolSchemaTokens +
+    params.estimate.imageTokens;
+  const budgetBeforeMargin = Math.max(0, params.contextWindowTokens - params.reserveTokens);
+  const maxHistoryTokens = Math.floor(
+    budgetBeforeMargin / PREFLIGHT_CONTEXT_ESTIMATE_SAFETY_MARGIN - nonHistoryTokens,
+  );
+  const ratioCap = Math.max(
+    1,
+    Math.floor(Math.max(1, params.contextWindowTokens) * DEFAULT_TARGET_RATIO),
+  );
+  return Math.max(1, Math.min(ratioCap, maxHistoryTokens));
+}
+
+export function formatContextPreflightLog(params: {
+  runId: string;
+  sessionKey: string;
+  provider: string;
+  modelId: string;
+  estimate: PromptPreflightTokenEstimate;
+  contextWindowTokens: number;
+  contextWindowSource: string;
+  reserveTokens: number;
+  willCompact: boolean;
+}): string {
+  return (
+    `[context-preflight] runId=${params.runId} sessionKey=${params.sessionKey} ` +
+    `provider=${params.provider}/${params.modelId} estimatedTokens=${params.estimate.totalTokens} ` +
+    `historyTokens=${params.estimate.historyTokens} promptTokens=${params.estimate.promptTokens} ` +
+    `systemPromptTokens=${params.estimate.systemPromptTokens} toolSchemaTokens=${params.estimate.toolSchemaTokens} ` +
+    `imageTokens=${params.estimate.imageTokens} contextWindow=${params.contextWindowTokens} ` +
+    `contextWindowSource=${params.contextWindowSource} ` +
+    `reserveTokens=${params.reserveTokens} willCompact=${params.willCompact}`
+  );
 }
 
 export function injectHistoryImagesIntoMessages(
@@ -304,7 +436,10 @@ export async function runPreflightCompactionToSettled(params: {
     } catch (abortErr) {
       log.warn(`preflight compaction abort failed: ${String(abortErr)}`);
     }
-    await compactPromise.catch(() => undefined);
+    const abortWait = await waitForCompactionAbortSettlement(compactPromise);
+    if (abortWait === "timed_out") {
+      log.warn("preflight compaction did not settle after abort grace; continuing recovery");
+    }
     throw err;
   }
 }
@@ -608,7 +743,7 @@ export async function runEmbeddedAttempt(
           abortSignal: runAbortController.signal,
           modelProvider: params.model.provider,
           modelId: params.modelId,
-          modelContextWindowTokens: params.model.contextWindow,
+          modelContextWindowTokens: params.effectiveContextWindowTokens,
           modelAuthMode: resolveModelAuthMode(params.model.provider, params.config),
           currentChannelId: params.currentChannelId,
           currentThreadTs: params.currentThreadTs,
@@ -1416,13 +1551,71 @@ export async function runEmbeddedAttempt(
 
           const contextWindowTokens = effectiveContextWindowTokens;
           const compactionSettings = settingsManager.getCompactionSettings();
-          const preflightEstimate = estimatePromptPreflightTokens({
+          let preflightEstimate = estimatePromptPreflightTokens({
             messages: activeSession.messages,
             prompt: effectivePrompt,
             systemPrompt: systemPromptText,
             toolDefinitions: modelFacingToolDefinitions,
             promptImageCount: imageResult.images.length,
           });
+          // Deterministic preflight pruning is a safety layer distinct from the
+          // compaction feature: it runs whenever the full prompt (history +
+          // prompt/system/tools/images) exceeds the reserved budget, regardless of
+          // whether LLM compaction is enabled. This mirrors Claude Code's
+          // microcompact/snip (always-on, independent of the autocompact flag) and
+          // only acts on old/non-protected content, so it never shrinks a request
+          // that still fits. The target leaves room for the non-history components
+          // instead of a fixed 0.6 ratio.
+          const preflightOverBudget = shouldCompactBeforePrompt({
+            estimate: preflightEstimate,
+            contextWindowTokens,
+            reserveTokens: compactionSettings.reserveTokens,
+          });
+          if (preflightOverBudget) {
+            const targetHistoryTokens = computePreflightHistoryTarget({
+              estimate: preflightEstimate,
+              contextWindowTokens,
+              reserveTokens: compactionSettings.reserveTokens,
+            });
+            const preflightPruning = pruneMessagesBeforePreflight({
+              messages: activeSession.messages,
+              contextWindowTokens,
+              repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
+              targetHistoryTokens,
+            });
+            if (preflightPruning.pruned) {
+              activeSession.agent.replaceMessages(preflightPruning.messages);
+              const metrics = preflightPruning.metrics;
+              log.info(
+                `[context-preflight-prune] runId=${params.runId} ` +
+                  `sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                  `messagesBefore=${metrics.messagesBefore} messagesAfter=${metrics.messagesAfter} ` +
+                  `historyTokensBefore=${metrics.historyTokensBefore} ` +
+                  `historyTokensAfter=${metrics.historyTokensAfter} ` +
+                  `targetHistoryTokens=${metrics.targetHistoryTokens} ` +
+                  `toolResultCharsBefore=${metrics.toolResultCharsBefore} ` +
+                  `toolResultCharsAfter=${metrics.toolResultCharsAfter} ` +
+                  `truncatedCount=${metrics.truncatedCount} clearedCount=${metrics.clearedCount} ` +
+                  `droppedCount=${metrics.droppedCount}`,
+              );
+              cacheTrace?.recordStage("prompt:preflight-prune", {
+                prompt: effectivePrompt,
+                messages: activeSession.messages,
+                note:
+                  `messages=${metrics.messagesBefore}->${metrics.messagesAfter} ` +
+                  `historyTokens=${metrics.historyTokensBefore}->${metrics.historyTokensAfter}`,
+              });
+              // Re-estimate on the pruned history so the compaction decision and
+              // diagnostics reflect the reduced context (pruning may have sufficed).
+              preflightEstimate = estimatePromptPreflightTokens({
+                messages: activeSession.messages,
+                prompt: effectivePrompt,
+                systemPrompt: systemPromptText,
+                toolDefinitions: modelFacingToolDefinitions,
+                promptImageCount: imageResult.images.length,
+              });
+            }
+          }
           const shouldPreflightCompact =
             compactionSettings.enabled &&
             shouldCompactBeforePrompt({
@@ -1433,12 +1626,17 @@ export async function runEmbeddedAttempt(
 
           if (log.isEnabled("debug")) {
             log.debug(
-              `[context-preflight] runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
-                `provider=${params.provider}/${params.modelId} estimatedTokens=${preflightEstimate.totalTokens} ` +
-                `historyTokens=${preflightEstimate.historyTokens} promptTokens=${preflightEstimate.promptTokens} ` +
-                `systemPromptTokens=${preflightEstimate.systemPromptTokens} toolSchemaTokens=${preflightEstimate.toolSchemaTokens} ` +
-                `imageTokens=${preflightEstimate.imageTokens} contextWindow=${contextWindowTokens} ` +
-                `reserveTokens=${compactionSettings.reserveTokens} willCompact=${shouldPreflightCompact}`,
+              formatContextPreflightLog({
+                runId: params.runId,
+                sessionKey: params.sessionKey ?? params.sessionId,
+                provider: params.provider,
+                modelId: params.modelId,
+                estimate: preflightEstimate,
+                contextWindowTokens,
+                contextWindowSource: params.effectiveContextWindowSource,
+                reserveTokens: compactionSettings.reserveTokens,
+                willCompact: shouldPreflightCompact,
+              }),
             );
           }
 
@@ -1450,6 +1648,10 @@ export async function runEmbeddedAttempt(
                 `reserveTokens=${compactionSettings.reserveTokens}`,
             );
             subscription.emitCompactionStart?.();
+            const preLeafId = sessionManager.getLeafId();
+            const preCompactionCount = sessionManager
+              .getEntries()
+              .filter((entry) => entry.type === "compaction").length;
             try {
               const compactResult = await runPreflightCompactionToSettled({
                 compact: () =>
@@ -1503,31 +1705,150 @@ export async function runEmbeddedAttempt(
                 !isCompactionTimeout
                   ? makeAbortError(runAbortController.signal)
                   : compactErr;
-              if (isCompactionTimeout) {
-                timedOut = true;
-                timedOutDuringCompaction = true;
+              const shouldAttemptEmergency =
+                isCompactionTimeout ||
+                (!runAbortController.signal.aborted && !isRunnerAbortError(compactErr));
+              let emergencyRecovered = false;
+              let emergencyOverflowEstimate: PromptPreflightTokenEstimate | undefined;
+              if (shouldAttemptEmergency) {
+                try {
+                  const emergency = await appendEmergencyCompaction({
+                    sessionManager,
+                    runId: params.runId,
+                    reason: isCompactionTimeout ? "timeout" : "compaction_error",
+                    contextWindowTokens,
+                    keepRecentTokens: compactionSettings.keepRecentTokens,
+                    repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
+                    preLeafId,
+                    preCompactionCount,
+                  });
+                  const rebuiltPromptHistory =
+                    await rebuildPromptHistoryImagesAfterPreflightCompaction({
+                      rebuiltMessages: emergency.rebuiltMessages,
+                      prompt: effectivePrompt,
+                      workspaceDir: effectiveWorkspace,
+                      model: params.model,
+                      existingImages: params.images,
+                      inboundMediaPaths: params.inboundMediaPaths,
+                      maxBytes: MAX_IMAGE_BYTES,
+                      maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
+                      workspaceOnly: resolveEffectiveToolFsWorkspaceOnly({
+                        cfg: params.config,
+                        agentId: sessionAgentId,
+                      }),
+                      sandbox:
+                        sandbox?.enabled && sandbox?.fsBridge
+                          ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+                          : undefined,
+                    });
+                  const postEmergencyPrune = prunePromptHistoryAfterEmergencyCompaction({
+                    messages: rebuiltPromptHistory,
+                    prompt: effectivePrompt,
+                    systemPrompt: systemPromptText,
+                    toolDefinitions: modelFacingToolDefinitions,
+                    promptImageCount: imageResult.images.length,
+                    contextWindowTokens,
+                    reserveTokens: compactionSettings.reserveTokens,
+                    repairToolUseResultPairing: transcriptPolicy.repairToolUseResultPairing,
+                  });
+                  activeSession.agent.replaceMessages(postEmergencyPrune.messages);
+                  if (postEmergencyPrune.pruned) {
+                    log.warn(
+                      `[context-preflight] applied deterministic pruning after emergency compaction ` +
+                        `runId=${params.runId} ` +
+                        `sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                        `targetHistoryTokens=${postEmergencyPrune.targetHistoryTokens} ` +
+                        `tokensBefore=${postEmergencyPrune.estimateBefore.totalTokens} ` +
+                        `tokensAfter=${postEmergencyPrune.estimateAfter.totalTokens}`,
+                    );
+                  }
+                  if (postEmergencyPrune.withinBudget) {
+                    subscription.emitCompactionEnd?.({
+                      willRetry: false,
+                      countCompaction: false,
+                      countSdkAutoCompaction: false,
+                    });
+                    log.warn(
+                      `[context-preflight] pre-prompt compaction failed; installed emergency compaction ` +
+                        `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                        `reason=${emergency.reason} appended=${emergency.appended}`,
+                    );
+                    emergencyRecovered = true;
+                  } else {
+                    // Emergency compaction + deterministic pruning could not bring the prompt
+                    // within the context window (the prompt/system/tools/images/reserve alone
+                    // exceed the budget). Defer to the over-budget failure path below rather
+                    // than sending an over-window request that would overflow or retry-loop.
+                    emergencyOverflowEstimate = postEmergencyPrune.estimateAfter;
+                    log.warn(
+                      `[context-preflight] emergency recovery still over budget after deterministic pruning ` +
+                        `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                        `estimatedTokens=${postEmergencyPrune.estimateAfter.totalTokens} ` +
+                        `targetHistoryTokens=${postEmergencyPrune.targetHistoryTokens}`,
+                    );
+                  }
+                } catch (emergencyErr) {
+                  log.warn(
+                    `[context-preflight] emergency compaction failed after pre-prompt compaction error ` +
+                      `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                      `error=${describeUnknownError(emergencyErr)}`,
+                  );
+                }
               }
-              subscription.emitCompactionEnd?.({
-                willRetry: false,
-                errorMessage,
-                countCompaction: false,
-                countSdkAutoCompaction: false,
-              });
-              if (shouldStopPrompt) {
-                promptError = stopError;
-                promptErrorSource = "compaction";
+              if (!emergencyRecovered) {
+                if (isCompactionTimeout) {
+                  timedOut = true;
+                  timedOutDuringCompaction = true;
+                }
+                subscription.emitCompactionEnd?.({
+                  willRetry: false,
+                  errorMessage,
+                  countCompaction: false,
+                  countSdkAutoCompaction: false,
+                });
+                if (emergencyOverflowEstimate) {
+                  // Explicit failure: even emergency compaction plus deterministic pruning
+                  // could not bring the prompt within the context window. Aborting here is
+                  // safer than sending an over-window request (which overflows or triggers an
+                  // SDK retry loop). The persisted emergency-compaction summary is retained so
+                  // the next run starts from a smaller history.
+                  const overflowError = new Error(
+                    `prompt context remains over budget after emergency recovery ` +
+                      `(estimated=${emergencyOverflowEstimate.totalTokens} ` +
+                      `budget=${Math.max(0, contextWindowTokens - compactionSettings.reserveTokens)})`,
+                  );
+                  overflowError.name = "ContextOverflowError";
+                  promptError = overflowError;
+                  promptErrorSource = "compaction";
+                  log.warn(
+                    `[context-preflight] aborting prompt: context still over budget after emergency recovery ` +
+                      `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                      `estimatedTokens=${emergencyOverflowEstimate.totalTokens} ` +
+                      `contextWindow=${contextWindowTokens} reserveTokens=${compactionSettings.reserveTokens} ` +
+                      `historyTokens=${emergencyOverflowEstimate.historyTokens} ` +
+                      `promptTokens=${emergencyOverflowEstimate.promptTokens} ` +
+                      `systemPromptTokens=${emergencyOverflowEstimate.systemPromptTokens} ` +
+                      `toolSchemaTokens=${emergencyOverflowEstimate.toolSchemaTokens} ` +
+                      `imageTokens=${emergencyOverflowEstimate.imageTokens}`,
+                  );
+                  throw overflowError;
+                }
+                if (shouldStopPrompt) {
+                  promptError = stopError;
+                  promptErrorSource = "compaction";
+                  log.warn(
+                    `[context-preflight] pre-prompt compaction stopped; aborting prompt ` +
+                      `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                      `error=${errorMessage}`,
+                  );
+                  throw stopError;
+                }
                 log.warn(
-                  `[context-preflight] pre-prompt compaction stopped; aborting prompt ` +
+                  `[context-preflight] pre-prompt compaction failed; continuing prompt ` +
                     `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
                     `error=${errorMessage}`,
                 );
-                throw stopError;
               }
-              log.warn(
-                `[context-preflight] pre-prompt compaction failed; continuing prompt ` +
-                  `runId=${params.runId} sessionKey=${params.sessionKey ?? params.sessionId} ` +
-                  `error=${errorMessage}`,
-              );
             }
           }
 
@@ -1628,10 +1949,9 @@ export async function runEmbeddedAttempt(
         // double-compaction. See: https://github.com/openclaw/openclaw/issues/9282
         // Skip when timed out during compaction — session state may be inconsistent.
         if (!timedOutDuringCompaction) {
-          const shouldTrackCacheTtl =
-            params.config?.agents?.defaults?.contextPruning?.mode === "cache-ttl" &&
-            isCacheTtlEligibleProvider(params.provider, params.modelId);
-          if (shouldTrackCacheTtl) {
+          if (
+            shouldTrackContextPruningTtlForModel(params.config, params.provider, params.modelId)
+          ) {
             appendCacheTtlTimestamp(sessionManager, {
               timestamp: Date.now(),
               provider: params.provider,

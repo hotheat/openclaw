@@ -1,3 +1,5 @@
+import { isContextPruningAutoEnabled } from "../../config/context-pruning-default-marker.js";
+
 type CustomEntryLike = { type?: unknown; customType?: unknown; data?: unknown };
 
 export const CACHE_TTL_CUSTOM_TYPE = "openclaw.cache-ttl";
@@ -18,6 +20,31 @@ export function isCacheTtlEligibleProvider(provider: string, modelId: string): b
     return true;
   }
   return false;
+}
+
+export function shouldTrackContextPruningTtl(config: {
+  agents?: { defaults?: { contextPruning?: { mode?: string } } };
+}): boolean {
+  return config.agents?.defaults?.contextPruning?.mode === "cache-ttl";
+}
+
+export function shouldTrackContextPruningTtlForModel(
+  config:
+    | {
+        agents?: { defaults?: { contextPruning?: { mode?: string } } };
+      }
+    | undefined,
+  provider: string,
+  modelId: string,
+): boolean {
+  if (!config || !shouldTrackContextPruningTtl(config)) {
+    return false;
+  }
+  const contextPruning = config.agents?.defaults?.contextPruning;
+  if (isContextPruningAutoEnabled(contextPruning)) {
+    return isCacheTtlEligibleProvider(provider, modelId);
+  }
+  return true;
 }
 
 export function readLastCacheTtlTimestamp(sessionManager: unknown): number | null {

@@ -382,6 +382,7 @@ Example (OpenAI‑compatible):
     },
   },
   models: {
+    defaultContextWindow: 200000,
     providers: {
       lmstudio: {
         baseUrl: "http://localhost:1234/v1",
@@ -414,6 +415,8 @@ Notes:
   - `contextWindow: 200000`
   - `maxTokens: 8192`
 - Recommended: set explicit values that match your proxy/model limits.
+- If your providers accept dynamic model IDs, set `models.defaultContextWindow` so fallback
+  models use a known budget without listing every model.
 
 ## CLI examples
 

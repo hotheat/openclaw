@@ -11,11 +11,11 @@ import {
   HARD_MAX_TOOL_RESULT_CHARS,
 } from "./tool-result-truncation.js";
 
-function makeToolResult(text: string, toolCallId = "call_1"): AgentMessage {
+function makeToolResult(text: string, toolCallId = "call_1", toolName = "read"): AgentMessage {
   return {
     role: "toolResult",
     toolCallId,
-    toolName: "read",
+    toolName,
     content: [{ type: "text", text }],
     isError: false,
     timestamp: Date.now(),
@@ -61,9 +61,9 @@ describe("truncateToolResultText", () => {
     expect(result).toContain("truncated");
   });
 
-  it("preserves at least MIN_KEEP_CHARS (2000)", () => {
+  it("preserves at least MIN_KEEP_CHARS (2000) when the limit allows it", () => {
     const text = "x".repeat(50_000);
-    const result = truncateToolResultText(text, 100); // Even with small limit
+    const result = truncateToolResultText(text, 3_000);
     expect(result.length).toBeGreaterThan(2000);
   });
 
@@ -133,25 +133,82 @@ describe("truncateToolResultMessage", () => {
 
     expect(result.content[0]?.text).toContain("[persist-truncated]");
   });
+
+  it("keeps head and tail content and records truncation metadata", () => {
+    const msg = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "exec",
+      content: [
+        { type: "text", text: `${"h".repeat(20_000)}${"m".repeat(10_000)}${"t".repeat(20_000)}` },
+      ],
+      isError: false,
+      timestamp: Date.now(),
+    } as unknown as AgentMessage;
+
+    const result = truncateToolResultMessage(msg, 10_000, { toolName: "exec" }) as {
+      content: Array<{ type: string; text: string }>;
+      openclawToolResultTruncation?: {
+        toolName?: string;
+        originalChars: number;
+        keptHeadChars: number;
+        keptTailChars: number;
+        truncatedAt: string;
+      };
+    };
+
+    expect(result.content[0]?.text.startsWith("h".repeat(100))).toBe(true);
+    expect(result.content[0]?.text.endsWith("t".repeat(100))).toBe(true);
+    expect(result.openclawToolResultTruncation).toMatchObject({
+      toolName: "exec",
+      originalChars: 50_000,
+    });
+    expect(result.openclawToolResultTruncation?.keptHeadChars).toBeGreaterThan(0);
+    expect(result.openclawToolResultTruncation?.keptTailChars).toBeGreaterThan(0);
+    expect(Date.parse(result.openclawToolResultTruncation?.truncatedAt ?? "")).not.toBeNaN();
+  });
+
+  it("does not count image blocks toward text truncation", () => {
+    const msg = {
+      role: "toolResult",
+      toolCallId: "call_1",
+      toolName: "read",
+      content: [
+        {
+          type: "image",
+          source: { type: "base64", mediaType: "image/png", data: "x".repeat(100_000) },
+        },
+        { type: "text", text: "small text" },
+      ],
+      isError: false,
+      timestamp: Date.now(),
+    } as unknown as AgentMessage;
+
+    expect(truncateToolResultMessage(msg, 1_000)).toBe(msg);
+  });
 });
 
 describe("calculateMaxToolResultChars", () => {
   it("scales with context window size", () => {
-    const small = calculateMaxToolResultChars(32_000);
-    const large = calculateMaxToolResultChars(200_000);
+    const small = calculateMaxToolResultChars(32_000, "read");
+    const large = calculateMaxToolResultChars(200_000, "read");
     expect(large).toBeGreaterThan(small);
   });
 
   it("caps at HARD_MAX_TOOL_RESULT_CHARS for very large windows", () => {
-    const result = calculateMaxToolResultChars(2_000_000); // 2M token window
+    const result = calculateMaxToolResultChars(2_000_000, "read"); // 2M token window
     expect(result).toBeLessThanOrEqual(HARD_MAX_TOOL_RESULT_CHARS);
   });
 
-  it("returns reasonable size for 128K context", () => {
-    const result = calculateMaxToolResultChars(128_000);
-    // 30% of 128K = 38.4K tokens * 4 chars = 153.6K chars
-    expect(result).toBeGreaterThan(100_000);
-    expect(result).toBeLessThan(200_000);
+  it("uses a 4% text cap for read/file tools", () => {
+    expect(calculateMaxToolResultChars(128_000, "read")).toBe(20_480);
+    expect(calculateMaxToolResultChars(2_000_000, "read_file")).toBe(40_000);
+  });
+
+  it("uses a stricter 3% cap for web, exec, and unknown tools", () => {
+    expect(calculateMaxToolResultChars(128_000, "web_fetch")).toBe(15_360);
+    expect(calculateMaxToolResultChars(2_000_000, "exec")).toBe(20_000);
+    expect(calculateMaxToolResultChars(2_000_000)).toBe(20_000);
   });
 });
 
@@ -162,7 +219,7 @@ describe("isOversizedToolResult", () => {
   });
 
   it("returns true for oversized tool results", () => {
-    const msg = makeToolResult("x".repeat(500_000));
+    const msg = makeToolResult("x".repeat(50_000));
     expect(isOversizedToolResult(msg, 128_000)).toBe(true);
   });
 
@@ -188,7 +245,7 @@ describe("truncateOversizedToolResultsInMessages", () => {
   });
 
   it("truncates oversized tool results", () => {
-    const bigContent = "x".repeat(500_000);
+    const bigContent = "x".repeat(50_000);
     const messages = [
       makeUserMessage("hello"),
       makeAssistantMessage("reading file"),
@@ -201,6 +258,7 @@ describe("truncateOversizedToolResultsInMessages", () => {
     expect(truncatedCount).toBe(1);
     const toolResult = result[2] as { content: Array<{ text: string }> };
     expect(toolResult.content[0].text.length).toBeLessThan(bigContent.length);
+    expect(toolResult.content[0].text.length).toBeLessThanOrEqual(20_480);
     expect(toolResult.content[0].text).toContain("truncated");
   });
 
@@ -208,7 +266,7 @@ describe("truncateOversizedToolResultsInMessages", () => {
     const messages = [
       makeUserMessage("hello"),
       makeAssistantMessage("reading file"),
-      makeToolResult("x".repeat(500_000)),
+      makeToolResult("x".repeat(50_000)),
     ];
     const { messages: result } = truncateOversizedToolResultsInMessages(messages, 128_000);
     expect(result[0]).toBe(messages[0]); // Same reference
@@ -219,8 +277,8 @@ describe("truncateOversizedToolResultsInMessages", () => {
     const messages = [
       makeUserMessage("hello"),
       makeAssistantMessage("reading files"),
-      makeToolResult("x".repeat(500_000), "call_1"),
-      makeToolResult("y".repeat(500_000), "call_2"),
+      makeToolResult("x".repeat(50_000), "call_1"),
+      makeToolResult("y".repeat(50_000), "call_2"),
     ];
     const { messages: result, truncatedCount } = truncateOversizedToolResultsInMessages(
       messages,
@@ -229,8 +287,16 @@ describe("truncateOversizedToolResultsInMessages", () => {
     expect(truncatedCount).toBe(2);
     for (const msg of result.slice(2)) {
       const tr = msg as { content: Array<{ text: string }> };
-      expect(tr.content[0].text.length).toBeLessThan(500_000);
+      expect(tr.content[0].text.length).toBeLessThan(50_000);
     }
+  });
+
+  it("uses tool-specific caps when truncating in-memory messages", () => {
+    const messages = [makeToolResult("x".repeat(50_000), "call_1", "web_fetch")];
+    const { messages: result } = truncateOversizedToolResultsInMessages(messages, 2_000_000);
+    const toolResult = result[0] as { content: Array<{ text: string }> };
+
+    expect(toolResult.content[0]?.text.length).toBeLessThanOrEqual(20_000);
   });
 });
 
@@ -246,7 +312,7 @@ describe("sessionLikelyHasOversizedToolResults", () => {
   });
 
   it("returns true when a tool result is oversized", () => {
-    const messages = [makeUserMessage("hello"), makeToolResult("x".repeat(500_000))];
+    const messages = [makeUserMessage("hello"), makeToolResult("x".repeat(50_000))];
     expect(
       sessionLikelyHasOversizedToolResults({
         messages,

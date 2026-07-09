@@ -1,6 +1,7 @@
 import { DEFAULT_CONTEXT_TOKENS } from "../agents/defaults.js";
 import { normalizeProviderId, parseModelRef } from "../agents/model-selection.js";
 import { DEFAULT_AGENT_MAX_CONCURRENT, DEFAULT_SUBAGENT_MAX_CONCURRENT } from "./agent-limits.js";
+import { markContextPruningAutoEnabled } from "./context-pruning-default-marker.js";
 import { resolveTalkApiKey } from "./talk.js";
 import type { OpenClawConfig } from "./types.js";
 import type { ModelDefinitionConfig } from "./types.models.js";
@@ -390,11 +391,11 @@ export function applyContextPruningDefaults(cfg: OpenClawConfig): OpenClawConfig
   const heartbeat = defaults.heartbeat ?? {};
 
   if (defaults.contextPruning?.mode === undefined) {
-    nextDefaults.contextPruning = {
+    nextDefaults.contextPruning = markContextPruningAutoEnabled({
       ...contextPruning,
-      mode: "cache-ttl",
-      ttl: defaults.contextPruning?.ttl ?? "1h",
-    };
+      mode: "cache-ttl" as const,
+      ttl: defaults.contextPruning?.ttl ?? "5m",
+    });
     mutated = true;
   }
 

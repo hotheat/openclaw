@@ -624,7 +624,7 @@ export async function runEmbeddedPiAgent(
           log.info(`[hooks] model overridden to ${modelId}`);
         }
 
-        const { model, error, authStorage, modelRegistry } = resolveModel(
+        const { model, modelResolutionSource, error, authStorage, modelRegistry } = resolveModel(
           provider,
           modelId,
           agentDir,
@@ -642,17 +642,33 @@ export async function runEmbeddedPiAgent(
           cfg: params.config,
           provider,
           modelId,
-          modelContextWindow: model.contextWindow,
+          modelContextWindow:
+            modelResolutionSource === "provider_config_fallback" ? undefined : model.contextWindow,
           defaultTokens: DEFAULT_CONTEXT_TOKENS,
         });
         const ctxGuard = evaluateContextWindowGuard({
           info: ctxInfo,
           warnBelowTokens: CONTEXT_WINDOW_WARN_BELOW_TOKENS,
           hardMinTokens: CONTEXT_WINDOW_HARD_MIN_TOKENS,
+          defaultTokens: DEFAULT_CONTEXT_TOKENS,
         });
         if (ctxGuard.shouldWarn) {
           log.warn(
             `low context window: ${provider}/${modelId} ctx=${ctxGuard.tokens} (warn<${CONTEXT_WINDOW_WARN_BELOW_TOKENS}) source=${ctxGuard.source}`,
+          );
+        }
+        // Custom-provider models that resolve all the way to the 200k default — either a dynamic
+        // fallback id or a model listed in models[] without a contextWindow — do NOT hard-fail;
+        // they run on the default budget. We warn so the silent 200k guess stays visible.
+        if (
+          (modelResolutionSource === "provider_config_fallback" ||
+            modelResolutionSource === "inline_config") &&
+          ctxGuard.source === "default"
+        ) {
+          log.warn(
+            `model context window defaulted to ${DEFAULT_CONTEXT_TOKENS}: ${provider}/${modelId} ` +
+              `ctx=${ctxGuard.tokens} source=${ctxGuard.source} resolution=${modelResolutionSource}. ` +
+              `Set models.defaultContextWindow or models.providers.${provider}.models[].contextWindow for tighter pruning and compaction budgets.`,
           );
         }
         if (ctxGuard.shouldBlock) {
@@ -964,6 +980,7 @@ export async function runEmbeddedPiAgent(
               modelId,
               model,
               effectiveContextWindowTokens: ctxInfo.tokens,
+              effectiveContextWindowSource: ctxInfo.source,
               authStorage,
               modelRegistry,
               agentId: workspaceResolution.agentId,
@@ -1305,7 +1322,7 @@ export async function runEmbeddedPiAgent(
               const promptFailoverReason = classifyFailoverReason(errorText);
               await maybeMarkAuthProfileFailure({
                 profileId: lastProfileId,
-                reason: promptFailoverReason,
+                reason: promptFailoverReason === "model_config" ? null : promptFailoverReason,
               });
               if (
                 isFailoverErrorMessage(errorText) &&
@@ -1462,7 +1479,7 @@ export async function runEmbeddedPiAgent(
                 // on the same provider (e.g. gpt-5.3 timeout blocks gpt-5.2).
                 await maybeMarkAuthProfileFailure({
                   profileId: lastProfileId,
-                  reason,
+                  reason: reason === "model_config" ? null : reason,
                 });
                 if (timedOut && !isProbeSession) {
                   log.warn(`Profile ${lastProfileId} timed out. Trying next account...`);

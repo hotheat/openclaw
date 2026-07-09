@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { withEnvAsync } from "../test-utils/env.js";
 import { loadConfig } from "./config.js";
+import { isContextPruningAutoEnabled } from "./context-pruning-default-marker.js";
 import { withTempHome } from "./test-helpers.js";
 
 async function writeConfigForTest(home: string, config: unknown): Promise<void> {
@@ -42,12 +43,14 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
-      expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("1h");
+      expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("5m");
+      expect(isContextPruningAutoEnabled(cfg.agents?.defaults?.contextPruning)).toBe(true);
+      expect(JSON.stringify(cfg.agents?.defaults?.contextPruning)).not.toContain("autoEnabled");
       expect(cfg.agents?.defaults?.heartbeat?.every).toBe("1h");
     });
   });
 
-  it("enables cache-ttl pruning + 1h cache TTL for Anthropic API keys", async () => {
+  it("enables cache-ttl pruning + 5m cache TTL for Anthropic API keys", async () => {
     await withTempHome(async (home) => {
       await writeConfigForTest(home, {
         auth: {
@@ -65,7 +68,7 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
-      expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("1h");
+      expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("5m");
       expect(cfg.agents?.defaults?.heartbeat?.every).toBe("30m");
       expect(
         cfg.agents?.defaults?.models?.["anthropic/claude-opus-4-5"]?.params?.cacheRetention,
@@ -80,6 +83,25 @@ describe("config pruning defaults", () => {
       const cfg = loadConfig();
 
       expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("off");
+      expect(isContextPruningAutoEnabled(cfg.agents?.defaults?.contextPruning)).toBe(false);
+    });
+  });
+
+  it("does not override an explicit contextPruning ttl when auto-enabling mode", async () => {
+    await withTempHome(async (home) => {
+      await writeConfigForTest(home, {
+        auth: {
+          profiles: {
+            "anthropic:api": { provider: "anthropic", mode: "api_key" },
+          },
+        },
+        agents: { defaults: { contextPruning: { ttl: "20m" } } },
+      });
+
+      const cfg = loadConfig();
+
+      expect(cfg.agents?.defaults?.contextPruning?.mode).toBe("cache-ttl");
+      expect(cfg.agents?.defaults?.contextPruning?.ttl).toBe("20m");
     });
   });
 });

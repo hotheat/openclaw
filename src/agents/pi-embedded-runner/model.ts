@@ -26,6 +26,14 @@ type InlineProviderConfig = {
 
 export { buildModelAliasLines };
 
+export type ModelResolutionSource =
+  | "registry"
+  | "inline_config"
+  | "forward_compat"
+  | "openrouter_passthrough"
+  | "provider_config_fallback"
+  | "mock_fallback";
+
 export function buildInlineProviderModels(
   providers: Record<string, InlineProviderConfig>,
 ): InlineModelEntry[] {
@@ -50,6 +58,7 @@ export function resolveModel(
   cfg?: OpenClawConfig,
 ): {
   model?: Model<Api>;
+  modelResolutionSource?: ModelResolutionSource;
   error?: string;
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;
@@ -70,6 +79,7 @@ export function resolveModel(
       const normalized = normalizeModelCompat(inlineMatch as Model<Api>);
       return {
         model: normalized,
+        modelResolutionSource: "inline_config",
         authStorage,
         modelRegistry,
       };
@@ -78,7 +88,12 @@ export function resolveModel(
     // Otherwise, configured providers can default to a generic API and break specific transports.
     const forwardCompat = resolveForwardCompatModel(provider, modelId, modelRegistry);
     if (forwardCompat) {
-      return { model: forwardCompat, authStorage, modelRegistry };
+      return {
+        model: forwardCompat,
+        modelResolutionSource: "forward_compat",
+        authStorage,
+        modelRegistry,
+      };
     }
     // OpenRouter is a pass-through proxy — any model ID available on OpenRouter
     // should work without being pre-registered in the local catalog.
@@ -96,10 +111,16 @@ export function resolveModel(
         // Align with OPENROUTER_DEFAULT_MAX_TOKENS in models-config.providers.ts
         maxTokens: 8192,
       } as Model<Api>);
-      return { model: fallbackModel, authStorage, modelRegistry };
+      return {
+        model: fallbackModel,
+        modelResolutionSource: "openrouter_passthrough",
+        authStorage,
+        modelRegistry,
+      };
     }
     const providerCfg = providers[provider];
     if (providerCfg || modelId.startsWith("mock-")) {
+      const isProviderConfigFallback = Boolean(providerCfg);
       const fallbackModel: Model<Api> = normalizeModelCompat({
         id: modelId,
         name: modelId,
@@ -109,10 +130,25 @@ export function resolveModel(
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: providerCfg?.models?.[0]?.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+        // Provider-config fallback models deliberately leave contextWindow undefined so every
+        // budget path resolves through resolveContextWindowInfo — the single source (modelsConfig
+        // > models.defaultContextWindow > 200k default, capped by agents.defaults.contextTokens).
+        // Borrowing providerCfg.models[0].contextWindow leaked a wrong base into pruning,
+        // compaction, and read paging whenever the first listed model had a different window than
+        // the dynamic id. Mock fallback models keep an explicit window for stable test fixtures.
+        contextWindow: isProviderConfigFallback
+          ? undefined
+          : (cfg?.models?.defaultContextWindow ?? DEFAULT_CONTEXT_TOKENS),
         maxTokens: providerCfg?.models?.[0]?.maxTokens ?? DEFAULT_CONTEXT_TOKENS,
       } as Model<Api>);
-      return { model: fallbackModel, authStorage, modelRegistry };
+      return {
+        model: fallbackModel,
+        modelResolutionSource: isProviderConfigFallback
+          ? "provider_config_fallback"
+          : "mock_fallback",
+        authStorage,
+        modelRegistry,
+      };
     }
     return {
       error: buildUnknownModelError(provider, modelId),
@@ -120,7 +156,12 @@ export function resolveModel(
       modelRegistry,
     };
   }
-  return { model: normalizeModelCompat(model), authStorage, modelRegistry };
+  return {
+    model: normalizeModelCompat(model),
+    modelResolutionSource: "registry",
+    authStorage,
+    modelRegistry,
+  };
 }
 
 /**

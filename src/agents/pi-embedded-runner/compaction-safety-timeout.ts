@@ -1,6 +1,7 @@
 import { withTimeout } from "../../node-host/with-timeout.js";
 
 export const EMBEDDED_COMPACTION_TIMEOUT_MS = 300_000;
+export const EMBEDDED_COMPACTION_ABORT_GRACE_MS = 10_000;
 
 export type CompactWithSafetyTimeoutOptions = {
   timeoutMs?: number;
@@ -56,4 +57,29 @@ export async function compactWithSafetyTimeout<T>(
   } finally {
     abort?.cleanup();
   }
+}
+
+export async function waitForCompactionAbortSettlement<T>(
+  compactPromise: Promise<T>,
+  timeoutMs = EMBEDDED_COMPACTION_ABORT_GRACE_MS,
+): Promise<"settled" | "timed_out"> {
+  const resolvedTimeoutMs = Math.max(1, Math.floor(timeoutMs));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<"timed_out">((resolve) => {
+    timer = setTimeout(() => resolve("timed_out"), resolvedTimeoutMs);
+    timer.unref?.();
+  });
+  const settledPromise = compactPromise.then(
+    () => "settled" as const,
+    () => "settled" as const,
+  );
+
+  const result = await Promise.race([settledPromise, timeoutPromise]);
+  if (timer) {
+    clearTimeout(timer);
+  }
+  if (result === "timed_out") {
+    compactPromise.catch(() => undefined);
+  }
+  return result;
 }

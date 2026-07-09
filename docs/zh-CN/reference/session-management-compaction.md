@@ -194,6 +194,19 @@ OpenClaw 有意**不**"修复"记录；Gateway 网关使用 `SessionManager` 来
 
 这些是 Pi 运行时语义（OpenClaw 消费事件，但 Pi 决定何时压缩）。
 
+## Emergency compaction fallback
+
+嵌入式 Pi 运行还有一条确定性的 emergency fallback。若 SDK compaction 在 preflight 或 overflow recovery 中 timeout 或报错，OpenClaw 会先 abort 正在进行的 compaction，等待其 settle，然后在本地写入一个不调用模型的 `compaction` entry。
+
+该 fallback：
+
+- 保留最新 user turn 和已清理的成对 tool result。
+- 写入的 `firstKeptEntryId` 是 session entry id，不是 message 下标。
+- 写入前重读 latest compaction entry，避免 SDK compaction 延迟成功后再产生重复 emergency entry。
+- 在 `details` 中记录 emergency metadata，方便后续诊断区分它和模型生成摘要。
+
+这是 context overflow recovery 的安全兜底。正常 compaction 仍使用 Pi 的模型摘要流程。
+
 ---
 
 ## 压缩设置（`reserveTokens`、`keepRecentTokens`）

@@ -187,6 +187,19 @@ Where:
 
 These are Pi runtime semantics (OpenClaw consumes the events, but Pi decides when to compact).
 
+## Emergency compaction fallback
+
+OpenClaw also has a deterministic emergency fallback for embedded Pi runs. If SDK compaction times out or errors during preflight or overflow recovery, OpenClaw aborts the in-flight compaction, waits for it to settle, then appends a local `compaction` entry without calling a model.
+
+The fallback:
+
+- Keeps the latest user turn and sanitized paired tool results.
+- Writes `firstKeptEntryId` as a session entry id, not a message index.
+- Re-reads the latest compaction entry before writing so a late SDK compaction result does not create a duplicate emergency entry.
+- Records emergency metadata in `details` so later diagnostics can distinguish it from model-generated summaries.
+
+This is a safety path for context-overflow recovery. Normal compaction still uses Pi’s model summary flow.
+
 ---
 
 ## Compaction settings (`reserveTokens`, `keepRecentTokens`)

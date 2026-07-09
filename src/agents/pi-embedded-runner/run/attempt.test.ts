@@ -6,9 +6,12 @@ import type { ImageContent } from "@mariozechner/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildLlmInputEvent,
+  computePreflightHistoryTarget,
   emitLlmInputHook,
   estimatePromptPreflightTokens,
+  formatContextPreflightLog,
   injectHistoryImagesIntoMessages,
+  prunePromptHistoryAfterEmergencyCompaction,
   rebuildPromptHistoryImagesAfterPreflightCompaction,
   resolvePromptBuildHookResult,
   runPreflightCompactionToSettled,
@@ -124,6 +127,30 @@ describe("resolvePromptBuildHookResult", () => {
 });
 
 describe("preflight context compaction", () => {
+  it("includes context window source in diagnostic log", () => {
+    const line = formatContextPreflightLog({
+      runId: "run-1",
+      sessionKey: "agent:test",
+      provider: "otr",
+      modelId: "workspace-model",
+      estimate: {
+        historyTokens: 10,
+        promptTokens: 20,
+        systemPromptTokens: 30,
+        toolSchemaTokens: 40,
+        imageTokens: 0,
+        totalTokens: 100,
+      },
+      contextWindowTokens: 262_144,
+      contextWindowSource: "modelsConfig",
+      reserveTokens: 20_000,
+      willCompact: false,
+    });
+
+    expect(line).toContain("contextWindow=262144");
+    expect(line).toContain("contextWindowSource=modelsConfig");
+  });
+
   it("estimates pending prompt context with safety margin", () => {
     const estimate = estimatePromptPreflightTokens({
       messages: [{ role: "user", content: "a".repeat(400) } as AgentMessage],
@@ -270,6 +297,38 @@ describe("preflight context compaction", () => {
     expect(settled).toBe(true);
   });
 
+  it("abandons the post-abort wait when preflight compaction never settles", async () => {
+    vi.useFakeTimers();
+    let settled = false;
+    const abortCompaction = vi.fn();
+    const compact = vi.fn(() => new Promise<never>(() => undefined));
+
+    const resultPromise = runPreflightCompactionToSettled({
+      compact,
+      abortCompaction,
+      timeoutMs: 10,
+    }).catch((err) => {
+      settled = true;
+      return err as Error;
+    });
+
+    await vi.advanceTimersByTimeAsync(10);
+    await Promise.resolve();
+
+    expect(abortCompaction).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await Promise.resolve();
+
+    expect(settled).toBe(true);
+    const err = await resultPromise;
+    if (!(err instanceof Error)) {
+      throw new Error("expected timeout error");
+    }
+    expect(err.message).toContain("Compaction timed out");
+  });
+
   it("emits llm_input using the final prompt-facing history messages", async () => {
     const runLlmInput = vi.fn(async (_event: unknown, _ctx: unknown) => undefined);
     const hookRunner = {
@@ -318,5 +377,129 @@ describe("preflight context compaction", () => {
       historyMessages: finalHistoryMessages,
       imagesCount: 0,
     });
+  });
+
+  it("re-estimates and prunes emergency-compacted history before prompting when still over budget", () => {
+    const messages: AgentMessage[] = [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "call_old", name: "web_fetch", arguments: {} }],
+      } as unknown as AgentMessage,
+      {
+        role: "toolResult",
+        toolCallId: "call_old",
+        toolName: "web_fetch",
+        content: [{ type: "text", text: "w".repeat(80_000) }],
+      } as unknown as AgentMessage,
+      { role: "user", content: "current request" } as AgentMessage,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "current answer" }],
+      } as unknown as AgentMessage,
+    ];
+
+    const result = prunePromptHistoryAfterEmergencyCompaction({
+      messages,
+      prompt: "follow up",
+      systemPrompt: "",
+      toolDefinitions: [],
+      promptImageCount: 0,
+      contextWindowTokens: 5_000,
+      reserveTokens: 500,
+      repairToolUseResultPairing: false,
+    });
+
+    expect(result.pruned).toBe(true);
+    expect(result.estimateAfter.totalTokens).toBeLessThan(result.estimateBefore.totalTokens);
+    expect(result.withinBudget).toBe(true);
+    expect(JSON.stringify(result.messages)).toContain("truncated");
+  });
+
+  it("reports withinBudget=false when non-history components alone exceed the window", () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "current request" } as AgentMessage,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "current answer" }],
+      } as unknown as AgentMessage,
+    ];
+
+    const result = prunePromptHistoryAfterEmergencyCompaction({
+      messages,
+      prompt: "follow up",
+      // ~10k tokens of system prompt: by itself larger than the 4_500-token budget,
+      // so no amount of history pruning can bring the prompt back within the window.
+      systemPrompt: "s".repeat(40_000),
+      toolDefinitions: [],
+      promptImageCount: 0,
+      contextWindowTokens: 5_000,
+      reserveTokens: 500,
+      repairToolUseResultPairing: false,
+    });
+
+    expect(result.estimateBefore.totalTokens).toBeGreaterThan(5_000 - 500);
+    expect(result.targetHistoryTokens).toBe(1);
+    expect(result.withinBudget).toBe(false);
+    expect(result.estimateAfter.totalTokens).toBeGreaterThan(5_000 - 500);
+  });
+});
+
+describe("computePreflightHistoryTarget", () => {
+  const estimate = (
+    overrides: Partial<Record<string, number>> = {},
+  ): Parameters<typeof computePreflightHistoryTarget>[0]["estimate"] => ({
+    historyTokens: 0,
+    promptTokens: 0,
+    systemPromptTokens: 0,
+    toolSchemaTokens: 0,
+    imageTokens: 0,
+    totalTokens: 0,
+    ...overrides,
+  });
+
+  it("keeps the 0.6 safety ceiling when the prompt leaves ample room", () => {
+    // window 10_000, reserve 1_000 -> budget 9_000 -> /1.2 = 7_500; minus 300 non-history
+    // = 7_200, which is above the 0.6 ceiling (6_000), so the ceiling wins.
+    const target = computePreflightHistoryTarget({
+      estimate: estimate({
+        promptTokens: 100,
+        systemPromptTokens: 100,
+        toolSchemaTokens: 100,
+      }),
+      contextWindowTokens: 10_000,
+      reserveTokens: 1_000,
+    });
+
+    expect(target).toBe(6_000);
+  });
+
+  it("tightens below the ceiling when non-history components are large", () => {
+    // non-history = 4_000; budget 9_000 /1.2 = 7_500 - 4_000 = 3_500 (< ceiling 6_000).
+    const target = computePreflightHistoryTarget({
+      estimate: estimate({
+        promptTokens: 1_000,
+        systemPromptTokens: 1_500,
+        toolSchemaTokens: 1_500,
+      }),
+      contextWindowTokens: 10_000,
+      reserveTokens: 1_000,
+    });
+
+    expect(target).toBe(3_500);
+  });
+
+  it("clamps to 1 when non-history alone exceeds the window", () => {
+    // non-history 12_000 already larger than the 9_000 budget -> maxHistory negative.
+    const target = computePreflightHistoryTarget({
+      estimate: estimate({
+        promptTokens: 4_000,
+        systemPromptTokens: 4_000,
+        toolSchemaTokens: 4_000,
+      }),
+      contextWindowTokens: 10_000,
+      reserveTokens: 1_000,
+    });
+
+    expect(target).toBe(1);
   });
 });

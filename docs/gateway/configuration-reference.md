@@ -1733,6 +1733,7 @@ OpenClaw uses the pi-coding-agent model catalog. Add custom providers via `model
 {
   models: {
     mode: "merge", // merge (default) | replace
+    defaultContextWindow: 128000, // Used for dynamic model IDs not listed below.
     providers: {
       "custom-proxy": {
         baseUrl: "http://localhost:4000/v1",
@@ -1756,6 +1757,8 @@ OpenClaw uses the pi-coding-agent model catalog. Add custom providers via `model
 ```
 
 - Use `authHeader: true` + `headers` for custom auth needs.
+- Use `models.defaultContextWindow` for providers that accept dynamic model IDs without listing
+  every model. Exact entries in `models[]` can still override it with their own `contextWindow`.
 - Override agent config root with `OPENCLAW_AGENT_DIR` (or `PI_CODING_AGENT_DIR`).
 
 ### Provider examples

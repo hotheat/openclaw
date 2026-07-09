@@ -85,6 +85,31 @@ describe("context-window-guard", () => {
     expect(guard.shouldBlock).toBe(true);
   });
 
+  it("uses models.defaultContextWindow for provider fallback models", () => {
+    const cfg = {
+      models: {
+        defaultContextWindow: 96_000,
+        providers: {
+          custom: {
+            baseUrl: "http://localhost",
+            models: [],
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const info = resolveContextWindowInfo({
+      cfg,
+      provider: "custom",
+      modelId: "dynamic-model",
+      modelContextWindow: undefined,
+      defaultTokens: 200_000,
+    });
+
+    expect(info.source).toBe("configDefault");
+    expect(info.tokens).toBe(96_000);
+  });
+
   it("caps with agents.defaults.contextTokens", () => {
     const cfg = {
       agents: { defaults: { contextTokens: 20_000 } },
@@ -129,6 +154,105 @@ describe("context-window-guard", () => {
     expect(info.source).toBe("default");
     expect(guard.shouldWarn).toBe(false);
     expect(guard.shouldBlock).toBe(false);
+  });
+
+  it("blocks default context windows when an explicit window is required", () => {
+    const info = resolveContextWindowInfo({
+      cfg: undefined,
+      provider: "otr",
+      modelId: "workspace-model",
+      modelContextWindow: undefined,
+      defaultTokens: 200_000,
+    });
+    const guard = evaluateContextWindowGuard({
+      info,
+      requireExplicitContextWindow: true,
+      defaultTokens: 200_000,
+    });
+    expect(info.source).toBe("default");
+    expect(guard.shouldWarn).toBe(false);
+    expect(guard.shouldBlock).toBe(true);
+    expect(guard.blockReason).toBe("default_required");
+  });
+
+  it("allows an explicitly configured 200k context window", () => {
+    const cfg = {
+      models: {
+        providers: {
+          otr: {
+            baseUrl: "http://localhost",
+            apiKey: "x",
+            models: [
+              {
+                id: "workspace-model",
+                name: "workspace-model",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 200_000,
+                maxTokens: 8192,
+              },
+            ],
+          },
+        },
+      },
+    } satisfies OpenClawConfig;
+
+    const info = resolveContextWindowInfo({
+      cfg,
+      provider: "otr",
+      modelId: "workspace-model",
+      modelContextWindow: 200_000,
+      defaultTokens: 200_000,
+    });
+    const guard = evaluateContextWindowGuard({ info, defaultTokens: 200_000 });
+    expect(info.source).toBe("modelsConfig");
+    expect(guard.shouldBlock).toBe(false);
+    expect(guard.blockReason).toBeUndefined();
+  });
+
+  it("lets a listed model without contextWindow fall back to the default and does not block", () => {
+    // A model enumerated in models.providers.*.models[] but missing contextWindow no longer
+    // hard-fails: it resolves through models.defaultContextWindow (when set) or the 200k default,
+    // and the runtime only warns. Mirrors the provider_config_fallback behavior.
+    const providers = {
+      otr: {
+        baseUrl: "http://localhost",
+        apiKey: "x",
+        models: [
+          {
+            id: "workspace-model",
+            name: "workspace-model",
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            maxTokens: 8192,
+          },
+        ],
+      },
+    };
+
+    const withDefault = resolveContextWindowInfo({
+      cfg: { models: { defaultContextWindow: 128_000, providers } } as unknown as OpenClawConfig,
+      provider: "otr",
+      modelId: "workspace-model",
+      modelContextWindow: undefined,
+      defaultTokens: 200_000,
+    });
+    expect(withDefault.source).toBe("configDefault");
+    expect(withDefault.tokens).toBe(128_000);
+    expect(evaluateContextWindowGuard({ info: withDefault }).shouldBlock).toBe(false);
+
+    const withoutDefault = resolveContextWindowInfo({
+      cfg: { models: { providers } } as unknown as OpenClawConfig,
+      provider: "otr",
+      modelId: "workspace-model",
+      modelContextWindow: undefined,
+      defaultTokens: 200_000,
+    });
+    expect(withoutDefault.source).toBe("default");
+    expect(withoutDefault.tokens).toBe(200_000);
+    expect(evaluateContextWindowGuard({ info: withoutDefault }).shouldBlock).toBe(false);
   });
 
   it("allows overriding thresholds", () => {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compactWithSafetyTimeout,
   EMBEDDED_COMPACTION_TIMEOUT_MS,
+  waitForCompactionAbortSettlement,
 } from "./pi-embedded-runner/compaction-safety-timeout.js";
 
 describe("compactWithSafetyTimeout", () => {
@@ -40,6 +41,16 @@ describe("compactWithSafetyTimeout", () => {
         throw error;
       }, 30),
     ).rejects.toBe(error);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds the post-abort wait for a never-settling compaction promise", async () => {
+    vi.useFakeTimers();
+    const waitPromise = waitForCompactionAbortSettlement(new Promise<never>(() => undefined), 25);
+    const assertion = expect(waitPromise).resolves.toBe("timed_out");
+
+    await vi.advanceTimersByTimeAsync(25);
+    await assertion;
     expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -6,7 +6,8 @@ import type {
 } from "../plugins/types.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
-  HARD_MAX_TOOL_RESULT_CHARS,
+  calculatePersistenceToolResultChars,
+  getToolResultToolName,
   truncateToolResultMessage,
 } from "./pi-embedded-runner/tool-result-truncation.js";
 import { makeMissingToolResult, sanitizeToolCallInputs } from "./session-transcript-repair.js";
@@ -21,13 +22,15 @@ const GUARD_TRUNCATION_SUFFIX =
  * Returns the original message if under the limit, or a new message with
  * truncated text blocks otherwise.
  */
-function capToolResultSize(msg: AgentMessage): AgentMessage {
+function capToolResultSize(msg: AgentMessage, toolName?: string): AgentMessage {
   if ((msg as { role?: string }).role !== "toolResult") {
     return msg;
   }
-  return truncateToolResultMessage(msg, HARD_MAX_TOOL_RESULT_CHARS, {
+  const resolvedToolName = toolName ?? getToolResultToolName(msg);
+  return truncateToolResultMessage(msg, calculatePersistenceToolResultChars(resolvedToolName), {
     suffix: GUARD_TRUNCATION_SUFFIX,
     minKeepChars: 2_000,
+    toolName: resolvedToolName,
   });
 }
 
@@ -146,20 +149,21 @@ export function installSessionToolResultGuard(
 
     if (nextRole === "toolResult") {
       const id = extractToolResultId(nextMessage as Extract<AgentMessage, { role: "toolResult" }>);
-      const toolName = id ? pending.get(id) : undefined;
+      const toolName = (id ? pending.get(id) : undefined) ?? getToolResultToolName(nextMessage);
       if (id) {
         pending.delete(id);
       }
       // Apply hard size cap before persistence to prevent oversized tool results
       // from consuming the entire context window on subsequent LLM calls.
-      const capped = capToolResultSize(persistMessage(nextMessage));
-      const persisted = applyBeforeWriteHook(
+      const capped = capToolResultSize(persistMessage(nextMessage), toolName);
+      const hooked = applyBeforeWriteHook(
         persistToolResult(capped, {
           toolCallId: id ?? undefined,
           toolName,
           isSynthetic: false,
         }),
       );
+      const persisted = hooked ? capToolResultSize(hooked, toolName) : null;
       if (!persisted) {
         return undefined;
       }

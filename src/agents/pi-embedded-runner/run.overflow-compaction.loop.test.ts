@@ -3,6 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { isCompactionFailureError, isLikelyContextOverflowError } from "../pi-embedded-helpers.js";
 
 vi.mock("../../utils.js", () => ({
+  isPlainObject: vi.fn((value: unknown) => {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+  }),
   resolveUserPath: vi.fn((p: string) => p),
 }));
 

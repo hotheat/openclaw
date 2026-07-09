@@ -9,6 +9,7 @@ import {
   MIN_CHUNK_RATIO,
   SAFETY_MARGIN,
   SUMMARIZATION_OVERHEAD_TOKENS,
+  SummaryCallBudgetExhaustedError,
   computeAdaptiveChunkRatio,
   estimateMessagesTokens,
   isOversizedForSummary,
@@ -287,6 +288,9 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   previousSummary: preparation.previousSummary,
                 });
               } catch (droppedError) {
+                if (droppedError instanceof SummaryCallBudgetExhaustedError) {
+                  throw droppedError;
+                }
                 log.warn(
                   `Compaction safeguard: failed to summarize dropped messages, continuing without: ${
                     droppedError instanceof Error ? droppedError.message : String(droppedError)

@@ -69,6 +69,11 @@ export type BedrockDiscoveryConfig = {
 
 export type ModelsConfig = {
   mode?: "merge" | "replace";
+  /**
+   * Context window used for dynamic provider fallback models that are not listed
+   * under any provider's models[]. Exact listed models should set contextWindow.
+   */
+  defaultContextWindow?: number;
   providers?: Record<string, ModelProviderConfig>;
   bedrockDiscovery?: BedrockDiscoveryConfig;
 };
