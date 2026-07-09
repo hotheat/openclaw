@@ -27,6 +27,21 @@ function createContext(
   };
 }
 
+function createPropagateAttributesMock() {
+  return vi.fn(<T>(_params: Record<string, unknown>, fn: () => T) => fn());
+}
+
+function propagatedMetadataStrings(attributes: unknown): string[] {
+  const metadata =
+    typeof attributes === "object" && attributes !== null && "metadata" in attributes
+      ? (attributes as { metadata?: unknown }).metadata
+      : undefined;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return [];
+  }
+  return Object.values(metadata).filter((value): value is string => typeof value === "string");
+}
+
 describe("diagnostics-langfuse service", () => {
   it("fails fast when enabled without required credentials", async () => {
     const runtime = createDiagnosticsLangfuseRuntime();
@@ -67,6 +82,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -147,6 +163,832 @@ describe("diagnostics-langfuse service", () => {
       parentSessionKey: "session:key",
       parentObservationId: ROOT_OBSERVATION_ID,
     });
+    expect(client.propagateAttributes).toHaveBeenCalledTimes(3);
+    for (const [attributes] of client.propagateAttributes.mock.calls) {
+      expect(attributes).toMatchObject({
+        traceName: "openclaw.agent.run",
+        sessionId: "session-1",
+        metadata: expect.objectContaining({
+          runId: "run-1",
+          sessionId: "session-1",
+          provider: "openai",
+          model: "gpt-5.1",
+        }),
+      });
+    }
+  });
+
+  it("propagates searchable run metadata through OTEL attributes", async () => {
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+      sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "main",
+      channel: "feishu",
+      messageProvider: "feishu",
+      metadata: {
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+      startedAt: 1_762_000_000_000,
+    });
+
+    const propagation = client.propagateAttributes.mock.calls[0]?.[0];
+    expect(propagation).toMatchObject({
+      traceName: "openclaw.agent.run main feishu",
+      userId: "ou_626a753df7ba7cc68063270223eddde5",
+      sessionId: "session-1",
+      metadata: expect.objectContaining({
+        runId: "run-1",
+        sessionId: "session-1",
+        sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+        agentId: "main",
+        channel: "feishu",
+        messageProvider: "feishu",
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      }),
+    });
+    const propagationMetadata = propagation?.metadata as Record<string, string> | undefined;
+    expect(propagationMetadata?.searchTerms).toContain("ou_626a753df7ba7cc68063270223eddde5");
+    expect(propagationMetadata?.searchTerms).toContain("main");
+    expect(propagationMetadata?.searchTerms).toContain(
+      "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+    );
+    expect(client.startObservation).toHaveBeenCalledWith(
+      "openclaw.agent.run main feishu",
+      expect.objectContaining({
+        metadata: expect.objectContaining({ runId: "run-1", sessionId: "session-1" }),
+      }),
+      expect.objectContaining({
+        asType: "agent",
+        startTime: new Date(1_762_000_000_000),
+      }),
+    );
+  });
+
+  it("uses the searchable trace name as the top-level root observation name", async () => {
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+      sessionKey:
+        "agent:feishu-ou_626a753df7ba7cc68063270223eddde5:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "feishu-ou_626a753df7ba7cc68063270223eddde5",
+      channel: "feishu",
+      messageProvider: "feishu",
+      metadata: {
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+    });
+
+    expect(client.startObservation).toHaveBeenCalledWith(
+      "openclaw.agent.run feishu-ou_626a753df7ba7cc68063270223eddde5 feishu",
+      expect.any(Object),
+      expect.objectContaining({ asType: "agent" }),
+    );
+  });
+
+  it("starts runs through OTEL without public ingestion writes", async () => {
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+    });
+
+    expect(run?.traceParent).toMatchObject({
+      parentTraceId: TRACE_ID,
+      parentRunId: "run-1",
+      parentObservationId: ROOT_OBSERVATION_ID,
+    });
+    expect(client.propagateAttributes).toHaveBeenCalledTimes(1);
+    expect(client).not.toHaveProperty("upsertTrace");
+    expect(client).not.toHaveProperty("createObservation");
+  });
+
+  it("creates inherited child runs with OTEL parent span context only", async () => {
+    const parentTraceId = "1234567890abcdef1234567890abcdef";
+    const parentObservationId = "abcdef1234567890";
+    const root = {
+      id: CHILD_OBSERVATION_ID,
+      traceId: parentTraceId,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "child-run",
+      sessionId: "child-session",
+      sessionKey: "agent:child:main",
+      agentId: "child",
+      channel: "feishu",
+      senderId: "ou_child",
+      traceParent: {
+        parentTraceId,
+        parentObservationId,
+        parentRunId: "parent-run",
+        parentSessionKey: "parent-session",
+      },
+    });
+
+    expect(client.createTraceId).not.toHaveBeenCalled();
+    expect(client.startObservation).toHaveBeenCalledWith(
+      "openclaw.agent.run",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          runId: "child-run",
+          sessionId: "child-session",
+          agentId: "child",
+          parentRunId: "parent-run",
+        }),
+      }),
+      expect.objectContaining({
+        parentSpanContext: {
+          traceId: parentTraceId,
+          spanId: parentObservationId,
+          traceFlags: 1,
+        },
+      }),
+    );
+    const propagation = client.propagateAttributes.mock.calls[0]?.[0];
+    expect(propagation).toEqual({
+      traceName: "openclaw.agent.run",
+    });
+    expect(client).not.toHaveProperty("upsertTrace");
+    expect(client).not.toHaveProperty("createObservation");
+  });
+
+  it("does not propagate child trace identity for inherited child runs", async () => {
+    const parentTraceId = "1234567890abcdef1234567890abcdef";
+    const parentObservationId = "abcdef1234567890";
+    const root = {
+      id: CHILD_OBSERVATION_ID,
+      traceId: parentTraceId,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "child-run",
+      sessionId: "child-session",
+      sessionKey: "agent:child:main",
+      agentId: "child",
+      channel: "feishu",
+      senderId: "ou_child",
+      traceParent: {
+        parentTraceId,
+        parentObservationId,
+        parentRunId: "parent-run",
+        parentSessionKey: "parent-session",
+      },
+    });
+
+    const propagation = client.propagateAttributes.mock.calls[0]?.[0];
+    expect(propagation).toEqual({
+      traceName: "openclaw.agent.run",
+    });
+  });
+
+  it("flushes and shuts down the OTEL provider on stop", async () => {
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+    });
+    await runtime.service.stop?.(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    expect(client.flush).toHaveBeenCalledTimes(1);
+    expect(client.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("adds subagent ids to parent OTEL observation search metadata", async () => {
+    const eventObservation = { end: vi.fn() };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn(
+        (_name: string, _attributes?: { metadata?: Record<string, unknown> }) => eventObservation,
+      ),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "parent-run",
+      sessionId: "session-1",
+      sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "main",
+      channel: "feishu",
+      metadata: {
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+    });
+    const childAgentId = "feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3";
+    const childSessionKey =
+      "agent:feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3";
+    await run?.recordSubagentLifecycle?.({
+      phase: "spawned",
+      runId: "child-run",
+      parentRunId: "parent-run",
+      childSessionKey,
+      agentId: childAgentId,
+      label: "researcher",
+    });
+
+    expect(root.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          subagentIds: [childAgentId],
+          subagentSessionKeys: [childSessionKey],
+          searchTerms: expect.arrayContaining([
+            "parent-run",
+            "session-1",
+            "ou_626a753df7ba7cc68063270223eddde5",
+            childAgentId,
+            childSessionKey,
+          ]),
+        }),
+      }),
+    );
+    expect(root.startObservation).toHaveBeenCalledWith(
+      "openclaw.subagent.spawned",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          subagentIds: [childAgentId],
+          subagentSessionKeys: [childSessionKey],
+          searchTerms: expect.arrayContaining([childAgentId, childSessionKey]),
+        }),
+      }),
+      expect.objectContaining({ asType: "event" }),
+    );
+    const lifecyclePropagation = client.propagateAttributes.mock.calls.at(-1)?.[0];
+    expect(lifecyclePropagation).toMatchObject({
+      traceName: "openclaw.agent.run main feishu",
+      userId: "ou_626a753df7ba7cc68063270223eddde5",
+      sessionId: "session-1",
+      metadata: expect.objectContaining({
+        runId: "parent-run",
+        sessionId: "session-1",
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+        subagentIds: childAgentId,
+        subagentSessionKeys: childSessionKey,
+      }),
+    });
+    const lifecyclePropagationMetadata = lifecyclePropagation?.metadata as
+      | Record<string, string>
+      | undefined;
+    expect(lifecyclePropagationMetadata?.searchTerms).toContain("parent-run");
+    expect(lifecyclePropagationMetadata?.searchTerms).toContain("session-1");
+    expect(lifecyclePropagationMetadata?.searchTerms).toContain(
+      "ou_626a753df7ba7cc68063270223eddde5",
+    );
+    expect(Object.values(lifecyclePropagationMetadata ?? {})).toContain(childAgentId);
+    expect(Object.values(lifecyclePropagationMetadata ?? {})).toContain(childSessionKey);
+
+    await run?.recordSpan?.({
+      name: "openclaw.after-subagent",
+      metadata: { promptChars: 32 },
+    });
+    const spanPropagation = client.propagateAttributes.mock.calls.at(-1)?.[0];
+    expect(spanPropagation?.metadata).toMatchObject({
+      subagentIds: childAgentId,
+      subagentSessionKeys: childSessionKey,
+    });
+    const spanPropagationMetadata = spanPropagation?.metadata as Record<string, string> | undefined;
+    expect(spanPropagationMetadata?.searchTerms).toContain("parent-run");
+    expect(spanPropagationMetadata?.searchTerms).toContain("ou_626a753df7ba7cc68063270223eddde5");
+    expect(Object.values(spanPropagationMetadata ?? {})).toContain(childAgentId);
+    expect(Object.values(spanPropagationMetadata ?? {})).toContain(childSessionKey);
+  });
+
+  it("propagates updated subagent search metadata to observations created after spawn", async () => {
+    const observation = {
+      id: CHILD_OBSERVATION_ID,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn(() => observation),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    const childAgentId = "feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3";
+    const childSessionKey =
+      "agent:feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3";
+    const run = await runtime.sink.startRun({
+      runId: "parent-run",
+      sessionId: "session-1",
+      sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "main",
+      channel: "feishu",
+      metadata: {
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+    });
+    await run?.recordSubagentLifecycle?.({
+      phase: "spawned",
+      runId: "child-run",
+      parentRunId: "parent-run",
+      childSessionKey,
+      agentId: childAgentId,
+      label: "researcher",
+    });
+    await run?.startGeneration?.({
+      provider: "openai",
+      model: "gpt-5.1",
+      prompt: "continue",
+      historyMessages: [],
+      imagesCount: 0,
+    });
+    await run?.startTool?.({
+      toolName: "sessions_send",
+      toolCallId: "tool-1",
+      params: { message: "ping" },
+    });
+    await run?.recordSpan?.({
+      name: "openclaw.after-subagent",
+      metadata: { promptChars: 32 },
+    });
+
+    const laterPropagations = client.propagateAttributes.mock.calls.slice(2).map(([attributes]) => {
+      return attributes as { metadata?: Record<string, string> };
+    });
+    expect(laterPropagations).toHaveLength(3);
+    for (const propagation of laterPropagations) {
+      expect(propagation.metadata).toMatchObject({
+        subagentIds: childAgentId,
+        subagentSessionKeys: childSessionKey,
+      });
+      expect(propagation.metadata?.searchTerms).toContain("parent-run");
+      expect(propagation.metadata?.searchTerms).toContain("ou_626a753df7ba7cc68063270223eddde5");
+      expect(Object.values(propagation.metadata ?? {})).toContain(childAgentId);
+      expect(Object.values(propagation.metadata ?? {})).toContain(childSessionKey);
+    }
+  });
+
+  it("keeps propagated metadata strings within the Langfuse SDK limit", async () => {
+    const eventObservation = { end: vi.fn() };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn(
+        (_name: string, _attributes?: { metadata?: Record<string, unknown> }) => eventObservation,
+      ),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "parent-run",
+      sessionId: "session-1",
+      sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "main",
+      channel: "feishu",
+      metadata: {
+        senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+    });
+    await run?.recordSubagentLifecycle?.({
+      phase: "spawned",
+      runId: "child-run",
+      parentRunId: "parent-run",
+      childSessionKey:
+        "agent:feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3",
+      agentId: "feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3",
+      label: "researcher",
+    });
+
+    for (const [attributes] of client.propagateAttributes.mock.calls) {
+      for (const value of propagatedMetadataStrings(attributes)) {
+        expect(value.length).toBeLessThanOrEqual(200);
+      }
+    }
+  });
+
+  it("keeps route and user identifiers out of propagated OTEL attributes in safe mode", async () => {
+    const eventObservation = { end: vi.fn() };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn(
+        (_name: string, _attributes?: { metadata?: Record<string, unknown> }) => eventObservation,
+      ),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "safe",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+      sessionKey: "agent:feishu-ou_private:main",
+      agentId: "feishu-ou_private",
+      channel: "feishu",
+      messageProvider: "feishu",
+      lane: "subagent",
+      provider: "openai",
+      model: "gpt-5.1",
+      workspaceDir: "/home/xiaolu/.openclaw/workspace-feishu-ou_private",
+      spawnedBy: "agent:parent:main",
+      senderId: "ou_626a753df7ba7cc68063270223eddde5",
+      metadata: {
+        userId: "ou_626a753df7ba7cc68063270223eddde5",
+      },
+      traceParent: {
+        parentRunId: "parent-run",
+        parentTraceId: "parent-trace",
+        parentSessionKey: "agent:feishu-ou_parent:main",
+      },
+    });
+
+    const propagation = client.propagateAttributes.mock.calls[0]?.[0];
+    expect(propagation).toMatchObject({
+      traceName: "openclaw.agent.run",
+    });
+    expect(propagation).not.toHaveProperty("sessionId");
+    expect(propagation).not.toHaveProperty("userId");
+    expect(propagation.metadata).toMatchObject({
+      serviceName: "openclaw-gateway",
+      channel: "feishu",
+      messageProvider: "feishu",
+      lane: "subagent",
+      provider: "openai",
+      model: "gpt-5.1",
+    });
+    expect(propagation.metadata).not.toHaveProperty("runId");
+    expect(propagation.metadata).not.toHaveProperty("sessionId");
+    expect(propagation.metadata).not.toHaveProperty("sessionKey");
+    expect(propagation.metadata).not.toHaveProperty("agentId");
+    expect(propagation.metadata).not.toHaveProperty("senderId");
+    expect(propagation.metadata).not.toHaveProperty("userId");
+    expect(propagation.metadata).not.toHaveProperty("parentRunId");
+    expect(propagation.metadata).not.toHaveProperty("parentTraceId");
+    expect(propagation.metadata).not.toHaveProperty("parentSessionKey");
+    expect(propagation.metadata).not.toHaveProperty("workspaceDir");
+    expect(propagation.metadata).not.toHaveProperty("spawnedBy");
+    expect(propagation.metadata).not.toHaveProperty("searchTerms");
+  });
+
+  it("does not append subagent identifiers in safe mode", async () => {
+    const eventObservation = { end: vi.fn() };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn(
+        (_name: string, _attributes?: { metadata?: Record<string, unknown> }) => eventObservation,
+      ),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "safe",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "parent-run",
+      sessionId: "session-1",
+      sessionKey: "agent:main:feishu:direct:ou_626a753df7ba7cc68063270223eddde5",
+      agentId: "main",
+      channel: "feishu",
+      senderId: "ou_626a753df7ba7cc68063270223eddde5",
+    });
+    await run?.recordSubagentLifecycle?.({
+      phase: "spawned",
+      runId: "child-run",
+      parentRunId: "parent-run",
+      childSessionKey:
+        "agent:feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3",
+      agentId: "feishu:g-agent-researcher-subagent-8327051f-d4c0-4cb1-a2f7-14fc763597b3",
+      label: "researcher",
+    });
+
+    expect(root.update).not.toHaveBeenCalled();
+    const eventMetadata = root.startObservation.mock.calls[0]?.[1]?.metadata;
+    expect(eventMetadata).toMatchObject({
+      phase: "spawned",
+      label: "researcher",
+    });
+    expect(eventMetadata).not.toHaveProperty("runId");
+    expect(eventMetadata).not.toHaveProperty("parentRunId");
+    expect(eventMetadata).not.toHaveProperty("agentId");
+    expect(eventMetadata).not.toHaveProperty("childSessionKey");
+    expect(eventMetadata).not.toHaveProperty("subagentIds");
+    expect(eventMetadata).not.toHaveProperty("subagentSessionKeys");
+    expect(eventMetadata).not.toHaveProperty("searchTerms");
+    const lifecyclePropagation = client.propagateAttributes.mock.calls.at(-1)?.[0];
+    expect(lifecyclePropagation?.metadata).not.toHaveProperty("subagentId");
+    expect(lifecyclePropagation?.metadata).not.toHaveProperty("subagentSessionKey");
+    expect(lifecyclePropagation?.metadata).not.toHaveProperty("searchTerms");
   });
 
   it("exposes sessions_spawn tool observation as the child trace parent", async () => {
@@ -161,6 +1003,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -213,6 +1056,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -272,6 +1116,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockRejectedValue(new Error("fetch failed")),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -304,6 +1149,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(false),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -337,6 +1183,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -380,6 +1227,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -427,6 +1275,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(() => root),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -473,6 +1322,186 @@ describe("diagnostics-langfuse service", () => {
     expect(run?.traceParent?.parentTraceId).toBe(parentTraceId);
   });
 
+  it("starts visible child agent observations through OTEL parent context", async () => {
+    const parentTraceId = "1234567890abcdef1234567890abcdef";
+    const parentObservationId = "abcdef1234567890";
+    const root = {
+      id: CHILD_OBSERVATION_ID,
+      traceId: parentTraceId,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    await runtime.sink.startRun({
+      runId: "child-run",
+      sessionId: "session-1",
+      sessionKey: "child-session",
+      traceParent: {
+        parentTraceId,
+        parentObservationId,
+        parentRunId: "parent-run",
+        parentSessionKey: "parent-session",
+      },
+      startedAt: 1_762_000_000_000,
+    });
+
+    expect(client.startObservation).toHaveBeenCalledWith(
+      "openclaw.agent.run",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          runId: "child-run",
+          sessionId: "session-1",
+          parentRunId: "parent-run",
+          parentTraceId,
+          parentSessionKey: "parent-session",
+        }),
+      }),
+      expect.objectContaining({
+        asType: "agent",
+        startTime: new Date(1_762_000_000_000),
+        parentSpanContext: {
+          traceId: parentTraceId,
+          spanId: parentObservationId,
+          traceFlags: 1,
+        },
+      }),
+    );
+    expect(client.propagateAttributes).toHaveBeenCalledWith(
+      {
+        traceName: "openclaw.agent.run",
+      },
+      expect.any(Function),
+    );
+    expect(client).not.toHaveProperty("createObservation");
+  });
+
+  it("does not perform background ingestion for child run startup", async () => {
+    const parentTraceId = "1234567890abcdef1234567890abcdef";
+    const parentObservationId = "abcdef1234567890";
+    const root = {
+      id: CHILD_OBSERVATION_ID,
+      traceId: parentTraceId,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+            captureMode: "llm_text",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "child-run",
+      sessionId: "session-1",
+      traceParent: {
+        parentTraceId,
+        parentObservationId,
+        parentRunId: "parent-run",
+      },
+    });
+
+    expect(run?.traceParent).toMatchObject({
+      parentTraceId,
+      parentRunId: "child-run",
+      parentObservationId: CHILD_OBSERVATION_ID,
+    });
+    expect(client.propagateAttributes).toHaveBeenCalledTimes(1);
+    expect(client).not.toHaveProperty("createObservation");
+    expect(client).not.toHaveProperty("upsertTrace");
+  });
+
+  it("does not log public ingestion failures when child runs start", async () => {
+    const parentTraceId = "1234567890abcdef1234567890abcdef";
+    const parentObservationId = "abcdef1234567890";
+    const root = {
+      id: CHILD_OBSERVATION_ID,
+      traceId: parentTraceId,
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    const ctx = createContext({
+      diagnostics: {
+        enabled: true,
+        langfuse: {
+          enabled: true,
+          host: "http://localhost:3005",
+          publicKey: "pk",
+          secretKey: "sk",
+          captureMode: "llm_text",
+        },
+      },
+    });
+    await runtime.service.start(ctx);
+
+    await runtime.sink.startRun({
+      runId: "child-run",
+      sessionId: "session-1",
+      traceParent: {
+        parentTraceId,
+        parentObservationId,
+        parentRunId: "parent-run",
+      },
+    });
+
+    expect(ctx.logger.warn).not.toHaveBeenCalledWith(expect.stringContaining("ingestion"));
+  });
+
   it("emits observation ids that can be reused as child parent span context", async () => {
     const parentRoot = {
       id: ROOT_OBSERVATION_ID,
@@ -489,6 +1518,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn().mockReturnValueOnce(parentRoot).mockReturnValueOnce(childRoot),
       flush: vi.fn(),
       shutdown: vi.fn(),
@@ -550,6 +1580,7 @@ describe("diagnostics-langfuse service", () => {
     const client = {
       authCheck: vi.fn().mockResolvedValue(true),
       createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
       startObservation: vi.fn(
         (_name: string, attributes?: { metadata?: Record<string, unknown> }) => {
           rootAttributes = attributes;

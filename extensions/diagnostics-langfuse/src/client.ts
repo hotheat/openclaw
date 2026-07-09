@@ -1,3 +1,4 @@
+import type { PropagateAttributesParams } from "@langfuse/tracing";
 import type { ResolvedLangfuseConfig } from "./config.js";
 import { maskSensitiveData } from "./mask.js";
 
@@ -16,6 +17,7 @@ export type LangfuseObservation = {
 export type LangfuseTraceClient = {
   authCheck?: () => Promise<boolean> | boolean;
   createTraceId: (seed?: string) => Promise<string>;
+  propagateAttributes: <T>(params: PropagateAttributesParams, fn: () => T) => T;
   startObservation: (
     name: string,
     attributes?: Record<string, unknown>,
@@ -54,6 +56,8 @@ export const createDefaultLangfuseClient: LangfuseClientFactory = async (config)
   ) => void;
   const startObservation = tracing.startObservation as LangfuseTraceClient["startObservation"];
   const createTraceId = tracing.createTraceId as LangfuseTraceClient["createTraceId"];
+  const propagateAttributes =
+    tracing.propagateAttributes as LangfuseTraceClient["propagateAttributes"];
 
   const provider = new BasicTracerProvider({
     spanProcessors: [
@@ -84,6 +88,7 @@ export const createDefaultLangfuseClient: LangfuseClientFactory = async (config)
       return true;
     },
     createTraceId,
+    propagateAttributes,
     startObservation,
     flush: async () => {
       await provider.forceFlush?.();

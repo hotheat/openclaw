@@ -1,13 +1,14 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultLangfuseClient } from "./client.js";
 
 const langfuseMocks = vi.hoisted(() => ({
   setLangfuseTracerProvider: vi.fn(),
   startObservation: vi.fn(),
   createTraceId: vi.fn(async () => "trace-id"),
+  propagateAttributes: vi.fn((_params: unknown, fn: () => unknown) => fn()),
   langfuseSpanProcessor: vi.fn(function LangfuseSpanProcessor() {}),
   providerShutdown: vi.fn(),
   providerForceFlush: vi.fn(),
@@ -34,6 +35,7 @@ mockVirtualModule(
     setLangfuseTracerProvider: langfuseMocks.setLangfuseTracerProvider,
     startObservation: langfuseMocks.startObservation,
     createTraceId: langfuseMocks.createTraceId,
+    propagateAttributes: langfuseMocks.propagateAttributes,
   }),
   { virtual: true },
 );
@@ -98,5 +100,41 @@ describe("diagnostics-langfuse client module loading", () => {
 
     expect(langfuseMocks.providerShutdown).toHaveBeenCalledTimes(1);
     expect(langfuseMocks.setLangfuseTracerProvider).toHaveBeenLastCalledWith(null);
+  });
+
+  it("exposes Langfuse OTEL attribute propagation without public ingestion helpers", async () => {
+    const client = await createDefaultLangfuseClient({
+      enabled: true,
+      host: "http://localhost:3005/",
+      publicKey: "pk",
+      secretKey: "sk",
+      flushIntervalMs: 1000,
+      timeoutMs: 1000,
+      captureMode: "safe",
+      serviceName: "openclaw-gateway",
+    });
+
+    const result = client.propagateAttributes?.(
+      {
+        traceName: "openclaw.agent.run",
+        userId: "ou_626a753df7ba7cc68063270223eddde5",
+        sessionId: "session-1",
+        metadata: { agentId: "main" },
+      },
+      () => "created",
+    );
+
+    expect(result).toBe("created");
+    expect(langfuseMocks.propagateAttributes).toHaveBeenCalledWith(
+      {
+        traceName: "openclaw.agent.run",
+        userId: "ou_626a753df7ba7cc68063270223eddde5",
+        sessionId: "session-1",
+        metadata: { agentId: "main" },
+      },
+      expect.any(Function),
+    );
+    expect(client).not.toHaveProperty("upsertTrace");
+    expect(client).not.toHaveProperty("createObservation");
   });
 });

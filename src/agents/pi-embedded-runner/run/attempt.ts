@@ -681,6 +681,7 @@ export async function runEmbeddedAttempt(
       model: params.modelId,
       workspaceDir: effectiveWorkspace,
       spawnedBy: params.spawnedBy,
+      senderId: params.senderId,
       inputProvenance: params.inputProvenance,
       traceParent: params.traceParent,
       startedAt: traceRunStartedAt,

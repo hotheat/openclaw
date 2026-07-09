@@ -29,6 +29,7 @@ export type AgentTraceRunStartEvent = {
   model?: string;
   workspaceDir?: string;
   spawnedBy?: string | null;
+  senderId?: string | null;
   inputProvenance?: InputProvenance;
   traceParent?: AgentTraceParent;
   startedAt?: number;
