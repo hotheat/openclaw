@@ -89,6 +89,12 @@ describe("memory cli", () => {
     );
   }
 
+  function expectCliMigrateSearchTokens(migrateSearchTokens: ReturnType<typeof vi.fn>) {
+    expect(migrateSearchTokens).toHaveBeenCalledWith(
+      expect.objectContaining({ progress: expect.any(Function) }),
+    );
+  }
+
   function makeMemoryStatus(overrides: Record<string, unknown> = {}) {
     return {
       files: 0,
@@ -364,6 +370,19 @@ describe("memory cli", () => {
     );
   });
 
+  it("migrates memory search tokens in place", async () => {
+    const close = vi.fn(async () => {});
+    const migrateSearchTokens = vi.fn(async () => ({ migrated: 3, skipped: 4 }));
+    mockManager({ migrateSearchTokens, close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["migrate-search-tokens"]);
+
+    expectCliMigrateSearchTokens(migrateSearchTokens);
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory search tokens migrated (main): 3 updated, 4 skipped.");
+  });
+
   it("reports when backend does not support repair-store", async () => {
     const close = vi.fn(async () => {});
     mockManager({ close });
@@ -386,6 +405,17 @@ describe("memory cli", () => {
     expect(log).toHaveBeenCalledWith(
       "Memory backend does not support in-place embedding migration.",
     );
+  });
+
+  it("reports when backend does not support search token migration", async () => {
+    const close = vi.fn(async () => {});
+    mockManager({ close });
+
+    const log = spyRuntimeLogs();
+    await runMemoryCli(["migrate-search-tokens"]);
+
+    expect(close).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("Memory backend does not support search token migration.");
   });
 
   it("logs qmd index file path and size after index", async () => {

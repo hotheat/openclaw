@@ -32,7 +32,9 @@ openclaw memory status --deep --index
 openclaw memory status --deep --index --verbose
 openclaw memory index
 openclaw memory index --verbose
+openclaw memory migrate-search-tokens
 openclaw memory search "release checklist"
+openclaw memory search --query "release checklist"
 openclaw memory status --agent main
 openclaw memory index --agent main --verbose
 ```
@@ -44,9 +46,29 @@ openclaw memory index --agent main --verbose
 - `--agent <id>`：限定到单个智能体（默认：所有已配置的智能体）。
 - `--verbose`：在探测和索引期间输出详细日志。
 
+`memory search`：
+
+- 查询输入：传入位置参数 `[query]` 或 `--query <text>`。
+- 如果两者都提供，`--query` 优先。
+- 如果两者都未提供，命令会报错退出。
+
 说明：
 
 - `memory status --deep` 探测向量存储和嵌入模型的可用性。
 - `memory status --deep --index` 在存储有未同步变更时运行重新索引。
 - `memory index --verbose` 打印每个阶段的详细信息（提供商、模型、数据源、批处理活动）。
+- `memory migrate-search-tokens` 重新分词已有 PostgreSQL 记忆块，不重新计算嵌入。
 - `memory status` 包含通过 `memorySearch.extraPaths` 配置的所有额外路径。
+
+## 领域词表（lexicon）
+
+关键词分词可由领域词表引导，让高信号实体（公司、药物、靶点、适应症、modality）作为完整搜索 token 保留。
+
+- `memorySearch.lexicon.includeDefaults`（默认 `true`）：从 `<workspace>/lexicons/innovation-drug.yaml`
+  （即 `openclaw.json` 同目录下的 `lexicons/`）加载内置创新药词表。设为 `false` 可让非 pharma
+  agent 跳过这些 pharma 词。文件不存在时静默忽略。
+- `memorySearch.lexicon.paths`：额外的 YAML/JSON 词表文件（companies、drugs、targets、indications、modalities、aliases、note）。
+- `memorySearch.lexicon.terms`：与文件词表合并的内联词条。
+
+修改词表（或升级分词器）后，请运行 `openclaw memory migrate-search-tokens` 让已索引的记忆块重新分词。
+系统不会自动检测词表是否陈旧。

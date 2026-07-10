@@ -1,0 +1,50 @@
+# Default innovation-drug domain lexicon for OpenClaw memory search.
+#
+# Loaded automatically when `memorySearch.lexicon.includeDefaults` is true
+# (the default). Resolved relative to the directory that holds openclaw.json,
+# i.e. <workspace>/lexicons/innovation-drug.yaml.
+#
+# Set `memorySearch.lexicon.includeDefaults: false` to skip this file for
+# non-pharma agents. Terms here are merged ahead of user-configured
+# `lexicon.terms` / `lexicon.paths`.
+#
+# After editing this file, run `openclaw memory migrate-search-tokens` so that
+# already-indexed chunks pick up the new tokenization.
+terms:
+  # Modalities and technical spans
+  - ADC
+  - ASO
+  - BCMA
+  - CAR-T
+  - CD19
+  - CLDN18.2
+  - CPS
+  - DLBCL
+  - EGFR
+  - exon20
+  - GLP-1
+  - GLP-1R
+  - GLP-1RA
+  - HER2
+  - HER2-low
+  - KRAS
+  - KRAS G12C
+  - NSCLC
+  - ORR
+  - OS
+  - PD-1
+  - PD-L1
+  - PFS
+  - PROTAC
+  - siRNA
+  - TROP2
+  # Chinese domain terms
+  - 一线治疗
+  - 临床试验
+  - 创新药
+  - 双抗
+  - 授权交易
+  - 管线
+  - 适应症
+  - 靶点
+  - 首付款

@@ -39,6 +39,17 @@ export type MemoryVectorMigrationResult = {
   dims?: number;
 };
 
+export type MemorySearchTokenMigrationProgressUpdate = {
+  completed: number;
+  total: number;
+  label?: string;
+};
+
+export type MemorySearchTokenMigrationResult = {
+  migrated: number;
+  skipped: number;
+};
+
 export type MemoryProviderStatus = {
   backend: "builtin" | "qmd";
   provider: string;
@@ -98,6 +109,9 @@ export interface MemorySearchManager {
   migrateEmbeddings?(params?: {
     progress?: (update: MemoryVectorMigrationProgressUpdate) => void;
   }): Promise<MemoryVectorMigrationResult>;
+  migrateSearchTokens?(params?: {
+    progress?: (update: MemorySearchTokenMigrationProgressUpdate) => void;
+  }): Promise<MemorySearchTokenMigrationResult>;
   probeEmbeddingAvailability(): Promise<MemoryEmbeddingProbeResult>;
   probeVectorAvailability(): Promise<boolean>;
   close?(): Promise<void>;

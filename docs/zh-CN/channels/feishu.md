@@ -474,6 +474,10 @@ openclaw pairing list feishu
 
 如需禁用流式输出（等待完整回复后一次性发送），可设置 `streaming: false`。
 
+启用块级流式输出时，飞书可能会在工具调用开始前收到一段中间 assistant 文本。
+这段文本来自模型可见的 assistant message content，不是 reasoning、工具输出或最终答案。
+按 Responses API 语义看，它对应 assistant `phase: "commentary"`，用于让长任务或工具密集任务显示进度。
+
 ### 消息引用
 
 在群聊中，机器人的回复可以引用用户发送的原始消息，让对话上下文更加清晰。

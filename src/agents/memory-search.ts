@@ -1,15 +1,21 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig, MemorySearchConfig } from "../config/config.js";
-import { resolveStateDir } from "../config/paths.js";
+import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import { extractTermsFromLexiconFile } from "../memory/domain-lexicon.js";
 import { clampInt, clampNumber, resolveUserPath } from "../utils.js";
-import { resolveAgentConfig } from "./agent-scope.js";
+import { resolveAgentConfig, resolveAgentWorkspaceDir } from "./agent-scope.js";
 
 export type ResolvedMemorySearchConfig = {
   enabled: boolean;
   sources: Array<"memory" | "sessions">;
   extraPaths: string[];
   excludeGlobs: string[];
+  lexicon: {
+    terms: string[];
+  };
   provider: "openai" | "local" | "gemini" | "voyage" | "mistral" | "auto";
   remote?: {
     baseUrl?: string;
@@ -114,6 +120,7 @@ const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
 const DEFAULT_POSTGRES_PORT = 5432;
 const DEFAULT_POSTGRES_SCHEMA = "agent_memory";
 const DEFAULT_POSTGRES_POOL_MAX = 10;
+const log = createSubsystemLogger("memory");
 
 function resolveDefaultPostgresSchema(): string {
   return process.env.POSTGRES__MEMORY_SCHEMA?.trim() || DEFAULT_POSTGRES_SCHEMA;
@@ -187,7 +194,72 @@ function resolveStorePath(agentId: string, raw?: string): string {
   return resolveUserPath(withToken);
 }
 
+function resolveLexiconPath(rawPath: string): string {
+  const resolved = resolveUserPath(rawPath);
+  if (path.isAbsolute(resolved)) {
+    return resolved;
+  }
+  // Relative lexicon paths resolve against the active config directory, not the
+  // process cwd, so one openclaw.json behaves identically whether it is loaded
+  // from the CLI, the gateway, or systemd (each of which may run from a
+  // different working directory). This mirrors resolveDefaultLexiconPath().
+  try {
+    return path.resolve(path.dirname(resolveConfigPath()), resolved);
+  } catch {
+    return path.resolve(resolved);
+  }
+}
+
+const DEFAULT_LEXICON_RELATIVE_PATH = path.join("lexicons", "innovation-drug.yaml");
+
+// The built-in innovation-drug lexicon is searched in the active agent
+// workspace first, then the shared default workspace, then the legacy config
+// directory location.
+function resolveDefaultLexiconPath(cfg: OpenClawConfig, agentId: string): string | null {
+  const candidates: string[] = [];
+  try {
+    candidates.push(
+      path.join(resolveAgentWorkspaceDir(cfg, agentId), DEFAULT_LEXICON_RELATIVE_PATH),
+    );
+  } catch {
+    // Continue with shared workspace and legacy config-directory candidates.
+  }
+  const sharedWorkspace = cfg.agents?.defaults?.workspace?.trim();
+  if (sharedWorkspace) {
+    candidates.push(path.join(resolveUserPath(sharedWorkspace), DEFAULT_LEXICON_RELATIVE_PATH));
+  }
+  try {
+    const configDir = path.dirname(resolveConfigPath());
+    candidates.push(path.join(configDir, DEFAULT_LEXICON_RELATIVE_PATH));
+  } catch {
+    // Missing config path only disables the legacy candidate.
+  }
+  for (const candidate of Array.from(new Set(candidates))) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function loadLexiconFileTerms(paths: string[]): { terms: string[] } {
+  const terms: string[] = [];
+  for (const rawPath of paths) {
+    const resolvedPath = resolveLexiconPath(rawPath);
+    try {
+      const content = fs.readFileSync(resolvedPath, "utf-8");
+      terms.push(...extractTermsFromLexiconFile(content, resolvedPath));
+    } catch (error) {
+      log.warn(
+        `memory search lexicon: failed to read ${resolvedPath}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return { terms };
+}
+
 function mergeConfig(
+  cfg: OpenClawConfig,
   defaults: MemorySearchConfig | undefined,
   overrides: MemorySearchConfig | undefined,
   agentId: string,
@@ -258,6 +330,25 @@ function mergeConfig(
     .map((value) => value.trim())
     .filter(Boolean);
   const excludeGlobs = Array.from(new Set(rawExcludeGlobs));
+  const includeDefaults =
+    overrides?.lexicon?.includeDefaults ?? defaults?.lexicon?.includeDefaults ?? true;
+  const defaultLexiconPath = includeDefaults ? resolveDefaultLexiconPath(cfg, agentId) : null;
+  const rawLexiconPaths = [
+    ...(defaultLexiconPath ? [defaultLexiconPath] : []),
+    ...(defaults?.lexicon?.paths ?? []),
+    ...(overrides?.lexicon?.paths ?? []),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const lexiconPaths = Array.from(new Set(rawLexiconPaths));
+  const rawLexiconTerms = [
+    ...(defaults?.lexicon?.terms ?? []),
+    ...(overrides?.lexicon?.terms ?? []),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const loadedLexicon = loadLexiconFileTerms(lexiconPaths);
+  const lexiconTerms = Array.from(new Set([...rawLexiconTerms, ...loadedLexicon.terms]));
   const vector = {
     enabled: overrides?.store?.vector?.enabled ?? defaults?.store?.vector?.enabled ?? true,
     extensionPath:
@@ -409,6 +500,9 @@ function mergeConfig(
     sources,
     extraPaths,
     excludeGlobs,
+    lexicon: {
+      terms: lexiconTerms,
+    },
     provider,
     remote,
     experimental: {
@@ -462,7 +556,7 @@ export function resolveMemorySearchConfig(
 ): ResolvedMemorySearchConfig | null {
   const defaults = cfg.agents?.defaults?.memorySearch;
   const overrides = resolveAgentConfig(cfg, agentId)?.memorySearch;
-  const resolved = mergeConfig(defaults, overrides, agentId);
+  const resolved = mergeConfig(cfg, defaults, overrides, agentId);
   if (!resolved.enabled) {
     return null;
   }

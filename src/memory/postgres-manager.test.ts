@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { hashText } from "./internal.js";
 
 const { embeddingBatchVectors, embeddingDims, watchMock } = vi.hoisted(() => ({
   embeddingBatchVectors: { value: null as number[][] | null },
@@ -80,6 +81,21 @@ const sqlTag = vi.hoisted(() => {
   });
   const isUnsafeIdentifier = (value: unknown): value is UnsafeIdentifier =>
     typeof value === "object" && value !== null && "raw" in value && typeof value.raw === "string";
+
+  const sharedTrigramCount = (haystack: string, query: string): number => {
+    const a = haystack.toLowerCase();
+    const b = query.toLowerCase();
+    if (a.length < 3 || b.length < 3) {
+      return 0;
+    }
+    let count = 0;
+    for (let i = 0; i + 3 <= a.length; i += 1) {
+      if (b.includes(a.slice(i, i + 3))) {
+        count += 1;
+      }
+    }
+    return count;
+  };
 
   const tag = Object.assign(
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -340,6 +356,15 @@ const sqlTag = vi.hoisted(() => {
         }
         return Promise.resolve([]);
       }
+      if (query.includes("SET search_tokens = ?")) {
+        const [table, searchTokens, agentId, id] = values;
+        void table;
+        const row = chunks.get(String(id));
+        if (row && row.agent_id === String(agentId)) {
+          row.search_tokens = String(searchTokens);
+        }
+        return Promise.resolve([]);
+      }
       if (query.includes("FROM ?") && firstArgText.includes("chunks")) {
         if (query.includes("SET embedding_vec = embedding::vector")) {
           for (const row of chunks.values()) {
@@ -389,22 +414,75 @@ const sqlTag = vi.hoisted(() => {
               .map((row) => ({ id: row.id, text: row.text, hash: row.hash })),
           );
         }
-        if (query.includes("search_tokens ILIKE ANY")) {
-          const [, agentId, sources, likeTerms] = values;
+        if (query.includes("SELECT id, text, search_tokens")) {
+          const [, agentId, sources, lastId, limit] = values;
+          const sourceSet = new Set(
+            Array.isArray(sources) ? sources.map((value) => String(value)) : [],
+          );
+          return Promise.resolve(
+            Array.from(chunks.values())
+              .filter(
+                (row) =>
+                  row.agent_id === String(agentId) &&
+                  sourceSet.has(row.source) &&
+                  row.id > String(lastId),
+              )
+              .toSorted((a, b) => a.id.localeCompare(b.id))
+              .slice(0, Number(limit))
+              .map((row) => ({
+                id: row.id,
+                text: row.text,
+                search_tokens: row.search_tokens,
+              })),
+          );
+        }
+        if (query.includes("search_tokens || ' ') ILIKE ANY")) {
+          const agentId = values[1];
+          const sources = values[2];
+          const likeTerms = values[3];
           const sourceSet = new Set(
             Array.isArray(sources) ? sources.map((value) => String(value)) : [],
           );
           const terms = Array.isArray(likeTerms)
-            ? likeTerms.map((value) => String(value).replaceAll("%", ""))
+            ? likeTerms.map((value) => String(value).replaceAll("%", "").trim())
             : [];
-          return Promise.resolve(
-            Array.from(chunks.values()).filter(
-              (row) =>
-                row.agent_id === String(agentId) &&
-                sourceSet.has(row.source) &&
-                terms.some((term) => row.search_tokens.includes(term)),
-            ),
+          const matchesAgent = (row: ChunkRow) =>
+            row.agent_id === String(agentId) && sourceSet.has(row.source);
+          const isExact = (row: ChunkRow) =>
+            terms.some((term) =>
+              ` ${row.search_tokens} `.toLowerCase().includes(term.toLowerCase()),
+            );
+          const exactMatches = Array.from(chunks.values()).filter(
+            (row) => matchesAgent(row) && isExact(row),
           );
+          // The non-similarity branch only ever returns exact token matches.
+          if (!query.includes("similarity(")) {
+            return Promise.resolve(exactMatches);
+          }
+          const serializedQuery = typeof values[4] === "string" ? String(values[4]) : "";
+          const limit =
+            typeof values[values.length - 1] === "number"
+              ? Number(values[values.length - 1])
+              : undefined;
+          const fuzzyOnly = Array.from(chunks.values()).filter(
+            (row) =>
+              matchesAgent(row) &&
+              !isExact(row) &&
+              serializedQuery.length > 0 &&
+              sharedTrigramCount(row.search_tokens, serializedQuery) > 0,
+          );
+          const exactFirst = query.includes("CASE WHEN");
+          const ordered = [...exactMatches, ...fuzzyOnly].toSorted((a, b) => {
+            const exactDelta = Number(isExact(b)) - Number(isExact(a));
+            if (exactFirst && exactDelta !== 0) {
+              return exactDelta;
+            }
+            return (
+              sharedTrigramCount(b.search_tokens, serializedQuery) -
+              sharedTrigramCount(a.search_tokens, serializedQuery)
+            );
+          });
+          return Promise.resolve(limit != null ? ordered.slice(0, limit) : ordered);
         }
         if (query.includes("ORDER BY ? <=>") && query.includes("vector_dims(embedding_vec)")) {
           const [, , , , agentId, sources, model] = values;
@@ -446,12 +524,10 @@ const sqlTag = vi.hoisted(() => {
         if (value.includes("[unsafe:")) {
           throw new Error('syntax error at or near "["');
         }
-        if (value.includes("CREATE INDEX")) {
-          calls.push(value);
-        }
         if (value.startsWith('"')) {
           return makeUnsafeIdentifier(value);
         }
+        calls.push(value);
         return value;
       },
       array: (value: unknown[]) => value,
@@ -578,6 +654,10 @@ function createConfig(): OpenClawConfig {
   };
 }
 
+function mockProviderKey(): string {
+  return hashText(JSON.stringify({ provider: "mock", model: "mock-embed" }));
+}
+
 async function waitForPendingSync(manager: object): Promise<void> {
   for (let i = 0; i < 20; i += 1) {
     const pending = (manager as { syncPromise?: Promise<void> | null }).syncPromise;
@@ -627,6 +707,45 @@ describe("PostgresMemoryManager", () => {
       schema: "agent_memory",
     });
     expect(manager?.status().vector?.available).toBe(true);
+    await manager?.close?.();
+  });
+
+  it("skips global vector metadata backfill when current agent already has vector dims", async () => {
+    sqlTag.meta.set("main", {
+      agent_id: "main",
+      provider: "mock",
+      model: "mock-embed",
+      provider_key: mockProviderKey(),
+      sources: ["memory"],
+      chunk_tokens: 400,
+      chunk_overlap: 80,
+      vector_dims: 1024,
+    });
+    sqlTag.chunks.set("existing", {
+      agent_id: "main",
+      id: "existing",
+      path: "memory/existing.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "existing-hash",
+      model: "mock-embed",
+      text: "Alpha existing note",
+      search_tokens: "alpha existing note",
+      embedding: [1, 0, 0],
+      embedding_vec: "[1,0,0]",
+    });
+
+    const manager = await PostgresMemoryManager.get({
+      cfg: createConfig(),
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+
+    expect(sqlTag.calls.some((query) => query.includes("SET vector_dims = dims.vector_dims"))).toBe(
+      false,
+    );
+
     await manager?.close?.();
   });
 
@@ -997,6 +1116,301 @@ describe("PostgresMemoryManager", () => {
 
     const results = await manager?.search("Alpha", { maxResults: 3 });
     expect(results?.length).toBeGreaterThan(0);
+
+    await manager?.close?.();
+  });
+
+  it("does not full reindex automatically for existing meta without search token signature", async () => {
+    const cfg = createConfig();
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    sqlTag.meta.set("main", {
+      agent_id: "main",
+      provider: "mock",
+      model: "mock-embed",
+      provider_key: mockProviderKey(),
+      sources: ["memory"],
+      chunk_tokens: 400,
+      chunk_overlap: 80,
+      vector_dims: null,
+    });
+    sqlTag.chunks.set("existing", {
+      agent_id: "main",
+      id: "existing",
+      path: "memory/existing.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "existing-hash",
+      model: "mock-embed",
+      text: "Alpha existing note",
+      search_tokens: "alpha existing note",
+      embedding: [1, 0, 0],
+      embedding_vec: "[1,0,0]",
+    });
+
+    await manager?.sync?.({ reason: "startup" });
+
+    expect(sqlTag.chunks.has("existing")).toBe(true);
+
+    await manager?.close?.();
+  });
+
+  it("migrates postgres search tokens in place without recording a signature", async () => {
+    const cfg = createConfig();
+    cfg.agents!.defaults!.memorySearch!.lexicon = { terms: ["ORIC Pharmaceuticals"] };
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    sqlTag.meta.set("main", {
+      agent_id: "main",
+      provider: "mock",
+      model: "mock-embed",
+      provider_key: mockProviderKey(),
+      sources: ["memory"],
+      chunk_tokens: 400,
+      chunk_overlap: 80,
+      vector_dims: null,
+    });
+    sqlTag.chunks.set("needs-token-update", {
+      agent_id: "main",
+      id: "needs-token-update",
+      path: "memory/oric.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "oric-hash",
+      model: "mock-embed",
+      text: "ORIC Pharmaceuticals 讨论 EED",
+      search_tokens: "old tokens",
+      embedding: [1, 0, 0],
+      embedding_vec: "[1,0,0]",
+    });
+
+    const result = await manager?.migrateSearchTokens?.();
+
+    expect(result).toEqual({ migrated: 1, skipped: 0 });
+    expect(sqlTag.chunks.get("needs-token-update")?.search_tokens).toContain(
+      "oric~20pharmaceuticals",
+    );
+    expect(sqlTag.chunks.get("needs-token-update")?.embedding).toEqual([1, 0, 0]);
+
+    await manager?.close?.();
+  });
+
+  it("scores postgres keyword search by classified token weights", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-token-score-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    cfg.agents!.defaults!.memorySearch!.query = { minScore: 0, hybrid: { enabled: true } };
+    sqlTag.extensions.set("vector", false);
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+
+    sqlTag.chunks.set("word-match", {
+      agent_id: "main",
+      id: "word-match",
+      path: "memory/word.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "word",
+      model: "fts-only",
+      text: "讨论方案",
+      search_tokens: "讨论 方案 论方 讨 论 方 案",
+      embedding: [],
+      embedding_vec: null,
+    });
+    sqlTag.chunks.set("unigram-match", {
+      agent_id: "main",
+      id: "unigram-match",
+      path: "memory/unigram.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "unigram",
+      model: "fts-only",
+      text: "只命中字 token",
+      search_tokens: "讨 论 方 案",
+      embedding: [],
+      embedding_vec: null,
+    });
+
+    const results = await manager?.search("讨论方案", { maxResults: 5 });
+    const byPath = new Map(results?.map((entry) => [entry.path, entry.score]));
+
+    expect(byPath.get("memory/word.md")).toBeCloseTo(1);
+    expect(byPath.get("memory/unigram.md")).toBeCloseTo(0.4 / 2.75);
+
+    await manager?.close?.();
+  });
+
+  it("does not match postgres search token substrings as full token hits", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-token-boundary-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    cfg.agents!.defaults!.memorySearch!.query = { minScore: 0, hybrid: { enabled: true } };
+    sqlTag.extensions.set("vector", false);
+    sqlTag.extensions.set("pg_trgm", false);
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+
+    sqlTag.chunks.set("long-token", {
+      agent_id: "main",
+      id: "long-token",
+      path: "memory/long.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "long",
+      model: "fts-only",
+      text: "EGFRvIII note",
+      search_tokens: "egfrviii",
+      embedding: [],
+      embedding_vec: null,
+    });
+    sqlTag.chunks.set("exact-token", {
+      agent_id: "main",
+      id: "exact-token",
+      path: "memory/exact.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "exact",
+      model: "fts-only",
+      text: "EGFR note",
+      search_tokens: "egfr",
+      embedding: [],
+      embedding_vec: null,
+    });
+
+    const results = await manager?.search("EGFR", { maxResults: 5 });
+
+    expect(results?.map((entry) => entry.path)).toEqual(["memory/exact.md"]);
+
+    await manager?.close?.();
+  });
+
+  it("does not let fuzzy trigram candidates crowd out exact keyword hits", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-trgm-ordering-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    cfg.agents!.defaults!.memorySearch!.query = { minScore: 0, hybrid: { enabled: true } };
+    sqlTag.extensions.set("vector", false);
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+
+    // One exact hit for one query token. It has a positive textScore, but lower
+    // trigram overlap than the fuzzy rows below.
+    sqlTag.chunks.set("exact", {
+      agent_id: "main",
+      id: "exact",
+      path: "memory/exact.md",
+      source: "memory",
+      start_line: 1,
+      end_line: 1,
+      hash: "exact",
+      model: "fts-only",
+      text: "EGFR note",
+      search_tokens: "egfr",
+      embedding: [],
+      embedding_vec: null,
+    });
+    // Many fuzzy rows: strong trigram overlap with "inhibitor" but no exact
+    // "egfr" or "inhibitor" token, so they score 0 and must not exhaust the
+    // candidate LIMIT first.
+    for (let i = 0; i < 25; i += 1) {
+      sqlTag.chunks.set(`fuzzy-${i}`, {
+        agent_id: "main",
+        id: `fuzzy-${i}`,
+        path: `memory/fuzzy-${i}.md`,
+        source: "memory",
+        start_line: 1,
+        end_line: 1,
+        hash: `fuzzy-${i}`,
+        model: "fts-only",
+        text: "Inhibitor-like fuzzy variant",
+        search_tokens: "inhibitorx",
+        embedding: [],
+        embedding_vec: null,
+      });
+    }
+
+    // candidateMultiplier defaults to 4, so maxResults 5 yields a 20-row window
+    // smaller than the 25 fuzzy rows, which is exactly the crowding scenario.
+    const results = await manager?.search("EGFR inhibitor", { maxResults: 5 });
+
+    expect(results?.map((entry) => entry.path)).toEqual(["memory/exact.md"]);
+
+    await manager?.close?.();
+  });
+
+  it("does not index latin domain terms from ordinary word substrings", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-domain-boundary-"));
+    const workspaceDir = path.join(tmpRoot, "workspace");
+    const memoryDir = path.join(workspaceDir, "memory");
+    await fs.mkdir(memoryDir, { recursive: true });
+    await fs.writeFile(
+      path.join(memoryDir, "need.md"),
+      "We need and needed the rollout notes.\n",
+      "utf-8",
+    );
+    await fs.writeFile(path.join(memoryDir, "eed.md"), "EED inhibitor note.\n", "utf-8");
+
+    const cfg = createConfig();
+    cfg.agents!.defaults!.workspace = workspaceDir;
+    cfg.agents!.defaults!.memorySearch!.lexicon = { terms: ["EED"] };
+    cfg.agents!.defaults!.memorySearch!.store!.vector = { enabled: false };
+    cfg.agents!.defaults!.memorySearch!.query = { minScore: 0, hybrid: { enabled: true } };
+    sqlTag.extensions.set("vector", false);
+    sqlTag.extensions.set("pg_trgm", false);
+
+    const manager = await PostgresMemoryManager.get({
+      cfg,
+      agentId: "main",
+    });
+    await manager?.initStore?.();
+    await manager?.sync?.({ force: true });
+
+    const byPath = new Map(Array.from(sqlTag.chunks.values()).map((row) => [row.path, row]));
+    const needTokens = byPath.get("memory/need.md")?.search_tokens.split(/\s+/u) ?? [];
+    const eedTokens = byPath.get("memory/eed.md")?.search_tokens.split(/\s+/u) ?? [];
+    expect(needTokens).not.toContain("eed");
+    expect(eedTokens).toContain("eed");
+
+    const results = await (
+      manager as unknown as {
+        searchKeyword: (query: string, limit: number) => Promise<Array<{ path: string }>>;
+      }
+    ).searchKeyword("EED", 5);
+
+    expect(results?.map((entry) => entry.path)).toEqual(["memory/eed.md"]);
 
     await manager?.close?.();
   });

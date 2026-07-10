@@ -466,6 +466,12 @@ Feishu supports streaming replies via interactive cards. When enabled, the bot u
 
 Set `streaming: false` to wait for the full reply before sending.
 
+When block streaming is enabled, Feishu may receive intermediate assistant text before a
+tool call starts. This text comes from the model's visible assistant message content,
+not from reasoning, tool output, or the final answer. In Responses API terms, treat this
+kind of pre-tool-call update as assistant `phase: "commentary"`; it is delivered as a
+progress update so long-running tool-heavy runs do not appear silent.
+
 ### Multi-agent routing
 
 Use `bindings` to route Feishu DMs or groups to different agents.

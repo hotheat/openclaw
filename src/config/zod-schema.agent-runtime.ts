@@ -524,6 +524,14 @@ export const MemorySearchSchema = z
     sources: z.array(z.union([z.literal("memory"), z.literal("sessions")])).optional(),
     extraPaths: z.array(z.string()).optional(),
     excludeGlobs: z.array(z.string()).optional(),
+    lexicon: z
+      .object({
+        includeDefaults: z.boolean().optional(),
+        paths: z.array(z.string()).optional(),
+        terms: z.array(z.string()).optional(),
+      })
+      .strict()
+      .optional(),
     experimental: z
       .object({
         sessionMemory: z.boolean().optional(),

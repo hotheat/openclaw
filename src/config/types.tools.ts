@@ -325,6 +325,19 @@ export type MemorySearchConfig = {
   extraPaths?: string[];
   /** Glob patterns to exclude from builtin memory indexing. */
   excludeGlobs?: string[];
+  /** Domain lexicon files used to protect high-signal memory search terms. */
+  lexicon?: {
+    /**
+     * Load the built-in innovation-drug lexicon from
+     * `<workspace>/lexicons/innovation-drug.yaml` (default: true). Set to false
+     * to skip the default terms for non-pharma agents.
+     */
+    includeDefaults?: boolean;
+    /** YAML/JSON files with companies, targets, drugs, and extra domain terms. */
+    paths?: string[];
+    /** Inline domain terms to protect during keyword tokenization. */
+    terms?: string[];
+  };
   /** Experimental memory search settings. */
   experimental?: {
     /** Enable session transcript indexing (experimental, default: false). */

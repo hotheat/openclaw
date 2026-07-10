@@ -233,6 +233,43 @@ async function runEmbeddingMigrationForManager(params: {
   return true;
 }
 
+async function runSearchTokenMigrationForManager(params: {
+  manager: MemoryManager;
+  agentId: string;
+}): Promise<boolean> {
+  const migrateSearchTokensFn = params.manager.migrateSearchTokens
+    ? params.manager.migrateSearchTokens.bind(params.manager)
+    : null;
+  if (!migrateSearchTokensFn) {
+    defaultRuntime.log("Memory backend does not support search token migration.");
+    return false;
+  }
+  const result = await withProgressTotals(
+    {
+      label: "Migrating memory search tokens…",
+      total: 0,
+    },
+    async (update, progress) => {
+      return await migrateSearchTokensFn({
+        progress: (migrationUpdate) => {
+          update({
+            completed: migrationUpdate.completed,
+            total: migrationUpdate.total,
+            label: migrationUpdate.label,
+          });
+          if (migrationUpdate.label) {
+            progress.setLabel(migrationUpdate.label);
+          }
+        },
+      });
+    },
+  );
+  defaultRuntime.log(
+    `Memory search tokens migrated (${params.agentId}): ${result.migrated} updated, ${result.skipped} skipped.`,
+  );
+  return true;
+}
+
 async function scanSessionFiles(agentId: string): Promise<SourceScan> {
   const issues: string[] = [];
   const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
@@ -660,6 +697,10 @@ export function registerMemoryCli(program: Command) {
           ["openclaw memory status", "Show index and provider status."],
           ["openclaw memory repair-store", "Repair pgvector columns and metadata in place."],
           ["openclaw memory migrate-embeddings", "Re-embed existing chunks without re-chunking."],
+          [
+            "openclaw memory migrate-search-tokens",
+            "Re-tokenize existing chunks without re-embedding.",
+          ],
           ["openclaw memory index --force", "Force a full reindex."],
           ['openclaw memory search --query "deployment notes"', "Search indexed memory entries."],
           ["openclaw memory status --json", "Output machine-readable JSON."],
@@ -793,6 +834,32 @@ export function registerMemoryCli(program: Command) {
             } catch (err) {
               const message = formatErrorMessage(err);
               defaultRuntime.error(`Memory embedding migration failed (${agentId}): ${message}`);
+              process.exitCode = 1;
+            }
+          },
+        });
+      }
+    });
+
+  memory
+    .command("migrate-search-tokens")
+    .description("Re-tokenize existing memory chunks without re-embedding")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentIds = resolveAgentIds(cfg, opts.agent);
+      for (const agentId of agentIds) {
+        await withMemoryManagerForAgent({
+          cfg,
+          agentId,
+          run: async (manager) => {
+            try {
+              await runSearchTokenMigrationForManager({ manager, agentId });
+            } catch (err) {
+              const message = formatErrorMessage(err);
+              defaultRuntime.error(`Memory search token migration failed (${agentId}): ${message}`);
               process.exitCode = 1;
             }
           },

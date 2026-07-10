@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { createDomainLexicon, type DomainLexicon } from "./domain-lexicon.js";
 import { enforceEmbeddingMaxInputTokens } from "./embedding-chunk-limits.js";
 import {
   createEmbeddingProvider,
@@ -41,9 +42,11 @@ import {
 } from "./postgres-client.js";
 import { ensurePostgresMemorySchema, qualifyTable } from "./postgres-schema.js";
 import {
-  buildKeywordQueryTokens,
-  buildSearchTokens,
+  buildSearchTokenEntries,
+  buildSearchTokenValues,
+  scoreSearchTokenMatches,
   serializeSearchTokens,
+  serializeSearchTokenValue,
 } from "./search-lexemes.js";
 import { buildSessionEntry, listSessionFilesForAgent } from "./session-files.js";
 import type {
@@ -52,6 +55,8 @@ import type {
   MemoryProviderStatus,
   MemorySearchManager,
   MemorySearchResult,
+  MemorySearchTokenMigrationProgressUpdate,
+  MemorySearchTokenMigrationResult,
   MemorySource,
   MemorySyncProgressUpdate,
   MemoryVectorMigrationProgressUpdate,
@@ -76,6 +81,9 @@ const INDEX_CACHE = new Map<string, PostgresMemoryManager>();
 const SNIPPET_MAX_CHARS = 700;
 const EMBEDDING_INDEX_CONCURRENCY = 4;
 const EMBEDDING_MIGRATION_BATCH_SIZE = 64;
+const SEARCH_TOKEN_MIGRATION_BATCH_SIZE = 256;
+const KEYWORD_TRIGRAM_CANDIDATE_MULTIPLIER = 4;
+const KEYWORD_TRIGRAM_CANDIDATE_MAX = 1000;
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
 const POSTGRES_HNSW_MAX_VECTOR_DIMS = 2000;
 const SESSION_DIRTY_DEBOUNCE_MS = 5000;
@@ -198,6 +206,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
   };
   private readonly fts: { enabled: boolean; available: boolean; error?: string };
   private providerKey: string;
+  private domainLexicon: DomainLexicon;
   private syncPromise: Promise<void> | null = null;
   private dirty = true;
   private sessionsDirty = false;
@@ -320,6 +329,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
       enabled: params.settings.query.hybrid.enabled,
       available: true,
     };
+    this.domainLexicon = createDomainLexicon(params.settings.lexicon);
     this.providerKey = this.computeProviderKey();
     const statusOnly = params.purpose === "status";
     if (!statusOnly) {
@@ -382,6 +392,24 @@ export class PostgresMemoryManager implements MemorySearchManager {
       migrated: result.migrated,
       skipped: result.skipped,
       dims: result.dims,
+    });
+    return result;
+  }
+
+  async migrateSearchTokens(params?: {
+    progress?: (update: MemorySearchTokenMigrationProgressUpdate) => void;
+  }): Promise<MemorySearchTokenMigrationResult> {
+    await this.ensureReady();
+    log.info("Starting PostgreSQL memory search token migration", {
+      agentId: this.agentId,
+    });
+    const result = await this.migrateExistingSearchTokens({
+      progress: params?.progress,
+    });
+    log.info("Completed PostgreSQL memory search token migration", {
+      agentId: this.agentId,
+      migrated: result.migrated,
+      skipped: result.skipped,
     });
     return result;
   }
@@ -650,9 +678,14 @@ export class PostgresMemoryManager implements MemorySearchManager {
     });
     this.vector.available = await this.detectVectorAvailability();
     this.fts.available = await this.detectTrigramAvailability();
-    await this.backfillVectorMetadata();
     try {
-      const meta = await this.readMeta();
+      let meta = await this.readMeta();
+      if (meta?.vectorDims) {
+        await this.backfillVectorColumns();
+      } else {
+        await this.backfillVectorMetadata();
+        meta = await this.readMeta();
+      }
       if (meta?.vectorDims) {
         await this.ensureVectorIndexForDims(meta.vectorDims);
       }
@@ -665,17 +698,23 @@ export class PostgresMemoryManager implements MemorySearchManager {
     }
   }
 
+  private async backfillVectorColumns(): Promise<void> {
+    if (!this.vector.enabled || !this.vector.available) {
+      return;
+    }
+    const chunksTable = qualifyTable(this.store.schema, "chunks");
+    await this.sql.unsafe(`
+      UPDATE ${chunksTable}
+         SET embedding_vec = embedding::vector
+       WHERE embedding_vec IS NULL
+         AND array_length(embedding, 1) > 0
+    `);
+  }
+
   private async backfillVectorMetadata(): Promise<void> {
     const chunksTable = qualifyTable(this.store.schema, "chunks");
     const metaTable = qualifyTable(this.store.schema, "index_meta");
-    if (this.vector.enabled && this.vector.available) {
-      await this.sql.unsafe(`
-        UPDATE ${chunksTable}
-           SET embedding_vec = embedding::vector
-         WHERE embedding_vec IS NULL
-           AND array_length(embedding, 1) > 0
-      `);
-    }
+    await this.backfillVectorColumns();
     await this.sql.unsafe(`
       UPDATE ${metaTable} AS m
          SET vector_dims = dims.vector_dims,
@@ -1329,7 +1368,9 @@ export class PostgresMemoryManager implements MemorySearchManager {
       const id = hashText(
         `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider?.model ?? "fts-only"}`,
       );
-      const searchTokens = serializeSearchTokens(buildSearchTokens(chunk.text));
+      const searchTokens = serializeSearchTokens(
+        buildSearchTokenValues(chunk.text, this.domainLexicon),
+      );
       if (this.vector.enabled && this.vector.available) {
         await this.activeSql`
           INSERT INTO ${chunksTable}
@@ -1532,6 +1573,72 @@ export class PostgresMemoryManager implements MemorySearchManager {
     return result;
   }
 
+  private async migrateExistingSearchTokens(params: {
+    progress?: (update: MemorySearchTokenMigrationProgressUpdate) => void;
+  }): Promise<MemorySearchTokenMigrationResult> {
+    const result = await this.withPostgresIndexLock(async () => {
+      const chunksTable = this.activeSql.unsafe(qualifyTable(this.store.schema, "chunks"));
+      const countRows = await this.activeSql<{ count: number }[]>`
+        SELECT COUNT(*)::int AS count
+        FROM ${chunksTable}
+        WHERE agent_id = ${this.agentId}
+          AND source = ANY(${this.activeSql.array(Array.from(this.sources))})
+      `;
+      const total = Number(countRows[0]?.count ?? 0);
+      params.progress?.({ completed: 0, total, label: "Migrating memory search tokens" });
+      if (total === 0) {
+        return { migrated: 0, skipped: 0 };
+      }
+
+      let migrated = 0;
+      let skipped = 0;
+      let lastId = "";
+
+      while (true) {
+        const rows = await this.activeSql<
+          Array<{ id: string; text: string; search_tokens: string }>
+        >`
+          SELECT id, text, search_tokens
+          FROM ${chunksTable}
+          WHERE agent_id = ${this.agentId}
+            AND source = ANY(${this.activeSql.array(Array.from(this.sources))})
+            AND id > ${lastId}
+          ORDER BY id ASC
+          LIMIT ${SEARCH_TOKEN_MIGRATION_BATCH_SIZE}
+        `;
+        if (rows.length === 0) {
+          break;
+        }
+        lastId = rows.at(-1)?.id ?? lastId;
+        for (const row of rows) {
+          const nextTokens = serializeSearchTokens(
+            buildSearchTokenValues(row.text, this.domainLexicon),
+          );
+          if (nextTokens === row.search_tokens) {
+            skipped += 1;
+            continue;
+          }
+          await this.activeSql`
+            UPDATE ${chunksTable}
+               SET search_tokens = ${nextTokens},
+                   updated_at = NOW()
+             WHERE agent_id = ${this.agentId}
+               AND id = ${row.id}
+          `;
+          migrated += 1;
+        }
+        params.progress?.({
+          completed: Math.min(total, migrated + skipped),
+          total,
+          label: `Migrated ${migrated} memory search token rows`,
+        });
+      }
+      return { migrated, skipped };
+    });
+    await this.refreshStatusSnapshot();
+    return result;
+  }
+
   private async writeCurrentMeta(vectorDims?: number): Promise<void> {
     await this.writeMeta({
       model: this.provider?.model ?? "fts-only",
@@ -1631,12 +1738,20 @@ export class PostgresMemoryManager implements MemorySearchManager {
     if (!this.fts.enabled) {
       return [];
     }
-    const tokens = buildKeywordQueryTokens(query);
-    if (tokens.length === 0) {
+    const queryTokens = buildSearchTokenEntries(query, this.domainLexicon);
+    if (queryTokens.length === 0) {
       return [];
     }
+    const tokens = queryTokens.map((token) => token.value);
     const chunksTable = this.sql.unsafe(qualifyTable(this.store.schema, "chunks"));
-    const likeTerms = tokens.map((token) => `%${token}%`);
+    const likeTerms = tokens.map((token) => `% ${serializeSearchTokenValue(token)} %`);
+    const serializedQueryTokens = serializeSearchTokens(tokens);
+    const candidateLimit = this.fts.available
+      ? Math.min(
+          KEYWORD_TRIGRAM_CANDIDATE_MAX,
+          Math.max(limit, limit * KEYWORD_TRIGRAM_CANDIDATE_MULTIPLIER),
+        )
+      : limit;
     const rows = this.fts.available
       ? await this.sql<
           {
@@ -1654,10 +1769,16 @@ export class PostgresMemoryManager implements MemorySearchManager {
           WHERE agent_id = ${this.agentId}
             AND source = ANY(${this.sql.array(Array.from(this.sources))})
             AND (
-              search_tokens ILIKE ANY(${this.sql.array(likeTerms)})
-              OR similarity(search_tokens, ${serializeSearchTokens(tokens)}) > 0
+              (' ' || search_tokens || ' ') ILIKE ANY(${this.sql.array(likeTerms)})
+              OR similarity(search_tokens, ${serializedQueryTokens}) > 0
             )
-          LIMIT ${limit}
+          ORDER BY
+            CASE
+              WHEN (' ' || search_tokens || ' ') ILIKE ANY(${this.sql.array(likeTerms)}) THEN 0
+              ELSE 1
+            END ASC,
+            similarity(search_tokens, ${serializedQueryTokens}) DESC
+          LIMIT ${candidateLimit}
         `
       : await this.sql<
           {
@@ -1674,24 +1795,26 @@ export class PostgresMemoryManager implements MemorySearchManager {
           FROM ${chunksTable}
           WHERE agent_id = ${this.agentId}
             AND source = ANY(${this.sql.array(Array.from(this.sources))})
-            AND search_tokens ILIKE ANY(${this.sql.array(likeTerms)})
+            AND (' ' || search_tokens || ' ') ILIKE ANY(${this.sql.array(likeTerms)})
           LIMIT ${limit}
         `;
-    return rows.map((row: { search_tokens: string } & Record<string, unknown>) => {
-      const haystack = new Set(row.search_tokens.split(/\s+/).filter(Boolean));
-      const matched = tokens.filter((token) => haystack.has(token)).length;
-      const textScore = matched / Math.max(tokens.length, 1);
-      return {
-        id: String(row.id),
-        path: String(row.path),
-        source: toMemorySource(String(row.source)),
-        startLine: Number(row.start_line),
-        endLine: Number(row.end_line),
-        snippet: truncateSnippet(String(row.text)),
-        score: textScore,
-        textScore,
-      };
-    });
+    return rows
+      .map((row: { search_tokens: string } & Record<string, unknown>) => {
+        const textScore = scoreSearchTokenMatches(queryTokens, String(row.search_tokens));
+        return {
+          id: String(row.id),
+          path: String(row.path),
+          source: toMemorySource(String(row.source)),
+          startLine: Number(row.start_line),
+          endLine: Number(row.end_line),
+          snippet: truncateSnippet(String(row.text)),
+          score: textScore,
+          textScore,
+        };
+      })
+      .filter((row) => row.textScore > 0)
+      .toSorted((a, b) => b.textScore - a.textScore)
+      .slice(0, limit);
   }
 
   private async searchVector(
@@ -1843,10 +1966,10 @@ export class PostgresMemoryManager implements MemorySearchManager {
         vector_dims: number | null;
       }[]
     >`
-      SELECT provider, model, provider_key, sources, exclude_globs, chunk_tokens, chunk_overlap, vector_dims
-      FROM ${table}
-      WHERE agent_id = ${this.agentId}
-    `;
+	      SELECT provider, model, provider_key, sources, exclude_globs, chunk_tokens, chunk_overlap, vector_dims
+	      FROM ${table}
+	      WHERE agent_id = ${this.agentId}
+	    `;
     const row = rows[0];
     if (!row) {
       return null;

@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveMemorySearchConfig } from "./memory-search.js";
@@ -280,6 +283,156 @@ describe("memory search config", () => {
       "**/*-security-policy.md",
       "memory/tmp/*.md",
     ]);
+  });
+
+  it("loads lexicon paths into resolved terms", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-memory-search-lexicon-"));
+    try {
+      const lexiconPath = path.join(tempDir, "companies_targets.yaml");
+      fs.writeFileSync(
+        lexiconPath,
+        [
+          "companies:",
+          "  - name: ORIC Pharmaceuticals",
+          "    targets:",
+          "      - drug: ORIC-944",
+          "        target: EED",
+          "        note: 信诺维医药",
+        ].join("\n"),
+      );
+      const cfg = asConfig({
+        agents: {
+          defaults: {
+            memorySearch: {
+              lexicon: {
+                paths: [lexiconPath],
+                terms: ["inline target"],
+              },
+            },
+          },
+        },
+      });
+
+      const resolved = resolveMemorySearchConfig(cfg, "main");
+
+      expect(resolved?.lexicon.terms).toEqual(
+        expect.arrayContaining([
+          "inline target",
+          "ORIC Pharmaceuticals",
+          "ORIC-944",
+          "EED",
+          "信诺维医药",
+        ]),
+      );
+      expect(resolved?.lexicon).not.toHaveProperty("paths");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads the workspace default lexicon when includeDefaults is not disabled", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-memory-search-defaults-"));
+    try {
+      fs.mkdirSync(path.join(tempDir, "lexicons"));
+      fs.writeFileSync(
+        path.join(tempDir, "lexicons", "innovation-drug.yaml"),
+        ["terms:", "  - PD-1", "  - 适应症"].join("\n"),
+      );
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(tempDir, "openclaw.json"));
+
+      const withDefaults = resolveMemorySearchConfig(asConfig({}), "main");
+      expect(withDefaults?.lexicon.terms).toEqual(expect.arrayContaining(["PD-1", "适应症"]));
+
+      const withoutDefaults = resolveMemorySearchConfig(
+        asConfig({
+          agents: {
+            defaults: { memorySearch: { lexicon: { includeDefaults: false } } },
+          },
+        }),
+        "main",
+      );
+      expect(withoutDefaults?.lexicon.terms).toEqual([]);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads the agent workspace default lexicon", () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-memory-search-workspace-defaults-"),
+    );
+    try {
+      const configDir = path.join(tempDir, "config");
+      const workspaceDir = path.join(tempDir, "workspace-main");
+      fs.mkdirSync(path.join(workspaceDir, "lexicons"), { recursive: true });
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(workspaceDir, "lexicons", "innovation-drug.yaml"),
+        ["terms:", "  - PD-1/VEGF", "  - AK112"].join("\n"),
+      );
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(configDir, "openclaw.json"));
+
+      const resolved = resolveMemorySearchConfig(
+        asConfig({
+          agents: {
+            list: [
+              {
+                id: "main",
+                default: true,
+                workspace: workspaceDir,
+              },
+            ],
+          },
+        }),
+        "main",
+      );
+
+      expect(resolved?.lexicon.terms).toEqual(expect.arrayContaining(["PD-1/VEGF", "AK112"]));
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the shared default workspace lexicon", () => {
+    const tempDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "openclaw-memory-search-shared-workspace-defaults-"),
+    );
+    try {
+      const configDir = path.join(tempDir, "config");
+      const sharedWorkspaceDir = path.join(tempDir, "workspace-shared");
+      const agentWorkspaceDir = path.join(tempDir, "workspace-agent");
+      fs.mkdirSync(path.join(sharedWorkspaceDir, "lexicons"), { recursive: true });
+      fs.mkdirSync(agentWorkspaceDir, { recursive: true });
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(sharedWorkspaceDir, "lexicons", "innovation-drug.yaml"),
+        ["terms:", "  - Synnovation Therapeutics", "  - SNV4818"].join("\n"),
+      );
+      vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(configDir, "openclaw.json"));
+
+      const resolved = resolveMemorySearchConfig(
+        asConfig({
+          agents: {
+            defaults: {
+              workspace: sharedWorkspaceDir,
+            },
+            list: [
+              {
+                id: "feishu-ou_target",
+                workspace: agentWorkspaceDir,
+              },
+            ],
+          },
+        }),
+        "feishu-ou_target",
+      );
+
+      expect(resolved?.lexicon.terms).toEqual(
+        expect.arrayContaining(["Synnovation Therapeutics", "SNV4818"]),
+      );
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   it("includes batch defaults for openai without remote overrides", () => {
