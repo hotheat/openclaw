@@ -1601,8 +1601,9 @@ Settings can be defined globally in `tools.loopDetection` and overridden per-age
       },
       fetch: {
         enabled: true,
-        maxChars: 50000,
-        maxCharsCap: 50000,
+        maxChars: 20000,
+        maxCharsCap: 20000,
+        maxResponseBytes: 750000,
         timeoutSeconds: 30,
         cacheTtlMinutes: 15,
         userAgent: "custom-ua",

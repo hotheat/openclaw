@@ -5,9 +5,11 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AuthProfileFailureReason } from "./auth-profiles.js";
+import { isFailoverErrorMessage } from "./pi-embedded-helpers.js";
 import type { EmbeddedRunAttemptResult } from "./pi-embedded-runner/run/types.js";
 
 const runEmbeddedAttemptMock = vi.fn<(params: unknown) => Promise<EmbeddedRunAttemptResult>>();
+const markAuthProfileFailureSpy = vi.hoisted(() => vi.fn());
 
 vi.mock("./pi-embedded-runner/run/attempt.js", () => ({
   runEmbeddedAttempt: (params: unknown) => runEmbeddedAttemptMock(params),
@@ -18,6 +20,19 @@ vi.mock("./pi-embedded-runner/compact.js", () => ({
     throw new Error("compact should not run in auth profile rotation tests");
   }),
 }));
+
+vi.mock("./auth-profiles.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./auth-profiles.js")>();
+  return {
+    ...actual,
+    markAuthProfileFailure: async (
+      params: Parameters<typeof actual.markAuthProfileFailure>[0],
+    ): Promise<void> => {
+      markAuthProfileFailureSpy(params);
+      await actual.markAuthProfileFailure(params);
+    },
+  };
+});
 
 vi.mock("./models-config.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("./models-config.js")>();
@@ -36,6 +51,7 @@ beforeAll(async () => {
 beforeEach(() => {
   vi.useRealTimers();
   runEmbeddedAttemptMock.mockClear();
+  markAuthProfileFailureSpy.mockClear();
 });
 
 const baseUsage = {
@@ -501,6 +517,55 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
       expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
       expect(result.meta.aborted).toBe(true);
 
+      await expectProfileP2UsageUnchanged(agentDir);
+    });
+  });
+
+  it("does not retry or fail over when an aborted stream has a failover-shaped error", async () => {
+    await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
+      await writeAuthStore(agentDir);
+      const errorMessage =
+        "AssistantStreamLimitError: reason: abort; safetyLimit=consecutive_whitespace_events";
+      expect(isFailoverErrorMessage(errorMessage)).toBe(true);
+      const streamLimitError = buildAssistant({
+        stopReason: "error",
+        errorMessage,
+      });
+      runEmbeddedAttemptMock.mockResolvedValueOnce(
+        makeAttempt({
+          aborted: true,
+          assistantTexts: [],
+          lastAssistant: streamLimitError,
+          assistantErrors: [streamLimitError],
+        }),
+      );
+
+      const result = await runEmbeddedPiAgent({
+        sessionId: "session:test",
+        sessionKey: "agent:test:stream-limit-abort",
+        sessionFile: path.join(workspaceDir, "session.jsonl"),
+        workspaceDir,
+        agentDir,
+        config: makeConfig({ fallbacks: ["openai/mock-2"] }),
+        prompt: "hello",
+        provider: "openai",
+        model: "mock-1",
+        authProfileId: "openai:p1",
+        authProfileIdSource: "auto",
+        timeoutMs: 5_000,
+        runId: "run:stream-limit-abort",
+      });
+
+      expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
+      expect(result.meta.aborted).toBe(true);
+      expect(result.payloads?.map((payload) => payload.text).join("\n")).toContain(
+        "consecutive_whitespace_events",
+      );
+      expect(markAuthProfileFailureSpy).not.toHaveBeenCalled();
+
+      const usageStats = await readUsageStats(agentDir);
+      expect(usageStats["openai:p1"]?.cooldownUntil).toBeUndefined();
+      expect(usageStats["openai:p1"]?.disabledUntil).toBeUndefined();
       await expectProfileP2UsageUnchanged(agentDir);
     });
   });

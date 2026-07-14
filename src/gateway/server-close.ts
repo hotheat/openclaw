@@ -15,6 +15,7 @@ export function createGatewayCloseHandler(params: {
   pluginServices: PluginServicesHandle | null;
   cron: { stop: () => void };
   heartbeatRunner: HeartbeatRunner;
+  flushStateWrites: () => Promise<void>;
   updateCheckStop?: (() => void) | null;
   nodePresenceTimers: Map<string, ReturnType<typeof setInterval>>;
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
@@ -34,6 +35,7 @@ export function createGatewayCloseHandler(params: {
   httpServers?: HttpServer[];
 }) {
   return async (opts?: { reason?: string; restartExpectedMs?: number | null }) => {
+    const shutdownFailures: unknown[] = [];
     const reasonRaw = typeof opts?.reason === "string" ? opts.reason.trim() : "";
     const reason = reasonRaw || "gateway stopping";
     const restartExpectedMs =
@@ -48,7 +50,11 @@ export function createGatewayCloseHandler(params: {
       }
     }
     if (params.tailscaleCleanup) {
-      await params.tailscaleCleanup();
+      try {
+        await params.tailscaleCleanup();
+      } catch (err) {
+        shutdownFailures.push(err);
+      }
     }
     if (params.canvasHost) {
       try {
@@ -65,14 +71,39 @@ export function createGatewayCloseHandler(params: {
       }
     }
     for (const plugin of listChannelPlugins()) {
-      await params.stopChannel(plugin.id);
+      try {
+        await params.stopChannel(plugin.id);
+      } catch (err) {
+        shutdownFailures.push(err);
+      }
     }
     if (params.pluginServices) {
-      await params.pluginServices.stop().catch(() => {});
+      try {
+        await params.pluginServices.stop();
+      } catch (err) {
+        shutdownFailures.push(err);
+      }
     }
-    await stopGmailWatcher();
-    params.cron.stop();
-    params.heartbeatRunner.stop();
+    try {
+      await stopGmailWatcher();
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
+    try {
+      params.cron.stop();
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
+    try {
+      params.heartbeatRunner.stop();
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
+    try {
+      await params.flushStateWrites();
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
     try {
       params.updateCheckStop?.();
     } catch {
@@ -82,10 +113,14 @@ export function createGatewayCloseHandler(params: {
       clearInterval(timer);
     }
     params.nodePresenceTimers.clear();
-    params.broadcast("shutdown", {
-      reason,
-      restartExpectedMs,
-    });
+    try {
+      params.broadcast("shutdown", {
+        reason,
+        restartExpectedMs,
+      });
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
     clearInterval(params.tickInterval);
     clearInterval(params.healthInterval);
     clearInterval(params.dedupeCleanup);
@@ -109,7 +144,11 @@ export function createGatewayCloseHandler(params: {
         /* ignore */
       }
     }
-    params.chatRunState.clear();
+    try {
+      params.chatRunState.clear();
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
     for (const c of params.clients) {
       try {
         c.socket.close(1012, "service restart");
@@ -122,7 +161,13 @@ export function createGatewayCloseHandler(params: {
     if (params.browserControl) {
       await params.browserControl.stop().catch(() => {});
     }
-    await new Promise<void>((resolve) => params.wss.close(() => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) =>
+        params.wss.close((err) => (err ? reject(err) : resolve())),
+      );
+    } catch (err) {
+      shutdownFailures.push(err);
+    }
     const servers =
       params.httpServers && params.httpServers.length > 0
         ? params.httpServers
@@ -132,11 +177,22 @@ export function createGatewayCloseHandler(params: {
         closeIdleConnections?: () => void;
       };
       if (typeof httpServer.closeIdleConnections === "function") {
-        httpServer.closeIdleConnections();
+        try {
+          httpServer.closeIdleConnections();
+        } catch (err) {
+          shutdownFailures.push(err);
+        }
       }
-      await new Promise<void>((resolve, reject) =>
-        httpServer.close((err) => (err ? reject(err) : resolve())),
-      );
+      try {
+        await new Promise<void>((resolve, reject) =>
+          httpServer.close((err) => (err ? reject(err) : resolve())),
+        );
+      } catch (err) {
+        shutdownFailures.push(err);
+      }
+    }
+    if (shutdownFailures.length > 0) {
+      throw new AggregateError(shutdownFailures, "gateway shutdown completed with errors");
     }
   };
 }

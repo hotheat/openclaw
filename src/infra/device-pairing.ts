@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { acquireSessionWriteLock } from "../agents/session-write-lock.js";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
@@ -76,18 +77,77 @@ type DevicePairingStateFile = {
 
 const PENDING_TTL_MS = 5 * 60 * 1000;
 
-const withLock = createAsyncLock();
+const withProcessLock = createAsyncLock();
+
+type DevicePairingStoreEntry = {
+  snapshot?: DevicePairingStateFile;
+  loading?: Promise<DevicePairingStateFile>;
+};
+
+class DevicePairingStore {
+  private readonly entries = new Map<string, DevicePairingStoreEntry>();
+
+  private resolveEntry(baseDir?: string) {
+    const paths = resolvePairingPaths(baseDir, "devices");
+    const key = `${paths.pendingPath}\0${paths.pairedPath}`;
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = {};
+      this.entries.set(key, entry);
+    }
+    return { entry, paths };
+  }
+
+  private async readFromDisk(baseDir?: string): Promise<DevicePairingStateFile> {
+    const { pendingPath, pairedPath } = resolvePairingPaths(baseDir, "devices");
+    const [pending, paired] = await Promise.all([
+      readJsonFile<Record<string, DevicePairingPendingRequest>>(pendingPath),
+      readJsonFile<Record<string, PairedDevice>>(pairedPath),
+    ]);
+    const state: DevicePairingStateFile = {
+      pendingById: pending ?? {},
+      pairedByDeviceId: paired ?? {},
+    };
+    pruneExpiredPending(state.pendingById, Date.now(), PENDING_TTL_MS);
+    return state;
+  }
+
+  async refresh(baseDir?: string): Promise<DevicePairingStateFile> {
+    const { entry } = this.resolveEntry(baseDir);
+    if (entry.loading) {
+      return await entry.loading;
+    }
+    const loading = this.readFromDisk(baseDir);
+    entry.loading = loading;
+    try {
+      const state = await loading;
+      entry.snapshot = structuredClone(state);
+      return entry.snapshot;
+    } finally {
+      entry.loading = undefined;
+    }
+  }
+
+  async reload(baseDir?: string): Promise<DevicePairingStateFile> {
+    const { entry } = this.resolveEntry(baseDir);
+    if (entry.loading) {
+      await entry.loading.catch(() => undefined);
+    }
+    const state = await this.readFromDisk(baseDir);
+    entry.snapshot = structuredClone(state);
+    return entry.snapshot;
+  }
+
+  publish(state: DevicePairingStateFile, baseDir?: string) {
+    const { entry } = this.resolveEntry(baseDir);
+    entry.snapshot = structuredClone(state);
+  }
+}
+
+const devicePairingStore = new DevicePairingStore();
 
 async function loadState(baseDir?: string): Promise<DevicePairingStateFile> {
-  const { pendingPath, pairedPath } = resolvePairingPaths(baseDir, "devices");
-  const [pending, paired] = await Promise.all([
-    readJsonFile<Record<string, DevicePairingPendingRequest>>(pendingPath),
-    readJsonFile<Record<string, PairedDevice>>(pairedPath),
-  ]);
-  const state: DevicePairingStateFile = {
-    pendingById: pending ?? {},
-    pairedByDeviceId: paired ?? {},
-  };
+  const state = structuredClone(await devicePairingStore.reload(baseDir));
   pruneExpiredPending(state.pendingById, Date.now(), PENDING_TTL_MS);
   return state;
 }
@@ -98,6 +158,22 @@ async function persistState(state: DevicePairingStateFile, baseDir?: string) {
     writeJsonAtomic(pendingPath, state.pendingById),
     writeJsonAtomic(pairedPath, state.pairedByDeviceId),
   ]);
+  devicePairingStore.publish(state, baseDir);
+}
+
+async function withDevicePairingLock<T>(
+  baseDir: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return await withProcessLock(async () => {
+    const { pairedPath } = resolvePairingPaths(baseDir, "devices");
+    const lock = await acquireSessionWriteLock({ sessionFile: pairedPath });
+    try {
+      return await fn();
+    } finally {
+      await lock.release();
+    }
+  });
 }
 
 function normalizeDeviceId(deviceId: string) {
@@ -250,9 +326,14 @@ function buildDeviceAuthToken(params: {
 }
 
 export async function listDevicePairing(baseDir?: string): Promise<DevicePairingList> {
-  const state = await loadState(baseDir);
-  const pending = Object.values(state.pendingById).toSorted((a, b) => b.ts - a.ts);
-  const paired = Object.values(state.pairedByDeviceId).toSorted(
+  const state = await withDevicePairingLock(baseDir, async () => {
+    return structuredClone(await devicePairingStore.reload(baseDir));
+  });
+  const now = Date.now();
+  const pending = structuredClone(
+    Object.values(state.pendingById).filter((entry) => now - entry.ts <= PENDING_TTL_MS),
+  ).toSorted((a, b) => b.ts - a.ts);
+  const paired = structuredClone(Object.values(state.pairedByDeviceId)).toSorted(
     (a, b) => b.approvedAtMs - a.approvedAtMs,
   );
   return { pending, paired };
@@ -262,8 +343,17 @@ export async function getPairedDevice(
   deviceId: string,
   baseDir?: string,
 ): Promise<PairedDevice | null> {
-  const state = await loadState(baseDir);
-  return state.pairedByDeviceId[normalizeDeviceId(deviceId)] ?? null;
+  const state = await withDevicePairingLock(baseDir, async () => {
+    return structuredClone(await devicePairingStore.reload(baseDir));
+  });
+  const device = state.pairedByDeviceId[normalizeDeviceId(deviceId)];
+  return device ? structuredClone(device) : null;
+}
+
+export async function refreshDevicePairingStore(baseDir?: string): Promise<void> {
+  await withDevicePairingLock(baseDir, async () => {
+    await devicePairingStore.refresh(baseDir);
+  });
 }
 
 export async function requestDevicePairing(
@@ -274,7 +364,7 @@ export async function requestDevicePairing(
   request: DevicePairingPendingRequest;
   created: boolean;
 }> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     const state = await loadState(baseDir);
     const deviceId = normalizeDeviceId(req.deviceId);
     if (!deviceId) {
@@ -317,7 +407,7 @@ export async function approveDevicePairing(
   requestId: string,
   baseDir?: string,
 ): Promise<{ requestId: string; device: PairedDevice } | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     const state = await loadState(baseDir);
     const pending = state.pendingById[requestId];
     if (!pending) {
@@ -382,7 +472,7 @@ export async function rejectDevicePairing(
   requestId: string,
   baseDir?: string,
 ): Promise<{ requestId: string; deviceId: string } | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     return await rejectPendingPairingRequest<
       DevicePairingPendingRequest,
       DevicePairingStateFile,
@@ -401,7 +491,7 @@ export async function removePairedDevice(
   deviceId: string,
   baseDir?: string,
 ): Promise<{ deviceId: string } | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     const state = await loadState(baseDir);
     const normalized = normalizeDeviceId(deviceId);
     if (!normalized || !state.pairedByDeviceId[normalized]) {
@@ -420,7 +510,7 @@ export async function updatePairedDeviceMetadata(
   >,
   baseDir?: string,
 ): Promise<void> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     const state = await loadState(baseDir);
     const existing = state.pairedByDeviceId[normalizeDeviceId(deviceId)];
     if (!existing) {
@@ -469,7 +559,7 @@ export async function verifyDeviceToken(params: {
   scopes: string[];
   baseDir?: string;
 }): Promise<{ ok: boolean; reason?: string }> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(params.baseDir, async () => {
     const state = await loadState(params.baseDir);
     const device = getPairedDeviceFromState(state, params.deviceId);
     if (!device) {
@@ -508,7 +598,7 @@ export async function ensureDeviceToken(params: {
   scopes: string[];
   baseDir?: string;
 }): Promise<DeviceAuthToken | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(params.baseDir, async () => {
     const state = await loadState(params.baseDir);
     const requestedScopes = normalizeDeviceAuthScopes(params.scopes);
     const context = resolveDeviceTokenUpdateContext({
@@ -570,7 +660,7 @@ export async function rotateDeviceToken(params: {
   scopes?: string[];
   baseDir?: string;
 }): Promise<DeviceAuthToken | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(params.baseDir, async () => {
     const state = await loadState(params.baseDir);
     const context = resolveDeviceTokenUpdateContext({
       state,
@@ -611,7 +701,7 @@ export async function revokeDeviceToken(params: {
   role: string;
   baseDir?: string;
 }): Promise<DeviceAuthToken | null> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(params.baseDir, async () => {
     const state = await loadState(params.baseDir);
     const device = state.pairedByDeviceId[normalizeDeviceId(params.deviceId)];
     if (!device) {
@@ -635,7 +725,7 @@ export async function revokeDeviceToken(params: {
 }
 
 export async function clearDevicePairing(deviceId: string, baseDir?: string): Promise<boolean> {
-  return await withLock(async () => {
+  return await withDevicePairingLock(baseDir, async () => {
     const state = await loadState(baseDir);
     const normalizedId = normalizeDeviceId(deviceId);
     if (!state.pairedByDeviceId[normalizedId]) {

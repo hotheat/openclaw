@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { type QueueDropPolicy, type QueueMode } from "../auto-reply/reply/queue.js";
 import { defaultRuntime } from "../runtime.js";
 import {
@@ -28,6 +29,19 @@ export type AnnounceQueueItem = {
   sessionKey: string;
   origin?: DeliveryContext;
   originKey?: string;
+  waitForFinal?: boolean;
+  completion?: {
+    label: string;
+    status: "succeeded" | "failed" | "unknown";
+    result: string;
+    resultRef?: {
+      id: string;
+      sessionKey: string;
+    };
+    remainingActive: number;
+    instruction: string;
+  };
+  deliveryReceipt?: AnnounceDeliveryReceipt;
 };
 
 export type AnnounceQueueSettings = {
@@ -35,6 +49,21 @@ export type AnnounceQueueSettings = {
   debounceMs?: number;
   cap?: number;
   dropPolicy?: QueueDropPolicy;
+  lossless?: boolean;
+  beforeDrain?: (items: AnnounceQueueItem[]) => Promise<void>;
+};
+
+export type AnnounceEnqueueOutcome = "accepted" | "duplicate" | "rejected";
+
+export type AnnounceDeliveryReceipt = {
+  promise: Promise<AnnounceDeliveryOutcome>;
+  resolve: (outcome: AnnounceDeliveryOutcome) => void;
+  reject: (reason: unknown) => void;
+  settled: boolean;
+};
+
+export type AnnounceDeliveryOutcome = {
+  contentComplete: boolean;
 };
 
 type AnnounceQueueState = {
@@ -45,23 +74,35 @@ type AnnounceQueueState = {
   debounceMs: number;
   cap: number;
   dropPolicy: QueueDropPolicy;
+  lossless: boolean;
   droppedCount: number;
   summaryLines: string[];
+  beforeDrain?: (items: AnnounceQueueItem[]) => Promise<void>;
   send: (item: AnnounceQueueItem) => Promise<void>;
 };
 
 const ANNOUNCE_QUEUES = new Map<string, AnnounceQueueState>();
+const MAX_COMPLETION_LABEL_CHARS = 120;
+const MAX_COMPLETION_RESULT_CHARS = 2_000;
+const MAX_COMPLETION_RESULTS_CHARS = 12_000;
 
 export function resetAnnounceQueuesForTests() {
   // Test isolation: other suites may leave a draining queue behind in the worker.
   // Clearing the map alone isn't enough because drain loops capture `queue` by reference.
   for (const queue of ANNOUNCE_QUEUES.values()) {
+    for (const item of queue.items) {
+      rejectDeliveryReceipt(item, new Error("announce queue reset for test"));
+    }
     queue.items.length = 0;
     queue.summaryLines.length = 0;
     queue.droppedCount = 0;
     queue.lastEnqueuedAt = 0;
   }
   ANNOUNCE_QUEUES.clear();
+}
+
+export function getAnnounceQueueSizeForTests(key: string): number {
+  return ANNOUNCE_QUEUES.get(key)?.items.length ?? 0;
 }
 
 function getAnnounceQueue(
@@ -75,6 +116,8 @@ function getAnnounceQueue(
       target: existing,
       settings,
     });
+    existing.beforeDrain = settings.beforeDrain ?? existing.beforeDrain;
+    existing.lossless = settings.lossless ?? existing.lossless;
     existing.send = send;
     return existing;
   }
@@ -86,8 +129,10 @@ function getAnnounceQueue(
     debounceMs: typeof settings.debounceMs === "number" ? Math.max(0, settings.debounceMs) : 1000,
     cap: typeof settings.cap === "number" && settings.cap > 0 ? Math.floor(settings.cap) : 20,
     dropPolicy: settings.dropPolicy ?? "summarize",
+    lossless: settings.lossless ?? false,
     droppedCount: 0,
     summaryLines: [],
+    beforeDrain: settings.beforeDrain,
     send,
   };
   applyQueueRuntimeSettings({
@@ -110,6 +155,282 @@ function hasAnnounceCrossChannelItems(items: AnnounceQueueItem[]): boolean {
   });
 }
 
+function createDeliveryReceipt(): AnnounceDeliveryReceipt {
+  let resolvePromise = (_outcome: AnnounceDeliveryOutcome) => {};
+  let rejectPromise = (_reason: unknown) => {};
+  const receipt: AnnounceDeliveryReceipt = {
+    promise: new Promise<AnnounceDeliveryOutcome>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    }),
+    resolve: (outcome) => {
+      if (receipt.settled) {
+        return;
+      }
+      receipt.settled = true;
+      resolvePromise(outcome);
+    },
+    reject: (reason) => {
+      if (receipt.settled) {
+        return;
+      }
+      receipt.settled = true;
+      rejectPromise(reason);
+    },
+    settled: false,
+  };
+  return receipt;
+}
+
+function resolveDeliveryReceipt(item: AnnounceQueueItem, outcome: AnnounceDeliveryOutcome): void {
+  item.deliveryReceipt?.resolve(outcome);
+}
+
+function rejectDeliveryReceipt(item: AnnounceQueueItem, reason: unknown): void {
+  item.deliveryReceipt?.reject(reason);
+}
+
+function rejectQueuedDeliveryReceipts(
+  queue: AnnounceQueueState,
+  items: AnnounceQueueItem[],
+  reason: unknown,
+): number {
+  const receiptedItems = items.filter((item) => item.deliveryReceipt);
+  for (const item of receiptedItems) {
+    rejectDeliveryReceipt(item, reason);
+  }
+  removeQueueItems(queue, receiptedItems);
+  return receiptedItems.length;
+}
+
+function removeQueueItems(queue: AnnounceQueueState, items: AnnounceQueueItem[]): void {
+  const removed = new Set(items);
+  const kept = queue.items.filter((item) => !removed.has(item));
+  queue.items.splice(0, queue.items.length, ...kept);
+}
+
+function resolveCompletionGroupKey(item: AnnounceQueueItem, index: number): string {
+  if (item.originKey) {
+    return `origin:${item.originKey}`;
+  }
+  return `unkeyed:${item.announceId ?? `${item.sessionKey}:${item.enqueuedAt}`}:${index}`;
+}
+
+function groupCompletionItems(items: AnnounceQueueItem[]): AnnounceQueueItem[][] {
+  const groups = new Map<string, AnnounceQueueItem[]>();
+  items.forEach((item, index) => {
+    const key = resolveCompletionGroupKey(item, index);
+    const group = groups.get(key);
+    if (group) {
+      group.push(item);
+    } else {
+      groups.set(key, [item]);
+    }
+  });
+  return [...groups.values()];
+}
+
+function buildCompletionBatchAnnounceId(items: AnnounceQueueItem[]): string | undefined {
+  if (items.length === 1) {
+    return items[0]?.announceId;
+  }
+  const identities = items
+    .map((item) => item.announceId ?? `${item.sessionKey}:${item.enqueuedAt}`)
+    .toSorted();
+  const originKey = items[0]?.originKey ?? "unkeyed";
+  const digest = createHash("sha256")
+    .update(`${originKey}\n${identities.join("\n")}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `completion-batch:${digest}`;
+}
+
+async function drainCompletionGroups(params: {
+  queue: AnnounceQueueState;
+  items: AnnounceQueueItem[];
+  summary?: string;
+  key: string;
+}): Promise<void> {
+  const groups = groupCompletionItems(params.items);
+  for (const group of groups) {
+    const built = buildCompletionAnnounceBatch(
+      group,
+      groups.length === 1 ? params.summary : undefined,
+    );
+    const last = group.at(-1);
+    if (!built || !last) {
+      continue;
+    }
+    try {
+      await params.queue.send({
+        ...last,
+        announceId: buildCompletionBatchAnnounceId(group),
+        prompt: built.prompt,
+        deliveryReceipt: undefined,
+      });
+    } catch (err) {
+      const hasReceipts = group.every((item) => item.deliveryReceipt);
+      if (!hasReceipts) {
+        throw err;
+      }
+      for (const item of group) {
+        rejectDeliveryReceipt(item, err);
+      }
+      removeQueueItems(params.queue, group);
+      defaultRuntime.error?.(
+        `completion announce delivery failed for ${params.key}: ${String(err)}`,
+      );
+      continue;
+    }
+    for (const item of group) {
+      resolveDeliveryReceipt(item, {
+        contentComplete: !built.incompleteItems.has(item),
+      });
+    }
+    removeQueueItems(params.queue, group);
+  }
+}
+
+function compactCompletionResult(result: string, limit = MAX_COMPLETION_RESULT_CHARS): string {
+  const trimmed = result.trim();
+  if (trimmed.length <= limit) {
+    return trimmed;
+  }
+  const truncationMarker = "\n...[result truncated]...\n";
+  if (limit <= truncationMarker.length) {
+    return trimmed.slice(0, limit);
+  }
+  const contentChars = limit - truncationMarker.length;
+  const tailChars = Math.min(500, Math.floor(contentChars / 4));
+  const headChars = contentChars - tailChars;
+  return `${trimmed.slice(0, headChars).trimEnd()}${truncationMarker}${trimmed.slice(-tailChars).trimStart()}`;
+}
+
+function compactCompletionLabel(label: string): string {
+  const cleaned = label.replace(/\s+/g, " ").trim();
+  if (cleaned.length <= MAX_COMPLETION_LABEL_CHARS) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, MAX_COMPLETION_LABEL_CHARS - 3).trimEnd()}...`;
+}
+
+type CompletionAnnounceBatch = {
+  prompt: string;
+  incompleteItems: Set<AnnounceQueueItem>;
+};
+
+function buildCompletionAnnounceBatch(
+  items: AnnounceQueueItem[],
+  queueSummary?: string,
+): CompletionAnnounceBatch | undefined {
+  const completionItems = items.flatMap((item) =>
+    item.completion
+      ? [
+          {
+            source: item,
+            value: {
+              ...item.completion,
+              label: compactCompletionLabel(item.completion.label),
+            },
+          },
+        ]
+      : [],
+  );
+  if (completionItems.length !== items.length || completionItems.length === 0) {
+    return undefined;
+  }
+
+  const completions = completionItems.map(({ value }) => value);
+
+  const latest = completions.at(-1);
+  if (!latest) {
+    return undefined;
+  }
+  const succeeded = completions.filter((item) => item.status === "succeeded").length;
+  const failed = completions.filter((item) => item.status === "failed").length;
+  const unknown = completions.length - succeeded - failed;
+  const labels = completions.map((item) => item.label).join(", ");
+  const lines = [
+    "[Subagent completion summary]",
+    `Completed: ${labels}`,
+    `Succeeded: ${succeeded}`,
+    `Failed: ${failed}`,
+  ];
+  if (unknown > 0) {
+    lines.push(`Unknown: ${unknown}`);
+  }
+  lines.push(`Active: ${latest.remainingActive}`);
+  if (queueSummary?.trim()) {
+    lines.push("", queueSummary.trim());
+  }
+
+  const results: Array<{
+    source: AnnounceQueueItem;
+    value: (typeof completions)[number] & { result: string };
+  }> = [];
+  const omitted: typeof completionItems = [];
+  const incompleteItems = new Set<AnnounceQueueItem>();
+  let remainingResultChars = MAX_COMPLETION_RESULTS_CHARS;
+  for (const item of completionItems) {
+    const rawResult = item.value.result.trim();
+    if (!rawResult || rawResult === "(no output)") {
+      continue;
+    }
+    if (remainingResultChars <= 0) {
+      omitted.push(item);
+      incompleteItems.add(item.source);
+      continue;
+    }
+    const resultLimit = Math.min(MAX_COMPLETION_RESULT_CHARS, remainingResultChars);
+    const result = compactCompletionResult(rawResult, resultLimit);
+    if (rawResult.length > resultLimit) {
+      incompleteItems.add(item.source);
+    }
+    results.push({ source: item.source, value: { ...item.value, result } });
+    remainingResultChars -= result.length;
+  }
+  if (results.length > 0) {
+    lines.push("", "Results:");
+    for (const item of results) {
+      lines.push(`- ${item.value.label} [${item.value.status}]`, item.value.result);
+      if (incompleteItems.has(item.source)) {
+        lines.push("  Truncated: true");
+        if (item.value.resultRef?.sessionKey) {
+          lines.push(`  Result session: ${item.value.resultRef.sessionKey}`);
+          lines.push(`  Result ref: ${item.value.resultRef.id}`);
+        }
+      }
+    }
+  }
+  if (omitted.length > 0) {
+    lines.push("", "Omitted results:");
+    for (const item of omitted) {
+      lines.push(`- [${item.value.status}] Truncated: true`);
+      if (item.value.resultRef?.sessionKey) {
+        lines.push(`  Result session: ${item.value.resultRef.sessionKey}`);
+        lines.push(`  Result ref: ${item.value.resultRef.id}`);
+      }
+    }
+  }
+  if (incompleteItems.size > 0) {
+    lines.push(
+      "",
+      "Recovery: page sessions_history for each result session with its resultRef and contentOffset=0, then continue at nextContentOffset until contentHasMore=false.",
+    );
+  }
+  if (latest.instruction.trim()) {
+    lines.push("", latest.instruction.trim());
+  }
+  return { prompt: lines.join("\n"), incompleteItems };
+}
+
+export function buildCompletionAnnouncePrompt(
+  items: AnnounceQueueItem[],
+  queueSummary?: string,
+): string | undefined {
+  return buildCompletionAnnounceBatch(items, queueSummary)?.prompt;
+}
+
 function scheduleAnnounceDrain(key: string) {
   const queue = beginQueueDrain(ANNOUNCE_QUEUES, key);
   if (!queue) {
@@ -123,7 +444,31 @@ function scheduleAnnounceDrain(key: string) {
           break;
         }
         await waitForQueueDebounce(queue);
+        if (queue.beforeDrain) {
+          const items = queue.items.slice();
+          try {
+            await queue.beforeDrain(items);
+          } catch (err) {
+            if (rejectQueuedDeliveryReceipts(queue, items, err) === 0) {
+              throw err;
+            }
+            defaultRuntime.error?.(`announce queue pre-drain failed for ${key}: ${String(err)}`);
+            continue;
+          }
+          await waitForQueueDebounce(queue);
+        }
         if (queue.mode === "collect") {
+          const isCompletionBatch =
+            queue.items.length > 0 && queue.items.every((item) => item.completion);
+          if (isCompletionBatch) {
+            const items = queue.items.slice();
+            const summary = previewQueueSummaryPrompt({ state: queue, noun: "announce" });
+            await drainCompletionGroups({ queue, items, summary, key });
+            if (summary) {
+              clearQueueSummaryState(queue);
+            }
+            continue;
+          }
           const collectDrainResult = await drainCollectQueueStep({
             collectState,
             isCrossChannel: hasAnnounceCrossChannelItems(queue.items),
@@ -138,12 +483,14 @@ function scheduleAnnounceDrain(key: string) {
           }
           const items = queue.items.slice();
           const summary = previewQueueSummaryPrompt({ state: queue, noun: "announce" });
-          const prompt = buildCollectPrompt({
-            title: "[Queued announce messages while agent was busy]",
-            items,
-            summary,
-            renderItem: (item, idx) => `---\nQueued #${idx + 1}\n${item.prompt}`.trim(),
-          });
+          const prompt =
+            buildCompletionAnnouncePrompt(items, summary) ??
+            buildCollectPrompt({
+              title: "[Queued announce messages while agent was busy]",
+              items,
+              summary,
+              renderItem: (item, idx) => `---\nQueued #${idx + 1}\n${item.prompt}`.trim(),
+            });
           const last = items.at(-1);
           if (!last) {
             break;
@@ -195,23 +542,81 @@ export function enqueueAnnounce(params: {
   settings: AnnounceQueueSettings;
   send: (item: AnnounceQueueItem) => Promise<void>;
 }): boolean {
-  const queue = getAnnounceQueue(params.key, params.settings, params.send);
-  queue.lastEnqueuedAt = Date.now();
+  return enqueueAnnounceItem(params).outcome === "accepted";
+}
 
-  const shouldEnqueue = applyQueueDropPolicy({
-    queue,
-    summarize: (item) => item.summaryLine?.trim() || item.prompt.trim(),
-  });
+export function enqueueAnnounceWithOutcome(params: {
+  key: string;
+  item: AnnounceQueueItem;
+  settings: AnnounceQueueSettings;
+  send: (item: AnnounceQueueItem) => Promise<void>;
+}): AnnounceEnqueueOutcome {
+  return enqueueAnnounceItem(params).outcome;
+}
+
+function enqueueAnnounceItem(params: {
+  key: string;
+  item: AnnounceQueueItem;
+  settings: AnnounceQueueSettings;
+  send: (item: AnnounceQueueItem) => Promise<void>;
+}): { outcome: AnnounceEnqueueOutcome; item: AnnounceQueueItem } {
+  const queue = getAnnounceQueue(params.key, params.settings, params.send);
+
+  const existing = params.item.announceId
+    ? queue.items.find((item) => item.announceId === params.item.announceId)
+    : undefined;
+  if (existing) {
+    scheduleAnnounceDrain(params.key);
+    return { outcome: "duplicate", item: existing };
+  }
+
+  queue.lastEnqueuedAt = Date.now();
+  const shouldEnqueue =
+    queue.lossless ||
+    applyQueueDropPolicy({
+      queue,
+      summarize: (item) => item.summaryLine?.trim() || item.prompt.trim(),
+    });
   if (!shouldEnqueue) {
     if (queue.dropPolicy === "new") {
       scheduleAnnounceDrain(params.key);
     }
-    return false;
+    rejectDeliveryReceipt(params.item, new Error(`announce queue rejected item for ${params.key}`));
+    return { outcome: "rejected", item: params.item };
   }
 
   const origin = normalizeDeliveryContext(params.item.origin);
   const originKey = deliveryContextKey(origin);
-  queue.items.push({ ...params.item, origin, originKey });
+  const item = { ...params.item, origin, originKey };
+  queue.items.push(item);
   scheduleAnnounceDrain(params.key);
-  return true;
+  return { outcome: "accepted", item };
+}
+
+export function enqueueAnnounceWithReceipt(params: {
+  key: string;
+  item: AnnounceQueueItem;
+  settings: AnnounceQueueSettings;
+  send: (item: AnnounceQueueItem) => Promise<void>;
+}): { enqueued: boolean; delivered: Promise<AnnounceDeliveryOutcome> } {
+  const deliveryReceipt = createDeliveryReceipt();
+  const result = enqueueAnnounceItem({
+    ...params,
+    item: {
+      ...params.item,
+      deliveryReceipt,
+    },
+  });
+  const queuedReceipt = result.item.deliveryReceipt;
+  if (!queuedReceipt) {
+    deliveryReceipt.reject(new Error(`announce receipt unavailable for ${params.key}`));
+    return { enqueued: result.outcome === "accepted", delivered: deliveryReceipt.promise };
+  }
+  if (queuedReceipt !== deliveryReceipt) {
+    deliveryReceipt.resolve({ contentComplete: true });
+  }
+  return {
+    enqueued: result.outcome === "accepted",
+    delivered: queuedReceipt.promise,
+  };
 }

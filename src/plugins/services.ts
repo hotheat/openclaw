@@ -60,6 +60,7 @@ export async function startPluginServices(params: {
 
   return {
     stop: async () => {
+      const failures: unknown[] = [];
       for (const entry of running.toReversed()) {
         if (!entry.stop) {
           continue;
@@ -68,7 +69,11 @@ export async function startPluginServices(params: {
           await entry.stop();
         } catch (err) {
           log.warn(`plugin service stop failed (${entry.id}): ${String(err)}`);
+          failures.push(err);
         }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, "one or more plugin services failed to stop");
       }
     },
   };

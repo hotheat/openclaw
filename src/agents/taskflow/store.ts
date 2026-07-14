@@ -71,6 +71,7 @@ export const TASK_FLOW_APPLY_OPERATIONS = [
   "attach_evidence",
   "set_active_item",
   "subscribe_channel",
+  "promote_to_shared",
   "park_taskflow",
   "resume_taskflow",
   "revoke_access",
@@ -428,6 +429,9 @@ function hasWriteAccess(params: {
   agentId: string;
   operation: ApplyTaskFlowOperationParams;
 }): boolean {
+  if (params.operation.operation === "promote_to_shared") {
+    return params.taskFlow.ownerSessionKey === params.sessionKey;
+  }
   if (params.operation.operation === "revoke_access") {
     // ACL changes are control-plane: only the owner or the permission's
     // original grantor may revoke; write_all data access does not imply it
@@ -599,6 +603,22 @@ function applyOperationToSnapshot(params: {
         return { changedItems, error: makeError("invalid_operation", "subscriber required") };
       }
       taskFlow.subscribers.push(normalizeSubscriber(operation.subscriber, nowIso));
+      break;
+    }
+    case "promote_to_shared": {
+      if (taskFlow.scope !== "local") {
+        return {
+          changedItems,
+          error: makeError("invalid_operation", "local TaskFlow required"),
+        };
+      }
+      if (taskFlow.status === "completed" || taskFlow.status === "canceled") {
+        return {
+          changedItems,
+          error: makeError("invalid_operation", "non-terminal TaskFlow required"),
+        };
+      }
+      taskFlow.scope = "shared";
       break;
     }
     case "park_taskflow": {

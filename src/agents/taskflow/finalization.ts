@@ -39,7 +39,9 @@ function hasActiveDescendantRunForTaskFlow(params: {
   taskFlowId: string;
 }): boolean {
   return listDescendantRunsForRequester(params.sessionKey).some(
-    (entry) => typeof entry.endedAt !== "number" && entry.taskFlowId === params.taskFlowId,
+    (entry) =>
+      typeof entry.endedAt !== "number" &&
+      (entry.taskFlowId === params.taskFlowId || entry.trackingTaskFlowId === params.taskFlowId),
   );
 }
 

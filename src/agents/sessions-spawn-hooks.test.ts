@@ -551,6 +551,33 @@ describe("sessions_spawn shared TaskFlow grants", () => {
     expect(typeof permission?.revokedAt).toBe("string");
   });
 
+  it("does not auto-track persistent session-mode children", async () => {
+    const store = makeOwnerStore();
+    const created = await store.createTaskFlow({
+      agentId: "main",
+      ownerSessionKey,
+      title: "Local",
+      items: [{ id: "item_a", title: "A", status: "in_progress" }],
+    });
+    expect(created.status).toBe("success");
+
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: ownerSessionKey,
+      agentChannel: "discord",
+      agentTo: "channel:123",
+    });
+    const result = await tool.execute("tf-session", {
+      task: "stay available",
+      thread: true,
+      mode: "session",
+    });
+
+    expect(result.details).toMatchObject({ status: "accepted" });
+    const runs = listSubagentRunsForRequester(ownerSessionKey);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.trackingTaskFlowId).toBeUndefined();
+  });
+
   it("applies a TTL to run-mode grants and records taskFlowId on the run", async () => {
     const store = makeOwnerStore();
     const created = await store.createTaskFlow({

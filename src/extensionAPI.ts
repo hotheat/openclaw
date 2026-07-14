@@ -10,5 +10,6 @@ export {
   resolveStorePath,
   loadSessionStore,
   saveSessionStore,
+  updateSessionStore,
   resolveSessionFilePath,
 } from "./config/sessions.ts";

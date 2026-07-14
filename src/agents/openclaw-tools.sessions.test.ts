@@ -6,8 +6,13 @@ import {
 } from "./subagent-registry.js";
 
 const callGatewayMock = vi.fn();
+const readSubagentResultSnapshotMock = vi.fn();
 vi.mock("../gateway/call.js", () => ({
   callGateway: (opts: unknown) => callGatewayMock(opts),
+}));
+
+vi.mock("./subagent-result-store.js", () => ({
+  readSubagentResultSnapshot: (params: unknown) => readSubagentResultSnapshotMock(params),
 }));
 
 vi.mock("../config/config.js", async (importOriginal) => {
@@ -50,6 +55,7 @@ describe("sessions tools", () => {
 
   beforeEach(() => {
     callGatewayMock.mockClear();
+    readSubagentResultSnapshotMock.mockReset();
   });
 
   it("uses number (not integer) in tool schemas for Gemini compatibility", () => {
@@ -83,6 +89,9 @@ describe("sessions tools", () => {
     };
 
     expect(schemaProp("sessions_history", "limit").type).toBe("number");
+    expect(schemaProp("sessions_history", "contentOffset").type).toBe("integer");
+    expect(schemaProp("sessions_history", "contentLimit").type).toBe("integer");
+    expect(schemaProp("sessions_history", "resultRef").type).toBe("string");
     expect(schemaProp("sessions_list", "limit").type).toBe("number");
     expect(schemaProp("sessions_list", "activeMinutes").type).toBe("number");
     expect(schemaProp("sessions_list", "messageLimit").type).toBe("number");
@@ -200,6 +209,74 @@ describe("sessions tools", () => {
     });
     const withToolsDetails = withTools.details as { messages?: unknown[] };
     expect(withToolsDetails.messages).toHaveLength(2);
+  });
+
+  it("sessions_history rejects content paging without a stable result reference", async () => {
+    const tool = createOpenClawTools().find((candidate) => candidate.name === "sessions_history");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_history tool");
+    }
+
+    const result = await tool.execute("call-page", {
+      sessionKey: "main",
+      contentOffset: 0,
+    });
+
+    expect(result.details).toEqual({
+      status: "error",
+      error: "resultRef is required when contentOffset or contentLimit is provided.",
+    });
+    expect(readSubagentResultSnapshotMock).not.toHaveBeenCalled();
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("sessions_history pages an immutable subagent result snapshot", async () => {
+    const fullText = "stable-result-".repeat(1_000);
+    readSubagentResultSnapshotMock.mockResolvedValue(fullText);
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "chat.history") {
+        return { messages: [{ role: "assistant", content: "newer session output" }] };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools().find((candidate) => candidate.name === "sessions_history");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_history tool");
+    }
+
+    const chunks: string[] = [];
+    let contentOffset = 0;
+    let contentHasMore = true;
+    while (contentHasMore) {
+      const result = await tool.execute("call-result-page", {
+        sessionKey: "main",
+        resultRef: "stable-ref",
+        contentOffset,
+      });
+      const details = result.details as {
+        content?: string;
+        contentHasMore?: boolean;
+        nextContentOffset?: number;
+      };
+      chunks.push(details.content ?? "");
+      contentHasMore = details.contentHasMore === true;
+      contentOffset = details.nextContentOffset ?? contentOffset;
+    }
+
+    expect(chunks.join("")).toBe(fullText);
+    expect(readSubagentResultSnapshotMock).toHaveBeenCalledWith({
+      resultRef: "stable-ref",
+      sessionKey: "main",
+    });
+    expect(
+      callGatewayMock.mock.calls.some(
+        ([request]) => (request as { method?: string }).method === "chat.history",
+      ),
+    ).toBe(false);
   });
 
   it("sessions_history caps oversized payloads and strips heavy fields", async () => {

@@ -14,7 +14,6 @@ const resetAllLanes = vi.fn();
 const restartGatewayProcessWithFreshPid = vi.fn<
   () => { mode: "spawned" | "supervised" | "disabled" | "failed"; pid?: number; detail?: string }
 >(() => ({ mode: "disabled" }));
-const DRAIN_TIMEOUT_LOG = "drain timeout reached; proceeding with restart";
 const gatewayLog = {
   info: vi.fn(),
   warn: vi.fn(),
@@ -156,81 +155,66 @@ describe("runGatewayLoop", () => {
     });
   });
 
-  it("restarts after SIGUSR1 even when drain times out, and resets lanes for the new iteration", async () => {
+  it("exits non-zero when graceful close cannot flush state", async () => {
     vi.clearAllMocks();
 
     await withIsolatedSignals(async () => {
-      getActiveTaskCount.mockReturnValueOnce(2).mockReturnValueOnce(0);
+      const close = vi.fn(async () => {
+        throw new Error("state flush failed");
+      });
+      const { start, started } = createSignaledStart(close);
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      await runLoopWithStart({ start, runtime });
+      await waitForStart(started);
+
+      process.emit("SIGTERM");
+
+      await expect(exited).resolves.toBe(1);
+      expect(runtime.exit).toHaveBeenCalledWith(1);
+      expect(gatewayLog.error).toHaveBeenCalledWith(expect.stringContaining("state flush failed"));
+    });
+  });
+
+  it("force exits non-zero when graceful shutdown does not finish", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async () => {
+      const close = vi.fn(async () => await new Promise<void>(() => {}));
+      const { start, started } = createSignaledStart(close);
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      await runLoopWithStart({ start, runtime });
+      await waitForStart(started);
+
+      vi.useFakeTimers();
+      try {
+        process.emit("SIGTERM");
+        await vi.advanceTimersByTimeAsync(50_000);
+
+        await expect(exited).resolves.toBe(1);
+        expect(runtime.exit).toHaveBeenCalledWith(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it("does not restart when active task drain times out", async () => {
+    vi.clearAllMocks();
+
+    await withIsolatedSignals(async () => {
+      getActiveTaskCount.mockReturnValueOnce(2);
       waitForActiveTasks.mockResolvedValueOnce({ drained: false });
-
-      type StartServer = () => Promise<{
-        close: (opts: { reason: string; restartExpectedMs: number | null }) => Promise<void>;
-      }>;
-
-      const closeFirst = vi.fn(async () => {});
-      const closeSecond = vi.fn(async () => {});
-
-      const start = vi.fn<StartServer>();
-      let resolveFirst: (() => void) | null = null;
-      const startedFirst = new Promise<void>((resolve) => {
-        resolveFirst = resolve;
-      });
-      start.mockImplementationOnce(async () => {
-        resolveFirst?.();
-        return { close: closeFirst };
-      });
-
-      let resolveSecond: (() => void) | null = null;
-      const startedSecond = new Promise<void>((resolve) => {
-        resolveSecond = resolve;
-      });
-      start.mockImplementationOnce(async () => {
-        resolveSecond?.();
-        return { close: closeSecond };
-      });
-
-      start.mockRejectedValueOnce(new Error("stop-loop"));
-
-      const { runGatewayLoop } = await import("./run-loop.js");
-      const runtime = {
-        log: vi.fn(),
-        error: vi.fn(),
-        exit: vi.fn(),
-      };
-      const loopPromise = runGatewayLoop({
-        start: start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
-        runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
-      });
-
-      await startedFirst;
-      expect(start).toHaveBeenCalledTimes(1);
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const { close, runtime, exited } = await createSignaledLoopHarness();
 
       process.emit("SIGUSR1");
 
-      await startedSecond;
-      expect(start).toHaveBeenCalledTimes(2);
-      await new Promise<void>((resolve) => setImmediate(resolve));
-
+      await expect(exited).resolves.toBe(1);
       expect(waitForActiveTasks).toHaveBeenCalledWith(30_000);
-      expect(gatewayLog.warn).toHaveBeenCalledWith(DRAIN_TIMEOUT_LOG);
-      expect(closeFirst).toHaveBeenCalledWith({
-        reason: "gateway restarting",
-        restartExpectedMs: 1500,
-      });
+      expect(close).not.toHaveBeenCalled();
+      expect(runtime.exit).toHaveBeenCalledWith(1);
+      expect(restartGatewayProcessWithFreshPid).not.toHaveBeenCalled();
       expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(1);
-      expect(resetAllLanes).toHaveBeenCalledTimes(1);
-
-      process.emit("SIGUSR1");
-
-      await expect(loopPromise).rejects.toThrow("stop-loop");
-      expect(closeSecond).toHaveBeenCalledWith({
-        reason: "gateway restarting",
-        restartExpectedMs: 1500,
-      });
-      expect(markGatewaySigusr1RestartHandled).toHaveBeenCalledTimes(2);
-      expect(resetAllLanes).toHaveBeenCalledTimes(2);
-      expect(acquireGatewayLock).toHaveBeenCalledTimes(3);
+      expect(resetAllLanes).not.toHaveBeenCalled();
     });
   });
 

@@ -233,6 +233,7 @@ describe("taskflow_update tool", () => {
       "attach_evidence",
       "set_active_item",
       "subscribe_channel",
+      "promote_to_shared",
       "park_taskflow",
       "resume_taskflow",
       "revoke_access",
@@ -286,6 +287,29 @@ describe("taskflow_update tool", () => {
     expect(read.snapshot.permissions[0]).toMatchObject({
       sessionKey: "agent:main:subagent:child",
       revokedReason: "manual",
+    });
+  });
+
+  it("promotes a local taskflow to shared without granting access", async () => {
+    const tool = makeTool();
+    await tool.execute("call1", {
+      operation: "create",
+      title: "Promote via tool",
+    });
+
+    const result = await tool.execute("call2", {
+      operation: "promote_to_shared",
+      taskFlowId: "tf_tool",
+      expectedRevision: 1,
+    });
+
+    expect(result.details).toMatchObject({
+      status: "success",
+      revision: 2,
+      snapshot: {
+        scope: "shared",
+        permissions: [],
+      },
     });
   });
 

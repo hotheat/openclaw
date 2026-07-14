@@ -5,6 +5,7 @@ import type { InlineCodeState } from "../markdown/code-spans.js";
 import type { HookRunner } from "../plugins/hooks.js";
 import type { EmbeddedBlockChunker } from "./pi-embedded-block-chunker.js";
 import type { MessagingToolSend } from "./pi-embedded-messaging.js";
+import type { AssistantStreamGuardState } from "./pi-embedded-stream-guard.js";
 import type {
   BlockReplyChunking,
   SubscribeEmbeddedPiSessionParams,
@@ -45,6 +46,7 @@ export type EmbeddedPiSubscribeState = {
 
   deltaBuffer: string;
   blockBuffer: string;
+  assistantStreamGuard: AssistantStreamGuardState;
   blockState: { thinking: boolean; final: boolean; inlineCode: InlineCodeState };
   partialBlockState: { thinking: boolean; final: boolean; inlineCode: InlineCodeState };
   lastStreamedAssistant?: string;

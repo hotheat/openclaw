@@ -4,6 +4,7 @@ import { optionalStringEnum } from "../schema/typebox.js";
 import {
   SUBAGENT_COMPLETION_DELIVERIES,
   SUBAGENT_SPAWN_MODES,
+  SUBAGENT_TASKFLOW_TRACKING_MODES,
   spawnSubagentDirect,
 } from "../subagent-spawn.js";
 import { TASK_FLOW_ACCESSES } from "../taskflow/types.js";
@@ -68,6 +69,10 @@ const SessionsSpawnToolSchema = Type.Object({
   completionDelivery: optionalStringEnum(SUBAGENT_COMPLETION_DELIVERIES, {
     description:
       "auto may deliver the completion directly to the bound channel. direct requires direct completion delivery when a target is available. parent forces completion through the requester session so the parent can run post-completion checks or tool-mediated delivery.",
+  }),
+  taskFlowTracking: optionalStringEnum(SUBAGENT_TASKFLOW_TRACKING_MODES, {
+    description:
+      "Controls lifecycle tracking against the requester session's current TaskFlow without granting the child TaskFlow access. auto tracks run-mode children when a foreground TaskFlow exists and is the default for run mode; current requires one; none disables tracking.",
   }),
   taskFlowId: Type.Optional(
     Type.String({
@@ -136,6 +141,12 @@ export function createSessionsSpawnTool(opts?: {
       const thread = params.thread === true;
       const taskFlowId = readStringParam(params, "taskFlowId");
       const taskFlowScope = params.taskFlowScope === "shared" ? "shared" : undefined;
+      const taskFlowTracking =
+        params.taskFlowTracking === "auto" ||
+        params.taskFlowTracking === "current" ||
+        params.taskFlowTracking === "none"
+          ? params.taskFlowTracking
+          : undefined;
       const taskFlowAccess =
         params.taskFlowAccess === "read" ||
         params.taskFlowAccess === "write_assigned" ||
@@ -159,6 +170,7 @@ export function createSessionsSpawnTool(opts?: {
           taskFlowId,
           taskFlowScope,
           taskFlowAccess,
+          taskFlowTracking,
           toolCallId,
         },
         {

@@ -812,6 +812,26 @@ describe("web_fetch extraction fallbacks", () => {
     expect(details.truncated).toBe(true);
   });
 
+  it("honors configured maxChars when maxCharsCap is omitted", async () => {
+    const large = "a".repeat(40_000);
+    installMockFetch(
+      (input: RequestInfo | URL) =>
+        Promise.resolve(textResponse(large, requestUrl(input))) as Promise<Response>,
+    );
+
+    const tool = createFetchTool({
+      firecrawl: { enabled: false },
+      maxChars: 30_000,
+    });
+
+    const result = await tool?.execute?.("call", {
+      url: "https://example.com/configured-max-chars",
+    });
+    const details = result?.details as { length?: number; truncated?: boolean };
+    expect(details.length).toBe(30_000);
+    expect(details.truncated).toBe(true);
+  });
+
   it("strips and truncates HTML from error responses", async () => {
     const long = "x".repeat(12_000);
     const html =

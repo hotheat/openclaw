@@ -2006,7 +2006,9 @@ Z.AI 模型可通过 `zai/<model>` 使用（例如 `zai/glm-4.7`），需要环�
 - `tools.web.search.timeoutSeconds`（默认 30）
 - `tools.web.search.cacheTtlMinutes`（默认 15）
 - `tools.web.fetch.enabled`（默认 true）
-- `tools.web.fetch.maxChars`（默认 50000）
+- `tools.web.fetch.maxChars`（默认 20000）
+- `tools.web.fetch.maxCharsCap`（默认 20000）
+- `tools.web.fetch.maxResponseBytes`（默认 750000 字节）
 - `tools.web.fetch.timeoutSeconds`（默认 30）
 - `tools.web.fetch.cacheTtlMinutes`（默认 15）
 - `tools.web.fetch.userAgent`（可选覆盖）

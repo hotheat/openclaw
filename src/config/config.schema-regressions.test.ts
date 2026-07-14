@@ -195,6 +195,22 @@ describe("config schema regressions", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("accepts tools.web.fetch output limit config", () => {
+    const res = validateConfigObject({
+      tools: {
+        web: {
+          fetch: {
+            maxChars: 20_000,
+            maxCharsCap: 20_000,
+            maxResponseBytes: 750_000,
+          },
+        },
+      },
+    });
+
+    expect(res.ok).toBe(true);
+  });
+
   it("accepts tools.web.fetch.jinaReader config", () => {
     const res = validateConfigObject({
       tools: {

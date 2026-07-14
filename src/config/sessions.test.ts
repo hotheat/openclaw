@@ -1,7 +1,8 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { withEnv } from "../test-utils/env.js";
 import {
   buildGroupDisplayName,
@@ -11,6 +12,7 @@ import {
   resolveSessionKey,
   resolveSessionTranscriptPath,
   resolveSessionTranscriptsDir,
+  saveSessionStore,
   updateLastRoute,
   updateSessionStore,
   updateSessionStoreEntry,
@@ -394,6 +396,68 @@ describe("sessions", () => {
     const store = loadSessionStore(storePath);
     expect(store["agent:main:one"]?.sessionId).toBe("sess-1");
     expect(store["agent:main:two"]?.sessionId).toBe("sess-2");
+  });
+
+  it("orders full saves with queued mutations", async () => {
+    const dir = await createCaseDir("saveSessionStore-ordered");
+    const storePath = path.join(dir, "sessions.json");
+    await fs.writeFile(storePath, "{}", "utf-8");
+
+    const mutation = updateSessionStore(storePath, (store) => {
+      store["agent:main:main"] = {
+        sessionId: "from-mutation",
+        updatedAt: 1,
+      };
+    });
+    const save = saveSessionStore(storePath, {
+      "agent:main:main": {
+        sessionId: "from-save",
+        updatedAt: 2,
+      },
+    });
+
+    await Promise.all([mutation, save]);
+
+    expect(loadSessionStore(storePath)["agent:main:main"]?.sessionId).toBe("from-save");
+  });
+
+  it("coalesces concurrent mutations into one async atomic write", async () => {
+    const dir = await createCaseDir("updateSessionStore-coalesced");
+    const storePath = path.join(dir, "sessions.json");
+    await fs.writeFile(storePath, "{}", "utf-8");
+    const readSpy = vi.spyOn(fsSync, "readFileSync");
+    const renameSpy = vi.spyOn(fsSync.promises, "rename");
+
+    try {
+      await Promise.all([
+        updateSessionStore(storePath, (store) => {
+          store["agent:main:one"] = { sessionId: "sess-1", updatedAt: Date.now() };
+        }),
+        updateSessionStore(storePath, (store) => {
+          store["agent:main:two"] = { sessionId: "sess-2", updatedAt: Date.now() };
+        }),
+        updateSessionStore(storePath, (store) => {
+          store["agent:main:three"] = { sessionId: "sess-3", updatedAt: Date.now() };
+        }),
+      ]);
+
+      const sessionSyncReads = readSpy.mock.calls.filter(([filePath]) => filePath === storePath);
+      const sessionRenames = renameSpy.mock.calls.filter(
+        ([, targetPath]) => targetPath === storePath,
+      );
+      expect(sessionSyncReads).toHaveLength(0);
+      expect(sessionRenames).toHaveLength(1);
+    } finally {
+      readSpy.mockRestore();
+      renameSpy.mockRestore();
+    }
+
+    const store = loadSessionStore(storePath);
+    expect(Object.keys(store).toSorted()).toEqual([
+      "agent:main:one",
+      "agent:main:three",
+      "agent:main:two",
+    ]);
   });
 
   it("recovers from array-backed session stores", async () => {

@@ -103,6 +103,16 @@ describe("formatAssistantErrorText", () => {
     expect(formatAssistantErrorText(msg)).toBe("LLM request timed out.");
   });
 
+  it("preserves the stream-limit reason when abort text also looks like a timeout", () => {
+    const msg = makeAssistantError(
+      "AssistantStreamLimitError: reason: abort; safetyLimit=consecutive_whitespace_events",
+    );
+
+    expect(formatAssistantErrorText(msg)).toBe(
+      "Upstream assistant stream was aborted after exceeding the consecutive_whitespace_events safety limit.",
+    );
+  });
+
   it("maps bare terminated tool-call interruptions to a timeout-oriented message", () => {
     const msg = makeAssistantMessageFixture({
       errorMessage: "terminated",

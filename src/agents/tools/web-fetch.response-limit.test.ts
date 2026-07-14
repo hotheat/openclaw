@@ -8,6 +8,7 @@ import "./web-fetch.test-mocks.js";
 import { createWebFetchTool } from "./web-tools.js";
 
 const baseToolConfig = createBaseWebFetchToolConfig({ maxResponseBytes: 1024 });
+const defaultToolConfig = createBaseWebFetchToolConfig();
 installWebFetchSsrfHarness();
 
 describe("web_fetch response size limits", () => {
@@ -30,5 +31,20 @@ describe("web_fetch response size limits", () => {
     const result = await tool?.execute?.("call", { url: "https://example.com/stream" });
     const details = result?.details as { warning?: string } | undefined;
     expect(details?.warning).toContain("Response body truncated");
+  });
+
+  it("defaults the response byte limit to 750000", async () => {
+    const response = new Response("x".repeat(800_000), {
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+    });
+
+    const fetchSpy = vi.fn().mockResolvedValue(response);
+    global.fetch = withFetchPreconnect(fetchSpy);
+
+    const tool = createWebFetchTool(defaultToolConfig);
+    const result = await tool?.execute?.("call", { url: "https://example.com/large" });
+    const details = result?.details as { warning?: string } | undefined;
+    expect(details?.warning).toContain("750000 bytes");
   });
 });

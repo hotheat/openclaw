@@ -4,6 +4,7 @@ import { callGateway } from "../../gateway/call.js";
 import { capArrayByJsonBytes } from "../../gateway/session-utils.fs.js";
 import { redactSensitiveText } from "../../logging/redact.js";
 import { truncateUtf16Safe } from "../../utils.js";
+import { readSubagentResultSnapshot } from "../subagent-result-store.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
 import {
@@ -20,6 +21,9 @@ const SessionsHistoryToolSchema = Type.Object({
   sessionKey: Type.String(),
   limit: Type.Optional(Type.Number({ minimum: 1 })),
   includeTools: Type.Optional(Type.Boolean()),
+  resultRef: Type.Optional(Type.String()),
+  contentOffset: Type.Optional(Type.Integer({ minimum: 0 })),
+  contentLimit: Type.Optional(Type.Integer({ minimum: 1, maximum: 4000 })),
 });
 
 const SESSIONS_HISTORY_MAX_BYTES = 80 * 1024;
@@ -246,6 +250,48 @@ export function createSessionsHistoryTool(opts?: {
           ? Math.max(1, Math.floor(params.limit))
           : undefined;
       const includeTools = Boolean(params.includeTools);
+      const contentOffset =
+        typeof params.contentOffset === "number" && Number.isFinite(params.contentOffset)
+          ? Math.max(0, Math.floor(params.contentOffset))
+          : undefined;
+      const resultRef = readStringParam(params, "resultRef");
+      if (!resultRef && (params.contentOffset !== undefined || params.contentLimit !== undefined)) {
+        return jsonResult({
+          status: "error",
+          error: "resultRef is required when contentOffset or contentLimit is provided.",
+        });
+      }
+      if (resultRef) {
+        const snapshotOffset = contentOffset ?? 0;
+        const contentLimit =
+          typeof params.contentLimit === "number" && Number.isFinite(params.contentLimit)
+            ? Math.max(1, Math.min(4000, Math.floor(params.contentLimit)))
+            : SESSIONS_HISTORY_TEXT_MAX_CHARS;
+        const snapshotText = await readSubagentResultSnapshot({
+          resultRef,
+          sessionKey: resolvedKey,
+        });
+        if (snapshotText === undefined) {
+          return jsonResult({
+            status: "not_found",
+            error: "Subagent result snapshot not found or does not belong to this session.",
+          });
+        }
+        const sanitizedText = redactSensitiveText(snapshotText);
+        const contentChars = Array.from(sanitizedText);
+        const pageEnd = Math.min(contentChars.length, snapshotOffset + contentLimit);
+        return jsonResult({
+          sessionKey: displayKey,
+          resultRef,
+          content: contentChars.slice(snapshotOffset, pageEnd).join(""),
+          contentOffset: snapshotOffset,
+          contentLimit,
+          contentTotalChars: contentChars.length,
+          contentHasMore: pageEnd < contentChars.length,
+          nextContentOffset: pageEnd < contentChars.length ? pageEnd : undefined,
+          contentRedacted: sanitizedText !== snapshotText,
+        });
+      }
       const result = await callGateway<{ messages: Array<unknown> }>({
         method: "chat.history",
         params: { sessionKey: resolvedKey, limit },

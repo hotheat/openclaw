@@ -8,6 +8,14 @@ import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+import {
+  createAssistantStreamLimitError,
+  inspectAssistantStreamChunk,
+} from "./pi-embedded-stream-guard.js";
+import {
+  clearAssistantMessageBuffers,
+  sanitizeAbortedAssistantMessage,
+} from "./pi-embedded-subscribe.handlers.message-state.js";
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { appendRawStream } from "./pi-embedded-subscribe.raw-stream.js";
 import {
@@ -127,19 +135,12 @@ export function handleMessageUpdate(
   if (evtType !== "text_delta" && evtType !== "text_start" && evtType !== "text_end") {
     return;
   }
+  if (ctx.state.assistantStreamGuard.aborted) {
+    return;
+  }
 
   const delta = typeof assistantRecord?.delta === "string" ? assistantRecord.delta : "";
   const content = typeof assistantRecord?.content === "string" ? assistantRecord.content : "";
-
-  appendRawStream({
-    ts: Date.now(),
-    event: "assistant_text_stream",
-    runId: ctx.params.runId,
-    sessionId: (ctx.params.session as { id?: string }).id,
-    evtType,
-    delta,
-    content,
-  });
 
   let chunk = "";
   if (evtType === "text_delta") {
@@ -160,12 +161,62 @@ export function handleMessageUpdate(
     }
   }
 
+  let whitespaceOnly = false;
+  if (chunk) {
+    const guardResult = inspectAssistantStreamChunk({
+      state: ctx.state.assistantStreamGuard,
+      chunk,
+    });
+    if (guardResult.abortReason) {
+      const guard = ctx.state.assistantStreamGuard;
+      const abortReason = createAssistantStreamLimitError({
+        reason: guardResult.abortReason,
+        state: guard,
+      });
+      ctx.log.warn(
+        `assistant stream aborted: runId=${ctx.params.runId} reason=${guardResult.abortReason} ` +
+          `totalChars=${guard.totalChars} whitespaceChars=${guard.consecutiveWhitespaceChars} ` +
+          `whitespaceEvents=${guard.consecutiveWhitespaceEvents}`,
+      );
+      appendRawStream({
+        ts: Date.now(),
+        event: "assistant_text_stream_aborted",
+        runId: ctx.params.runId,
+        sessionId: (ctx.params.session as { id?: string }).id,
+        reason: guardResult.abortReason,
+        totalChars: guard.totalChars,
+        whitespaceChars: guard.consecutiveWhitespaceChars,
+        whitespaceEvents: guard.consecutiveWhitespaceEvents,
+      });
+      ctx.params.abortRun?.(abortReason);
+      return;
+    }
+    whitespaceOnly = guardResult.whitespaceOnly;
+  }
+
+  appendRawStream({
+    ts: Date.now(),
+    event: "assistant_text_stream",
+    runId: ctx.params.runId,
+    sessionId: (ctx.params.session as { id?: string }).id,
+    evtType,
+    delta,
+    content,
+  });
+
   if (chunk) {
     ctx.state.deltaBuffer += chunk;
     if (ctx.blockChunker) {
       ctx.blockChunker.append(chunk);
     } else {
       ctx.state.blockBuffer += chunk;
+    }
+
+    if (whitespaceOnly) {
+      if (evtType === "text_end" && ctx.state.blockReplyBreak === "text_end") {
+        ctx.flushBlockReplyBuffer();
+      }
+      return;
     }
   }
 
@@ -256,6 +307,22 @@ export function handleMessageEnd(
 ) {
   const msg = evt.message;
   if (msg?.role !== "assistant") {
+    return;
+  }
+
+  const streamAbortReason = ctx.state.assistantStreamGuard.abortReason;
+  if (ctx.state.assistantStreamGuard.aborted && streamAbortReason) {
+    const assistantMessage = sanitizeAbortedAssistantMessage(msg, streamAbortReason);
+    ctx.noteLastAssistant(assistantMessage);
+    ctx.recordAssistantUsage(assistantMessage.usage);
+    appendRawStream({
+      ts: Date.now(),
+      event: "assistant_message_end_aborted",
+      runId: ctx.params.runId,
+      sessionId: (ctx.params.session as { id?: string }).id,
+      reason: streamAbortReason,
+    });
+    clearAssistantMessageBuffers(ctx);
     return;
   }
 
@@ -429,13 +496,5 @@ export function handleMessageEnd(
     }
   }
 
-  ctx.state.deltaBuffer = "";
-  ctx.state.blockBuffer = "";
-  ctx.blockChunker?.reset();
-  ctx.state.blockState.thinking = false;
-  ctx.state.blockState.final = false;
-  ctx.state.blockState.inlineCode = createInlineCodeState();
-  ctx.state.lastStreamedAssistant = undefined;
-  ctx.state.lastStreamedAssistantCleaned = undefined;
-  ctx.state.reasoningStreamOpen = false;
+  clearAssistantMessageBuffers(ctx);
 }

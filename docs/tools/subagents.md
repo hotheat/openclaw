@@ -214,7 +214,14 @@ Sub-agents report back via an announce step:
   - `Notes:` error details and other useful context.
 - `Status` is not inferred from model output; it comes from runtime outcome signals.
 
-Announce payloads include a stats line at the end (even when wrapped):
+Parent-routed completions are grouped by requester session:
+
+- A 2-second debounce combines nearby completions into one requester turn.
+- While that requester turn is active, new completions remain queued for the next aggregate.
+- Aggregates contain completion labels, success/failure/active counts, and bounded result summaries.
+- Repeated stats, TaskFlow text, and per-result delivery instructions are omitted.
+
+Other announce payloads include a stats line at the end (even when wrapped):
 
 - Runtime (e.g., `runtime 5m12s`)
 - Token usage (input/output/total)

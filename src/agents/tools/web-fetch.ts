@@ -35,8 +35,8 @@ export { extractReadableContent } from "./web-fetch-utils.js";
 
 const EXTRACT_MODES = ["markdown", "text"] as const;
 
-const DEFAULT_FETCH_MAX_CHARS = 50_000;
-const DEFAULT_FETCH_MAX_RESPONSE_BYTES = 2_000_000;
+const DEFAULT_FETCH_MAX_CHARS = 20_000;
+const DEFAULT_FETCH_MAX_RESPONSE_BYTES = 750_000;
 const DEFAULT_FETCH_PDF_MAX_RESPONSE_BYTES = 25_000_000;
 const DEFAULT_FETCH_PDF_MAX_PAGES = 12;
 const DEFAULT_FETCH_PDF_MIN_TEXT_CHARS = 200;
@@ -122,6 +122,10 @@ function resolveFetchMaxCharsCap(fetch?: WebFetchConfig): number {
       ? fetch.maxCharsCap
       : undefined;
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    const configuredMaxChars = fetch?.maxChars;
+    if (typeof configuredMaxChars === "number" && Number.isFinite(configuredMaxChars)) {
+      return Math.max(DEFAULT_FETCH_MAX_CHARS, 100, Math.floor(configuredMaxChars));
+    }
     return DEFAULT_FETCH_MAX_CHARS;
   }
   return Math.max(100, Math.floor(raw));

@@ -35,6 +35,8 @@ export const SUBAGENT_SPAWN_MODES = ["run", "session"] as const;
 export type SpawnSubagentMode = (typeof SUBAGENT_SPAWN_MODES)[number];
 export const SUBAGENT_COMPLETION_DELIVERIES = ["auto", "parent", "direct"] as const;
 export type SubagentCompletionDelivery = (typeof SUBAGENT_COMPLETION_DELIVERIES)[number];
+export const SUBAGENT_TASKFLOW_TRACKING_MODES = ["auto", "current", "none"] as const;
+export type SubagentTaskFlowTrackingMode = (typeof SUBAGENT_TASKFLOW_TRACKING_MODES)[number];
 
 const SHARED_TASKFLOW_RUN_GRANT_TTL_BUFFER_MS = 5 * 60_000;
 const SHARED_TASKFLOW_RUN_GRANT_DEFAULT_TTL_MS = 24 * 60 * 60_000;
@@ -54,6 +56,7 @@ export type SpawnSubagentParams = {
   taskFlowId?: string;
   taskFlowAccess?: TaskFlowAccess;
   taskFlowScope?: "shared";
+  taskFlowTracking?: SubagentTaskFlowTrackingMode;
   toolCallId?: string;
 };
 
@@ -319,10 +322,38 @@ export async function spawnSubagentDirect(
   const childDepth = callerDepth + 1;
   const spawnedByKey = requesterInternalKey;
   const targetAgentConfig = resolveAgentConfig(cfg, targetAgentId);
-  const sharedTaskFlowId =
-    params.taskFlowScope === "shared" && params.taskFlowId?.trim()
-      ? params.taskFlowId.trim()
+  const normalizedTaskFlowId = params.taskFlowId?.trim();
+  const hasSharedTaskFlowParams = Boolean(
+    normalizedTaskFlowId || params.taskFlowScope || params.taskFlowAccess,
+  );
+  if (hasSharedTaskFlowParams && (!normalizedTaskFlowId || params.taskFlowScope !== "shared")) {
+    return {
+      status: "error",
+      error: 'Shared TaskFlow access requires taskFlowId and taskFlowScope="shared".',
+    };
+  }
+  const sharedTaskFlowId = normalizedTaskFlowId;
+  const requestedTaskFlowTracking =
+    params.taskFlowTracking === "auto" ||
+    params.taskFlowTracking === "current" ||
+    params.taskFlowTracking === "none"
+      ? params.taskFlowTracking
       : undefined;
+  if (
+    requestedTaskFlowTracking &&
+    requestedTaskFlowTracking !== "none" &&
+    hasSharedTaskFlowParams
+  ) {
+    return {
+      status: "error",
+      error: "taskFlowTracking cannot be combined with shared TaskFlow parameters.",
+    };
+  }
+  const taskFlowTracking =
+    requestedTaskFlowTracking ??
+    (spawnMode === "run" && !hasSharedTaskFlowParams ? "auto" : "none");
+  const shouldTrackCurrentTaskFlow =
+    taskFlowTracking === "current" || (taskFlowTracking === "auto" && spawnMode === "run");
   const sharedTaskFlowAccess = params.taskFlowAccess ?? "write_assigned";
   const sharedTaskFlowGrantExpiresAt =
     sharedTaskFlowId && spawnMode !== "session"
@@ -333,10 +364,33 @@ export async function spawnSubagentDirect(
               : SHARED_TASKFLOW_RUN_GRANT_DEFAULT_TTL_MS),
         ).toISOString()
       : undefined;
-  const ownerAgentDir = sharedTaskFlowId ? resolveAgentDir(cfg, requesterAgentId) : undefined;
+  const ownerAgentDir =
+    sharedTaskFlowId || shouldTrackCurrentTaskFlow
+      ? resolveAgentDir(cfg, requesterAgentId)
+      : undefined;
   const ownerTaskFlowStore = ownerAgentDir
     ? createTaskFlowStore({ agentDir: ownerAgentDir, onCommitted: dispatchTaskFlowCommitHook })
     : undefined;
+  let trackingTaskFlowId: string | undefined;
+  if (shouldTrackCurrentTaskFlow) {
+    const tracked = await ownerTaskFlowStore?.readTaskFlow({
+      agentId: requesterAgentId,
+      sessionKey: requesterInternalKey,
+    });
+    if (tracked?.status === "success") {
+      trackingTaskFlowId = tracked.snapshot.id;
+    } else if (taskFlowTracking === "current") {
+      return {
+        status: "error",
+        error: 'taskFlowTracking="current" requires an active or blocked foreground TaskFlow.',
+      };
+    } else if (tracked && tracked.code !== "not_found") {
+      return {
+        status: "error",
+        error: `Unable to resolve the current TaskFlow: ${tracked.message}`,
+      };
+    }
+  }
   let sharedTaskFlowGrantCreated = false;
   let lifecycleStarted = false;
   let lifecycleEnded = false;
@@ -649,6 +703,7 @@ export async function spawnSubagentDirect(
     completionDelivery,
     spawnMode,
     taskFlowId: sharedTaskFlowId,
+    trackingTaskFlowId,
   });
 
   if (hookRunner?.hasHooks("subagent_spawned")) {

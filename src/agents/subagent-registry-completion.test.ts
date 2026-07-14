@@ -127,14 +127,15 @@ describe("emitSubagentEndedHookOnce", () => {
     expect(lifecycleMocks.runSubagentEnded).toHaveBeenCalledTimes(1);
   });
 
-  it("does not revoke TaskFlow access when the run has no taskFlowId", async () => {
+  it("does not revoke TaskFlow access for lifecycle-only tracking", async () => {
     lifecycleMocks.getGlobalHookRunner.mockReturnValue({
       hasHooks: () => true,
       runSubagentEnded: lifecycleMocks.runSubagentEnded,
     });
 
     const revokeTaskFlowAccess = vi.fn(async () => {});
-    const params = createEmitParams({ revokeTaskFlowAccess });
+    const entry = { ...createRunEntry(), trackingTaskFlowId: "tf_1" };
+    const params = createEmitParams({ entry, revokeTaskFlowAccess });
     const emitted = await emitSubagentEndedHookOnce(params);
 
     expect(emitted).toBe(true);

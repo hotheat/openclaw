@@ -306,7 +306,8 @@ Core parameters:
 Notes:
 
 - Enable via `tools.web.fetch.enabled`.
-- `maxChars` is clamped by `tools.web.fetch.maxCharsCap` (default 50000).
+- `maxChars` is clamped by `tools.web.fetch.maxCharsCap` (default 20000).
+- Downloads are truncated at `tools.web.fetch.maxResponseBytes` (default 750000 bytes).
 - Responses are cached (default 15 min).
 - For JS-heavy sites, prefer the browser tool.
 - See [Web tools](/tools/web) for setup.

@@ -17,6 +17,7 @@ vi.mock("./subagent-announce.js", () => ({
 }));
 
 vi.mock("./subagent-registry.store.js", () => ({
+  flushSubagentRegistryWrites: vi.fn(async () => {}),
   loadSubagentRegistryFromDisk: vi.fn(() => new Map()),
   saveSubagentRegistryToDisk: vi.fn(() => {}),
 }));

@@ -33,6 +33,7 @@ vi.mock("../plugins/hook-runner-global.js", () => ({
 }));
 
 vi.mock("./subagent-registry.store.js", () => ({
+  flushSubagentRegistryWrites: vi.fn(async () => {}),
   loadSubagentRegistryFromDisk: loadSubagentRegistryFromDiskMock,
   saveSubagentRegistryToDisk: saveSubagentRegistryToDiskMock,
 }));

@@ -51,6 +51,10 @@ type CoreAgentDeps = {
   resolveStorePath: (store?: string, opts?: { agentId?: string }) => string;
   loadSessionStore: (storePath: string) => Record<string, unknown>;
   saveSessionStore: (storePath: string, store: Record<string, unknown>) => Promise<void>;
+  updateSessionStore: <T>(
+    storePath: string,
+    mutator: (store: Record<string, unknown>) => Promise<T> | T,
+  ) => Promise<T>;
   resolveSessionFilePath: (
     sessionId: string,
     entry: unknown,
@@ -134,6 +138,7 @@ async function importCoreExtensionAPI(): Promise<{
   resolveStorePath: CoreAgentDeps["resolveStorePath"];
   loadSessionStore: CoreAgentDeps["loadSessionStore"];
   saveSessionStore: CoreAgentDeps["saveSessionStore"];
+  updateSessionStore: CoreAgentDeps["updateSessionStore"];
   resolveSessionFilePath: CoreAgentDeps["resolveSessionFilePath"];
 }> {
   // Do not import any other module. You can't touch this or you will be fired.

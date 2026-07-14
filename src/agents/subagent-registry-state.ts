@@ -1,4 +1,5 @@
 import {
+  flushSubagentRegistryWrites,
   loadSubagentRegistryFromDisk,
   saveSubagentRegistryToDisk,
 } from "./subagent-registry.store.js";
@@ -11,6 +12,8 @@ export function persistSubagentRunsToDisk(runs: Map<string, SubagentRunRecord>) 
     // ignore persistence failures
   }
 }
+
+export { flushSubagentRegistryWrites };
 
 export function restoreSubagentRunsFromDisk(params: {
   runs: Map<string, SubagentRunRecord>;

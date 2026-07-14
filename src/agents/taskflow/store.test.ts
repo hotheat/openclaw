@@ -917,6 +917,115 @@ describe("TaskFlowStore", () => {
     expect(grant).toMatchObject({ status: "error", code: "invalid_operation" });
   });
 
+  it("allows only the owner to promote a non-terminal local TaskFlow to shared", async () => {
+    const store = makeStore();
+    await store.createTaskFlow({
+      agentId: "main",
+      ownerSessionKey: "agent:main:dm:user-1",
+      title: "Promotable local flow",
+      items: [
+        {
+          id: "work",
+          title: "Keep existing work",
+          status: "in_progress",
+          evidence: [{ kind: "note", value: "existing evidence" }],
+        },
+      ],
+      subscribers: [{ channel: "feishu", to: "ou_owner" }],
+    });
+
+    const unauthorized = await store.applyTaskFlowOperation({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-2",
+      taskFlowId: "tf_1",
+      operation: "promote_to_shared",
+    });
+    expect(unauthorized).toMatchObject({ status: "error", code: "forbidden" });
+
+    const promoted = await store.applyTaskFlowOperation({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-1",
+      taskFlowId: "tf_1",
+      expectedRevision: 1,
+      operation: "promote_to_shared",
+    });
+    expect(promoted.status).toBe("success");
+    if (promoted.status !== "success") {
+      return;
+    }
+    expect(promoted.snapshot).toMatchObject({
+      id: "tf_1",
+      scope: "shared",
+      status: "active",
+      revision: 2,
+      permissions: [],
+      items: [
+        {
+          id: "work",
+          title: "Keep existing work",
+          status: "in_progress",
+          evidence: [{ kind: "note", value: "existing evidence" }],
+        },
+      ],
+      subscribers: [{ channel: "feishu", to: "ou_owner" }],
+    });
+
+    const grant = await store.grantAccess({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-1",
+      taskFlowId: "tf_1",
+      targetSessionKey: "agent:worker:subagent:child",
+      access: "write_assigned",
+    });
+    expect(grant).toMatchObject({
+      status: "success",
+      revision: 3,
+      snapshot: {
+        scope: "shared",
+        permissions: [
+          {
+            sessionKey: "agent:worker:subagent:child",
+            access: "write_assigned",
+          },
+        ],
+      },
+    });
+
+    const repeated = await store.applyTaskFlowOperation({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-1",
+      taskFlowId: "tf_1",
+      expectedRevision: 3,
+      operation: "promote_to_shared",
+    });
+    expect(repeated).toMatchObject({ status: "error", code: "invalid_operation" });
+  });
+
+  it("rejects promotion of terminal local TaskFlows", async () => {
+    const store = makeStore();
+    await store.createTaskFlow({
+      agentId: "main",
+      ownerSessionKey: "agent:main:dm:user-1",
+      title: "Terminal local flow",
+    });
+    await store.applyTaskFlowOperation({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-1",
+      taskFlowId: "tf_1",
+      expectedRevision: 1,
+      operation: "cancel_taskflow",
+    });
+
+    const promoted = await store.applyTaskFlowOperation({
+      agentId: "main",
+      sessionKey: "agent:main:dm:user-1",
+      taskFlowId: "tf_1",
+      expectedRevision: 2,
+      operation: "promote_to_shared",
+    });
+    expect(promoted).toMatchObject({ status: "error", code: "invalid_operation" });
+  });
+
   it("does not reveal local scope to unauthorized grant callers", async () => {
     const store = makeStore();
     await store.createTaskFlow({

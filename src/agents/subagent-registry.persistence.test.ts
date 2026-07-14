@@ -9,7 +9,12 @@ import {
   registerSubagentRun,
   resetSubagentRegistryForTests,
 } from "./subagent-registry.js";
-import { loadSubagentRegistryFromDisk } from "./subagent-registry.store.js";
+import {
+  flushSubagentRegistryWrites,
+  loadSubagentRegistryFromDisk,
+  saveSubagentRegistryToDisk,
+} from "./subagent-registry.store.js";
+import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const { announceSpy } = vi.hoisted(() => ({
   announceSpy: vi.fn(async () => true),
@@ -59,6 +64,9 @@ describe("subagent registry persistence", () => {
   const flushQueuedRegistryWork = async () => {
     await Promise.resolve();
     await Promise.resolve();
+    await flushSubagentRegistryWrites();
+    await Promise.resolve();
+    await flushSubagentRegistryWrites();
   };
 
   const restartRegistryAndFlush = async () => {
@@ -70,6 +78,7 @@ describe("subagent registry persistence", () => {
   afterEach(async () => {
     announceSpy.mockClear();
     resetSubagentRegistryForTests({ persist: false });
+    await flushSubagentRegistryWrites().catch(() => undefined);
     if (tempStateDir) {
       await fs.rm(tempStateDir, { recursive: true, force: true });
       tempStateDir = null;
@@ -89,15 +98,19 @@ describe("subagent registry persistence", () => {
       requesterDisplayKey: "main",
       task: "do the thing",
       cleanup: "keep",
+      trackingTaskFlowId: "tf_local",
+      completionDelivery: "direct",
     });
 
     const registryPath = path.join(tempStateDir, "subagents", "runs.json");
+    await flushSubagentRegistryWrites();
     const raw = await fs.readFile(registryPath, "utf8");
     const parsed = JSON.parse(raw) as { runs?: Record<string, unknown> };
     expect(parsed.runs && Object.keys(parsed.runs)).toContain("run-1");
     const run = parsed.runs?.["run-1"] as
       | {
           requesterOrigin?: { channel?: string; accountId?: string };
+          trackingTaskFlowId?: string;
         }
       | undefined;
     expect(run).toBeDefined();
@@ -107,6 +120,7 @@ describe("subagent registry persistence", () => {
     }
     expect(run?.requesterOrigin?.channel).toBe("whatsapp");
     expect(run?.requesterOrigin?.accountId).toBe("acct-main");
+    expect(run?.trackingTaskFlowId).toBe("tf_local");
 
     // Simulate a process restart: module re-import should load persisted runs
     // and trigger the announce flow once the run resolves.
@@ -126,6 +140,7 @@ describe("subagent registry persistence", () => {
       task: string;
       cleanup: string;
       label?: string;
+      completionDelivery?: string;
     };
     const first = (announceSpy.mock.calls as unknown as Array<[unknown]>)[0]?.[0] as
       | AnnounceParams
@@ -136,11 +151,13 @@ describe("subagent registry persistence", () => {
     expect(first.childSessionKey).toBe("agent:main:subagent:test");
     expect(first.requesterOrigin?.channel).toBe("whatsapp");
     expect(first.requesterOrigin?.accountId).toBe("acct-main");
+    expect(first.completionDelivery).toBe("parent");
   });
 
-  it("skips cleanup when cleanupHandled was persisted", async () => {
+  it("retries interrupted cleanup when cleanupHandled has no completion timestamp", async () => {
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
     process.env.OPENCLAW_STATE_DIR = tempStateDir;
+    const now = Date.now();
 
     const registryPath = path.join(tempStateDir, "subagents", "runs.json");
     const persisted = {
@@ -153,10 +170,10 @@ describe("subagent registry persistence", () => {
           requesterDisplayKey: "main",
           task: "do the other thing",
           cleanup: "keep",
-          createdAt: 1,
-          startedAt: 1,
-          endedAt: 2,
-          cleanupHandled: true, // Already handled - should be skipped
+          createdAt: now - 2,
+          startedAt: now - 1,
+          endedAt: now,
+          cleanupHandled: true,
         },
       },
     };
@@ -168,13 +185,49 @@ describe("subagent registry persistence", () => {
 
     await flushQueuedRegistryWork();
 
-    // announce should NOT be called since cleanupHandled was true
     const calls = (announceSpy.mock.calls as unknown as Array<[unknown]>).map((call) => call[0]);
     const match = calls.find(
       (params) =>
         (params as { childSessionKey?: string }).childSessionKey === "agent:main:subagent:two",
     );
-    expect(match).toBeFalsy();
+    expect(match).toBeTruthy();
+
+    const after = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
+      runs: Record<string, { cleanupCompletedAt?: number }>;
+    };
+    expect(after.runs["run-2"].cleanupCompletedAt).toBeDefined();
+  });
+
+  it("skips cleanup when cleanup completion was persisted", async () => {
+    const registryPath = await writePersistedRegistry({
+      version: 2,
+      runs: {
+        "run-complete": {
+          runId: "run-complete",
+          childSessionKey: "agent:main:subagent:complete",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "already delivered",
+          cleanup: "keep",
+          createdAt: 1,
+          startedAt: 1,
+          endedAt: 2,
+          cleanupHandled: true,
+          cleanupCompletedAt: 3,
+        },
+      },
+    });
+
+    await restartRegistryAndFlush();
+
+    expect(announceSpy).not.toHaveBeenCalled();
+    const after = JSON.parse(await fs.readFile(registryPath, "utf8")) as {
+      runs: Record<string, { cleanupHandled?: boolean; cleanupCompletedAt?: number }>;
+    };
+    expect(after.runs["run-complete"]).toMatchObject({
+      cleanupHandled: true,
+      cleanupCompletedAt: 3,
+    });
   });
 
   it("maps legacy announce fields into cleanup state", async () => {
@@ -207,8 +260,70 @@ describe("subagent registry persistence", () => {
     expect(entry?.requesterOrigin?.channel).toBe("whatsapp");
     expect(entry?.requesterOrigin?.accountId).toBe("legacy-account");
 
+    await flushSubagentRegistryWrites();
     const after = JSON.parse(await fs.readFile(registryPath, "utf8")) as { version?: number };
     expect(after.version).toBe(2);
+  });
+
+  it("coalesces rapid registry snapshots into one atomic write", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
+    process.env.OPENCLAW_STATE_DIR = tempStateDir;
+    const writeSpy = vi.spyOn(fs, "writeFile");
+    const runs = new Map<string, SubagentRunRecord>();
+    const now = Date.now();
+
+    runs.set("run-one", {
+      runId: "run-one",
+      childSessionKey: "agent:main:subagent:one",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "one",
+      cleanup: "keep",
+      createdAt: now,
+    });
+    saveSubagentRegistryToDisk(runs);
+
+    runs.set("run-two", {
+      runId: "run-two",
+      childSessionKey: "agent:main:subagent:two",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "two",
+      cleanup: "keep",
+      createdAt: now,
+    });
+    saveSubagentRegistryToDisk(runs);
+    await flushSubagentRegistryWrites();
+
+    const registryWrites = writeSpy.mock.calls.filter(
+      ([filePath]) => typeof filePath === "string" && filePath.includes("runs.json."),
+    );
+    expect(registryWrites).toHaveLength(1);
+    expect([...loadSubagentRegistryFromDisk().keys()].toSorted()).toEqual(["run-one", "run-two"]);
+    writeSpy.mockRestore();
+  });
+
+  it("keeps the registry write timer referenced while a snapshot is pending", async () => {
+    tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
+    process.env.OPENCLAW_STATE_DIR = tempStateDir;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const runs = new Map<string, SubagentRunRecord>();
+
+    runs.set("run-referenced-timer", {
+      runId: "run-referenced-timer",
+      childSessionKey: "agent:main:subagent:referenced-timer",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "persist before exit",
+      cleanup: "keep",
+      createdAt: Date.now(),
+    });
+    saveSubagentRegistryToDisk(runs);
+    const timer = setTimeoutSpy.mock.results.at(-1)?.value as NodeJS.Timeout | undefined;
+
+    expect(timer?.hasRef()).toBe(true);
+    await flushSubagentRegistryWrites();
+    setTimeoutSpy.mockRestore();
   });
 
   it("retries cleanup announce after a failed announce", async () => {

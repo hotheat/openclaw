@@ -278,6 +278,8 @@ OpenClaw 为 browser、canvas、nodes 和 cron 暴露**一流的智能体工具*
 注意：
 
 - 通过 `tools.web.fetch.enabled` 启用。
+- `maxChars` 受 `tools.web.fetch.maxCharsCap` 限制（默认 20000）。
+- 下载内容受 `tools.web.fetch.maxResponseBytes` 限制（默认 750000 字节）。
 - 响应被缓存（默认 15 分钟）。
 - 对于 JS 密集型网站，优先使用 browser 工具。
 - 参见 [Web 工具](/tools/web) 了解设置。

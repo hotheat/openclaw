@@ -6,11 +6,15 @@ import {
   approveDevicePairing,
   clearDevicePairing,
   getPairedDevice,
+  listDevicePairing,
+  type PairedDevice,
   removePairedDevice,
   requestDevicePairing,
   rotateDeviceToken,
   verifyDeviceToken,
 } from "./device-pairing.js";
+import { writeJsonAtomic } from "./json-files.js";
+import { readJsonFile, resolvePairingPaths } from "./pairing-files.js";
 
 async function setupPairedOperatorDevice(baseDir: string, scopes: string[]) {
   const request = await requestDevicePairing(
@@ -249,5 +253,80 @@ describe("device pairing tokens", () => {
     await expect(clearDevicePairing("device-1", baseDir)).resolves.toBe(true);
     await expect(getPairedDevice("device-1", baseDir)).resolves.toBeNull();
     await expect(clearDevicePairing("device-1", baseDir)).resolves.toBe(false);
+  });
+
+  test("refreshes repeated list calls after an out-of-process update", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "openclaw-device-pairing-cache-"));
+    await setupPairedOperatorDevice(baseDir, ["operator.read"]);
+
+    const initial = await listDevicePairing(baseDir);
+    expect(initial.paired.map((device) => device.deviceId)).toEqual(["device-1"]);
+
+    const { pairedPath } = resolvePairingPaths(baseDir, "devices");
+    await writeJsonAtomic(pairedPath, {});
+
+    const refreshed = await listDevicePairing(baseDir);
+    expect(refreshed.paired).toEqual([]);
+  });
+
+  test("returns detached paired-device records", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "openclaw-device-pairing-snapshot-"));
+    await setupPairedOperatorDevice(baseDir, ["operator.read"]);
+
+    const first = await getPairedDevice("device-1", baseDir);
+    expect(first).not.toBeNull();
+    if (!first) {
+      throw new Error("expected paired device");
+    }
+    const operatorToken = first.tokens?.operator;
+    if (!operatorToken) {
+      throw new Error("expected operator token");
+    }
+    first.displayName = "mutated-outside-store";
+    operatorToken.scopes.push("operator.admin");
+
+    const second = await getPairedDevice("device-1", baseDir);
+    expect(second?.displayName).not.toBe("mutated-outside-store");
+    expect(second?.tokens?.operator.scopes).toEqual(["operator.read"]);
+  });
+
+  test("refreshes paired-device reads after an out-of-process update", async () => {
+    const baseDir = await mkdtemp(join(tmpdir(), "openclaw-device-pairing-refresh-"));
+    await setupPairedOperatorDevice(baseDir, ["operator.read"]);
+
+    const { pairedPath } = resolvePairingPaths(baseDir, "devices");
+    const paired = (await readJsonFile<Record<string, PairedDevice>>(pairedPath)) ?? {};
+    paired["device-1"] = {
+      ...paired["device-1"],
+      displayName: "updated-on-disk",
+    } as PairedDevice;
+    await writeJsonAtomic(pairedPath, paired);
+
+    expect((await getPairedDevice("device-1", baseDir))?.displayName).toBe("updated-on-disk");
+  });
+
+  test("preserves out-of-process pairing changes during token verification", async () => {
+    const { baseDir, token } = await setupOperatorToken(["operator.read"]);
+    const { pairedPath } = resolvePairingPaths(baseDir, "devices");
+    const paired = (await readJsonFile<Record<string, PairedDevice>>(pairedPath)) ?? {};
+    paired["device-2"] = {
+      deviceId: "device-2",
+      publicKey: "public-key-2",
+      createdAtMs: Date.now(),
+      approvedAtMs: Date.now(),
+    };
+    await writeJsonAtomic(pairedPath, paired);
+
+    await expect(
+      verifyOperatorToken({
+        baseDir,
+        token,
+        scopes: ["operator.read"],
+      }),
+    ).resolves.toEqual({ ok: true });
+
+    const persisted = (await readJsonFile<Record<string, PairedDevice>>(pairedPath)) ?? {};
+    expect(persisted["device-2"]?.publicKey).toBe("public-key-2");
+    expect(persisted["device-1"]?.tokens?.operator?.lastUsedAtMs).toBeTypeOf("number");
   });
 });

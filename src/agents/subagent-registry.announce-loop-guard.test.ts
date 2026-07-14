@@ -46,6 +46,7 @@ const loadSubagentRegistryFromDisk = vi.fn(() => new Map());
 const saveSubagentRegistryToDisk = vi.fn();
 
 vi.mock("./subagent-registry.store.js", () => ({
+  flushSubagentRegistryWrites: vi.fn(async () => {}),
   loadSubagentRegistryFromDisk,
   saveSubagentRegistryToDisk,
 }));

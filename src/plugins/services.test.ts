@@ -84,7 +84,7 @@ describe("startPluginServices", () => {
     }
   });
 
-  it("logs start/stop failures and continues", async () => {
+  it("logs stop failures, stops remaining services, and rejects", async () => {
     const stopOk = vi.fn();
     const stopThrows = vi.fn(() => {
       throw new Error("stop failed");
@@ -113,7 +113,7 @@ describe("startPluginServices", () => {
       config: {} as Parameters<typeof startPluginServices>[0]["config"],
     });
 
-    await handle.stop();
+    await expect(handle.stop()).rejects.toThrow("one or more plugin services failed to stop");
 
     expect(mockedLogger.error).toHaveBeenCalledWith(
       expect.stringContaining("plugin service failed (service-start-fail):"),

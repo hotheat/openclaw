@@ -178,6 +178,89 @@ describe("run taskflow finalization", () => {
     expect(read.snapshot.parkedReason).toBeUndefined();
   });
 
+  it("does not park when an active descendant only tracks the local taskflow lifecycle", async () => {
+    const store = await seedForegroundTaskFlow();
+    addSubagentRunForTests({
+      runId: "run-child-tracked",
+      childSessionKey: "agent:main:subagent:child-tracked",
+      requesterSessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      requesterDisplayKey: "feishu",
+      task: "继续整理结论",
+      cleanup: "delete",
+      spawnMode: "run",
+      trackingTaskFlowId: "tf_1",
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+    });
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["我已把子任务交给后台继续汇总结论。"],
+      }),
+    );
+
+    await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      sessionId: "session-taskflow-tracked-subagent-exempt",
+      workspaceDir: tempDir,
+      agentDir: path.join(tempDir, "agents", "main", "agent"),
+    });
+
+    const read = await store.readTaskFlow({
+      taskFlowId: "tf_1",
+      agentId: "main",
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+    });
+    expect(read.status).toBe("success");
+    if (read.status !== "success") {
+      return;
+    }
+    expect(read.snapshot.status).toBe("active");
+    expect(read.snapshot.parkedReason).toBeUndefined();
+  });
+
+  it("parks when the tracked descendant has already ended", async () => {
+    const store = await seedForegroundTaskFlow();
+    addSubagentRunForTests({
+      runId: "run-child-tracked-ended",
+      childSessionKey: "agent:main:subagent:child-tracked-ended",
+      requesterSessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      requesterDisplayKey: "feishu",
+      task: "继续整理结论",
+      cleanup: "delete",
+      spawnMode: "run",
+      trackingTaskFlowId: "tf_1",
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+      endedAt: Date.now(),
+    });
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: ["子任务已经结束，当前事项仍未收尾。"],
+      }),
+    );
+
+    await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      sessionId: "session-taskflow-ended-tracked-subagent",
+      workspaceDir: tempDir,
+      agentDir: path.join(tempDir, "agents", "main", "agent"),
+    });
+
+    const read = await store.readTaskFlow({
+      taskFlowId: "tf_1",
+      agentId: "main",
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+    });
+    expect(read.status).toBe("success");
+    if (read.status !== "success") {
+      return;
+    }
+    expect(read.snapshot.status).toBe("parked");
+    expect(read.snapshot.parkedReason).toBe("finalization_missing");
+  });
+
   it("does not finalize the taskflow on aborted runs", async () => {
     const store = await seedForegroundTaskFlow();
 

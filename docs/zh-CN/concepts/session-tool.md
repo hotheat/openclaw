@@ -178,7 +178,9 @@ x-i18n:
 - 在通告步骤中精确回复 `ANNOUNCE_SKIP` 以保持静默。
 - 通告回复规范化为 `Status`/`Result`/`Notes`；`Status` 来自运行时结果（不是模型文本）。
 - 子智能体会话在 `agents.defaults.subagents.archiveAfterMinutes` 后自动归档（默认：60）。
-- 通告回复包含统计行（运行时间、token 数、sessionKey/sessionId、记录路径和可选成本）。
+- 同一请求者会话的父级路由 completion 会等待 2 秒并合并为一次请求者模型调用。调用运行期间到达的新 completion 只进入下一批队列。
+- 父级聚合只包含完成标签、成功/失败/活动数量和受长度限制的结果摘要。不会重复注入统计、TaskFlow 文本和逐条交付说明。
+- 非父级路由的通告回复包含统计行（运行时间、token 数、sessionKey/sessionId、记录路径和可选成本）。
 
 ## 沙箱会话可见性
 

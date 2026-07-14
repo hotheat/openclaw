@@ -30,6 +30,7 @@ import {
   resolveRequesterForChildSessionFromRuns,
 } from "./subagent-registry-queries.js";
 import {
+  flushSubagentRegistryWrites,
   getSubagentRunsSnapshotForRead,
   persistSubagentRunsToDisk,
   restoreSubagentRunsFromDisk,
@@ -114,6 +115,8 @@ function logAnnounceGiveUp(entry: SubagentRunRecord, reason: "retry-limit" | "ex
 function persistSubagentRuns() {
   persistSubagentRunsToDisk(subagentRuns);
 }
+
+export { flushSubagentRegistryWrites };
 
 const resumedRuns = new Set<string>();
 const endedHookInFlightRunIds = new Set<string>();
@@ -475,7 +478,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
-    completionDelivery: entry.completionDelivery,
+    completionDelivery: entry.trackingTaskFlowId ? "parent" : entry.completionDelivery,
   }).then((didAnnounce) => {
     void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
   });
@@ -1185,6 +1188,7 @@ export function registerSubagentRun(params: {
   completionDelivery?: SubagentRunRecord["completionDelivery"];
   spawnMode?: "run" | "session";
   taskFlowId?: string;
+  trackingTaskFlowId?: string;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -1214,6 +1218,7 @@ export function registerSubagentRun(params: {
     model: params.model,
     runTimeoutSeconds,
     taskFlowId: params.taskFlowId,
+    trackingTaskFlowId: params.trackingTaskFlowId,
     createdAt: now,
     startedAt: now,
     archiveAtMs,

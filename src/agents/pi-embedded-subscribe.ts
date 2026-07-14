@@ -11,6 +11,7 @@ import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+import { createAssistantStreamGuardState } from "./pi-embedded-stream-guard.js";
 import {
   handleAutoCompactionEnd,
   handleAutoCompactionStart,
@@ -52,6 +53,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     streamReasoning: reasoningMode === "stream" && typeof params.onReasoningStream === "function",
     deltaBuffer: "",
     blockBuffer: "",
+    assistantStreamGuard: createAssistantStreamGuardState(),
     // Track if a streamed chunk opened a <think> block (stateful across chunks).
     blockState: { thinking: false, final: false, inlineCode: createInlineCodeState() },
     partialBlockState: { thinking: false, final: false, inlineCode: createInlineCodeState() },
@@ -109,6 +111,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
   const resetAssistantMessageState = (nextAssistantTextBaseline: number) => {
     state.deltaBuffer = "";
     state.blockBuffer = "";
+    state.assistantStreamGuard = createAssistantStreamGuardState();
     blockChunker?.reset();
     replyDirectiveAccumulator.reset();
     partialReplyDirectiveAccumulator.reset();

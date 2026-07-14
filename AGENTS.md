@@ -12,6 +12,7 @@
 - Tests: colocated `*.test.ts`.
 - Docs: `docs/` (images, queue, Pi config). Built output lives in `dist/`.
 - Codex-local engineering notes: `.codex/docs/plugin_system.md`, `.codex/docs/architectural_patterns.md`, and `.codex/docs/testing_matrix.md`.
+- Skills: create and update workspace skills only in `../openclaw-workspace/workspace/skills/` or `~/.openclaw/workspace/skills/`. Do not author skills in this repository, including under `workspace/skills/`.
 - Plugins/extensions: live under `extensions/*` (workspace packages). Keep plugin-only deps in the extension `package.json`; do not add them to the root `package.json` unless core uses them.
 - Plugins: install runs `npm install --omit=dev` in plugin dir; runtime deps must live in `dependencies`. Avoid `workspace:*` in `dependencies` (npm install breaks); put `openclaw` in `devDependencies` or `peerDependencies` instead (runtime resolves `openclaw/plugin-sdk` via jiti alias).
 - Deployment-local Feishu helper plugins belong in `~/.openclaw/extensions` and should be committed through the `openclaw-workspace` repo, not duplicated under this repo's `extensions/`. This includes `feishu-file-outbox-router`, `feishu-researcher-export-mirror`, `feishu-researcher-delegation-guard`, and `subagent-handoff-output-guard`.

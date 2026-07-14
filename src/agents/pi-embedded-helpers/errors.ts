@@ -441,6 +441,20 @@ export function formatRawAssistantErrorForUi(raw?: string): string {
   return trimmed.length > 600 ? `${trimmed.slice(0, 600)}…` : trimmed;
 }
 
+const ASSISTANT_STREAM_LIMIT_REASON_RE =
+  /\b(total_chars|consecutive_whitespace_chars|consecutive_whitespace_events|consecutive_whitespace_duration)\b/i;
+
+function formatAssistantStreamLimitError(raw: string): string | null {
+  if (!/AssistantStreamLimitError|Upstream assistant stream/i.test(raw)) {
+    return null;
+  }
+  const reason = raw.match(ASSISTANT_STREAM_LIMIT_REASON_RE)?.[1];
+  if (!reason) {
+    return null;
+  }
+  return `Upstream assistant stream was aborted after exceeding the ${reason} safety limit.`;
+}
+
 export function formatAssistantErrorText(
   msg: AssistantMessage,
   opts?: { cfg?: OpenClawConfig; sessionKey?: string; provider?: string; model?: string },
@@ -452,6 +466,11 @@ export function formatAssistantErrorText(
   }
   if (!raw) {
     return "LLM request failed with an unknown error.";
+  }
+
+  const streamLimitError = formatAssistantStreamLimitError(raw);
+  if (streamLimitError) {
+    return streamLimitError;
   }
 
   const unknownTool =

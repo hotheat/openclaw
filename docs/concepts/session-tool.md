@@ -156,6 +156,7 @@ Parameters:
 - `thread?` (default false; request thread-bound routing for this spawn when supported by the channel/plugin)
 - `mode?` (`run|session`; defaults to `run`, but defaults to `session` when `thread=true`; `mode="session"` requires `thread=true`)
 - `cleanup?` (`delete|keep`, default `keep`)
+- `taskFlowTracking?` (`auto|current|none`; `run` defaults to `auto`, while `session` defaults to no tracking)
 - `taskFlowId?` (optional shared TaskFlow id)
 - `taskFlowScope?` (`shared`; omit for normal local child TaskFlows)
 - `taskFlowAccess?` (`read|write_assigned|write_all`, default `write_assigned` when `taskFlowScope="shared"`)
@@ -180,12 +181,17 @@ Behavior:
 - Reply exactly `ANNOUNCE_SKIP` during the announce step to stay silent.
 - Announce replies are normalized to `Status`/`Result`/`Notes`; `Status` comes from runtime outcome (not model text).
 - Sub-agent sessions are auto-archived after `agents.defaults.subagents.archiveAfterMinutes` (default: 60).
-- Announce replies include a stats line (runtime, tokens, sessionKey/sessionId, transcript path, and optional cost).
+- Parent-routed completions for the same requester session are debounced for 2 seconds and delivered in one requester turn. Completions arriving while that turn is active remain queued for the next aggregate.
+- Parent aggregates contain completion labels, success/failure/active counts, and bounded result summaries. Repeated stats, TaskFlow text, and per-result delivery instructions are omitted.
+- Non-parent announce replies include a stats line (runtime, tokens, sessionKey/sessionId, transcript path, and optional cost).
 
 TaskFlow boundary:
 
-- `sessions_spawn` does not pass the parent session’s active TaskFlow by default.
+- Run-mode children automatically track the requester session's current foreground TaskFlow when one exists. This lifecycle association does not add TaskFlow context to the child or grant read/write access.
+- `taskFlowTracking="current"` requires a foreground TaskFlow and returns an error when none exists. `taskFlowTracking="none"` disables lifecycle tracking. Persistent `mode="session"` children do not auto-track.
+- Tracking is scoped to the child's **first run**: it keeps the parent's foreground TaskFlow from being parked while that run is in flight. With `thread=true`/`mode="session"` the child session stays alive for follow-up messages, but tracking does **not** extend to those later runs — once the first run ends the parent TaskFlow is no longer held open by this child. Use `taskFlowTracking` for run-mode execution; do not rely on it to span a persistent session's lifetime.
 - A child agent creates its own local TaskFlow when its own work needs progress tracking.
+- The TaskFlow owner can call `taskflow_update(operation="promote_to_shared")` when a local flow later needs explicit child read/write access. Promotion is one-way and does not grant access by itself.
 - Shared TaskFlow access is granted only when `taskFlowScope="shared"` and `taskFlowId` are provided.
 - `write_assigned` lets the child update assigned items, child items under those assigned items, and evidence. `write_all` must be explicit.
 - The child task prompt receives a short TaskFlow Context block with the id and access level.

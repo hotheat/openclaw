@@ -70,6 +70,29 @@ describe("web_fetch Cloudflare Markdown for Agents", () => {
     expect(details?.text).toContain("server-rendered markdown");
   });
 
+  it("defaults and caps extracted content at 20000 characters", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(markdownResponse("x".repeat(30_000)));
+    global.fetch = withFetchPreconnect(fetchSpy);
+
+    const tool = createWebFetchTool(baseToolConfig);
+    const defaultResult = await tool?.execute?.("call", {
+      url: "https://example.com/default-limit",
+    });
+    const cappedResult = await tool?.execute?.("call", {
+      url: "https://example.com/capped-limit",
+      maxChars: 50_000,
+    });
+
+    for (const result of [defaultResult, cappedResult]) {
+      const details = result?.details as
+        | { length?: number; truncated?: boolean; text?: string }
+        | undefined;
+      expect(details?.length).toBe(20_000);
+      expect(details?.text).toHaveLength(20_000);
+      expect(details?.truncated).toBe(true);
+    }
+  });
+
   it("falls back to readability for text/html responses", async () => {
     const html =
       "<html><body><article><h1>HTML Page</h1><p>Content here.</p></article></body></html>";
