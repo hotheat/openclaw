@@ -704,6 +704,16 @@ export async function runEmbeddedAttempt(
       startedAt: traceRunStartedAt,
       endedAt: Date.now(),
     });
+    const promptSkillNames = new Set(
+      skillsTraceSummary.output.skills
+        .filter((skill) => skill.includedInPrompt)
+        .map((skill) => skill.name),
+    );
+    const traceSkillFiles = (
+      params.skillsSnapshot?.resolvedSkills ?? skillEntries.map((entry) => entry.skill)
+    )
+      .filter((skill) => promptSkillNames.has(skill.name))
+      .map((skill) => ({ name: skill.name, filePath: skill.filePath }));
     const endTraceRunOnce = createAgentTraceRunEndOnce(traceRun);
     endTraceRunOnFailure = endTraceRunOnce;
     const currentTraceParent = resolveCurrentAgentTraceParent({
@@ -758,6 +768,8 @@ export async function runEmbeddedAttempt(
     const tools = wrapToolsWithAgentTracing({
       tools: sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider }),
       traceRun,
+      workspaceDir: effectiveWorkspace,
+      skillFiles: traceSkillFiles,
     });
     const allowedToolNames = collectAllowedToolNames({
       tools,

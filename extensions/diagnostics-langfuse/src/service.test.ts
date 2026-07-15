@@ -1107,6 +1107,70 @@ describe("diagnostics-langfuse service", () => {
     expect(span.end).toHaveBeenCalled();
   });
 
+  it("names actual skill invocation tool observations without renaming ordinary reads", async () => {
+    const tool = { update: vi.fn(), end: vi.fn(), id: TOOL_OBSERVATION_ID };
+    const root = {
+      id: ROOT_OBSERVATION_ID,
+      traceId: TRACE_ID,
+      startObservation: vi.fn((_name: string) => tool),
+      update: vi.fn(),
+      end: vi.fn(),
+    };
+    const client = {
+      authCheck: vi.fn().mockResolvedValue(true),
+      createTraceId: vi.fn(async (seed: string) => `trace-${seed}`),
+      propagateAttributes: createPropagateAttributesMock(),
+      startObservation: vi.fn(() => root),
+      flush: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    const runtime = createDiagnosticsLangfuseRuntime({
+      clientFactory: vi.fn().mockResolvedValue(client),
+    });
+    await runtime.service.start(
+      createContext({
+        diagnostics: {
+          enabled: true,
+          langfuse: {
+            enabled: true,
+            host: "http://localhost:3005",
+            publicKey: "pk",
+            secretKey: "sk",
+          },
+        },
+      }),
+    );
+
+    const run = await runtime.sink.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+    });
+    await run?.startTool?.({
+      toolName: "read",
+      toolCallId: "tool-skill",
+      skillName: "imagegen",
+      params: { path: "/workspace/skills/imagegen/SKILL.md" },
+    });
+    await run?.startTool?.({
+      toolName: "read",
+      toolCallId: "tool-file",
+      params: { path: "/workspace/notes.txt" },
+    });
+
+    expect(root.startObservation).toHaveBeenNthCalledWith(
+      1,
+      "openclaw.skill.imagegen",
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          toolName: "read",
+          skillName: "imagegen",
+        }),
+      }),
+      expect.objectContaining({ asType: "tool" }),
+    );
+    expect(root.startObservation.mock.calls[1]?.[0]).toBe("openclaw.tool.read");
+  });
+
   it("keeps the exporter active when Langfuse auth check is temporarily unreachable", async () => {
     const root = {
       id: ROOT_OBSERVATION_ID,

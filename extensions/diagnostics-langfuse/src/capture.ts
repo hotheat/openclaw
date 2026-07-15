@@ -182,6 +182,7 @@ export function captureToolStart(
   const metadata = {
     toolName: event.toolName,
     toolCallId: event.toolCallId,
+    skillName: event.skillName,
     paramKeys: Object.keys(event.params).sort(),
   };
   if (mode !== "full") {

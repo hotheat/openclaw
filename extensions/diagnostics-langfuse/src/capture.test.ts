@@ -23,6 +23,7 @@ describe("Langfuse capture policy", () => {
       {
         toolName: "sessions_spawn",
         toolCallId: "tool-1",
+        skillName: "research",
         params: { message: "research task" },
       },
       "safe",
@@ -40,6 +41,7 @@ describe("Langfuse capture policy", () => {
     expect(tool.metadata).toMatchObject({
       toolName: "sessions_spawn",
       toolCallId: "tool-1",
+      skillName: "research",
       paramKeys: ["message"],
     });
   });

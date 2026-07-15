@@ -1,8 +1,14 @@
+import path from "node:path";
+import { resolveUserPath } from "../../utils.js";
 import type { AnyAgentTool } from "../pi-tools.types.js";
 import { runWithToolTraceParent } from "./context.js";
 import type { AgentTraceObservationHandle, AgentTraceRunHandle } from "./types.js";
 
 type ToolExecute = (toolCallId: string, params: unknown, ...rest: unknown[]) => Promise<unknown>;
+type TraceSkillFile = {
+  name: string;
+  filePath: string;
+};
 
 function traceParamsFromToolArgs(params: unknown): Record<string, unknown> {
   if (params && typeof params === "object" && !Array.isArray(params)) {
@@ -16,6 +22,7 @@ async function startToolTrace(params: {
   toolName: string;
   toolCallId: string;
   toolParams: Record<string, unknown>;
+  skillName?: string;
   startedAt: number;
 }): Promise<AgentTraceObservationHandle | undefined> {
   try {
@@ -24,6 +31,7 @@ async function startToolTrace(params: {
         toolName: params.toolName,
         toolCallId: params.toolCallId,
         params: params.toolParams,
+        ...(params.skillName ? { skillName: params.skillName } : {}),
         startedAt: params.startedAt,
       })) ?? undefined
     );
@@ -48,9 +56,40 @@ async function endToolTrace(
   }
 }
 
+function normalizeTraceFilePath(filePath: string, workspaceDir: string): string {
+  const expanded = filePath.startsWith("~") ? resolveUserPath(filePath) : filePath;
+  return path.normalize(path.resolve(workspaceDir, expanded));
+}
+
+function resolveInvokedSkillName(params: {
+  toolName: string;
+  toolParams: Record<string, unknown>;
+  workspaceDir: string;
+  skillFiles: TraceSkillFile[];
+}): string | undefined {
+  if (params.toolName !== "read" || params.skillFiles.length === 0) {
+    return undefined;
+  }
+  const rawPath =
+    typeof params.toolParams.path === "string"
+      ? params.toolParams.path
+      : typeof params.toolParams.file_path === "string"
+        ? params.toolParams.file_path
+        : undefined;
+  if (!rawPath?.trim()) {
+    return undefined;
+  }
+  const requestedPath = normalizeTraceFilePath(rawPath.trim(), params.workspaceDir);
+  return params.skillFiles.find(
+    (skill) => normalizeTraceFilePath(skill.filePath, params.workspaceDir) === requestedPath,
+  )?.name;
+}
+
 export function wrapToolsWithAgentTracing(params: {
   tools: AnyAgentTool[];
   traceRun: AgentTraceRunHandle | undefined;
+  workspaceDir?: string;
+  skillFiles?: TraceSkillFile[];
 }): AnyAgentTool[] {
   if (!params.traceRun?.startTool) {
     return params.tools;
@@ -63,11 +102,18 @@ export function wrapToolsWithAgentTracing(params: {
       async execute(toolCallId: string, toolParams: unknown, ...rest: unknown[]) {
         const callId = String(toolCallId);
         const startedAt = Date.now();
+        const normalizedToolParams = traceParamsFromToolArgs(toolParams);
         const trace = await startToolTrace({
           traceRun: params.traceRun,
           toolName: String(tool.name || "tool"),
           toolCallId: callId,
-          toolParams: traceParamsFromToolArgs(toolParams),
+          toolParams: normalizedToolParams,
+          skillName: resolveInvokedSkillName({
+            toolName: String(tool.name || "tool"),
+            toolParams: normalizedToolParams,
+            workspaceDir: params.workspaceDir ?? process.cwd(),
+            skillFiles: params.skillFiles ?? [],
+          }),
           startedAt,
         });
         let result: unknown;

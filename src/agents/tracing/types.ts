@@ -59,6 +59,7 @@ export type AgentTraceToolStartEvent = {
   toolName: string;
   toolCallId: string;
   params: Record<string, unknown>;
+  skillName?: string;
   startedAt?: number;
 };
 

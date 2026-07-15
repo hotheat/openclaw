@@ -74,4 +74,50 @@ describe("wrapToolsWithAgentTracing", () => {
       endedAt: expect.any(Number),
     });
   });
+
+  it("marks reads of prompt skill files as skill invocations", async () => {
+    const startTool = vi.fn(() => ({ end: vi.fn() }));
+    const traceRun: AgentTraceRunHandle = { startTool };
+    const readTool: AnyAgentTool = {
+      name: "read",
+      label: "read",
+      description: "",
+      parameters: {},
+      async execute() {
+        return jsonResult({ status: "ok" });
+      },
+    };
+    const [wrapped] = wrapToolsWithAgentTracing({
+      tools: [readTool],
+      traceRun,
+      workspaceDir: "/tmp/workspace",
+      skillFiles: [
+        {
+          name: "imagegen",
+          filePath: "/tmp/workspace/skills/imagegen/SKILL.md",
+        },
+      ],
+    });
+
+    await wrapped.execute("tool-skill", {
+      file_path: "skills/imagegen/SKILL.md",
+    });
+    await wrapped.execute("tool-file", {
+      path: "skills/not-loaded/SKILL.md",
+    });
+
+    expect(startTool).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        toolName: "read",
+        skillName: "imagegen",
+      }),
+    );
+    expect(startTool).toHaveBeenNthCalledWith(
+      2,
+      expect.not.objectContaining({
+        skillName: expect.anything(),
+      }),
+    );
+  });
 });

@@ -415,10 +415,14 @@ function createLangfuseSink(state: RuntimeState): AgentTraceSink {
           };
         },
         startTool(toolEvent) {
-          const name = toolEvent.toolName.replace(/[^A-Za-z0-9_.-]/g, "_");
+          const toolName = toolEvent.toolName.replace(/[^A-Za-z0-9_.-]/g, "_");
+          const skillName = toolEvent.skillName?.replace(/[^A-Za-z0-9_.-]/g, "_");
+          const observationName = skillName
+            ? `openclaw.skill.${skillName}`
+            : `openclaw.tool.${toolName}`;
           const tool = client.propagateAttributes(currentRunPropagation(), () =>
             root.startObservation?.(
-              `openclaw.tool.${name}`,
+              observationName,
               captureToolStart(toolEvent, config.captureMode) as Record<string, unknown>,
               {
                 asType: "tool",
