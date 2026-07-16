@@ -358,6 +358,7 @@ describe("subagent registry steer restarts", () => {
       previousRunId: "run-same-restart",
       nextRunId: "run-same-restart",
       fallback: previous,
+      acceptedAt: 150,
     });
     expect(replaced).toBe(true);
     expect(waitCalls).toBe(2);
@@ -386,6 +387,641 @@ describe("subagent registry steer restarts", () => {
         outcome: { status: "ok" },
       }),
     );
+  });
+
+  it("ignores lifecycle terminal snapshots from before the replacement run started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    try {
+      await withPendingAgentWait(async () => {
+        mod.registerSubagentRun({
+          runId: "run-stale-lifecycle-old",
+          childSessionKey: "agent:main:subagent:stale-lifecycle",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "stale lifecycle",
+          cleanup: "keep",
+        });
+
+        const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(
+          mod.replaceSubagentRunAfterSteer({
+            previousRunId: "run-stale-lifecycle-old",
+            nextRunId: "run-stale-lifecycle-new",
+            fallback: previous,
+          }),
+        ).toBe(true);
+
+        lifecycleHandler?.({
+          stream: "lifecycle",
+          runId: "run-stale-lifecycle-new",
+          data: { phase: "error", endedAt: 1_900, error: "stale abort" },
+        });
+
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(announceSpy).not.toHaveBeenCalled();
+        expect(mod.listSubagentRunsForRequester("agent:main:main")[0]?.outcome).toBeUndefined();
+
+        lifecycleHandler?.({
+          stream: "lifecycle",
+          runId: "run-stale-lifecycle-new",
+          data: { phase: "end", endedAt: 3_000 },
+        });
+
+        await vi.advanceTimersByTimeAsync(2_000);
+        await vi.advanceTimersByTimeAsync(0);
+
+        const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(run?.outcome).toEqual({ status: "ok" });
+        expect(run?.endedAt).toBe(3_000);
+        expect(announceSpy).toHaveBeenCalledTimes(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores agent.wait terminal snapshots from before the replacement run started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let resolveReplacementWait!: (value: unknown) => void;
+    let resolveCurrentWait!: (value: unknown) => void;
+    let waitCalls = 0;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        return await new Promise<never>(() => undefined);
+      }
+      if (waitCalls === 2) {
+        return await new Promise<unknown>((resolve) => {
+          resolveReplacementWait = resolve;
+        });
+      }
+      if (waitCalls === 3) {
+        return await new Promise<unknown>((resolve) => {
+          resolveCurrentWait = resolve;
+        });
+      }
+      return await new Promise<never>(() => undefined);
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-stale-wait-old",
+        childSessionKey: "agent:main:subagent:stale-wait",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "stale wait",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-stale-wait-old",
+          nextRunId: "run-stale-wait-new",
+          fallback: previous,
+        }),
+      ).toBe(true);
+      expect(waitCalls).toBe(2);
+
+      resolveReplacementWait({
+        status: "error",
+        endedAt: 1_900,
+        error: "stale abort",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(waitCalls).toBe(2);
+      expect(announceSpy).not.toHaveBeenCalled();
+      expect(mod.listSubagentRunsForRequester("agent:main:main")[0]?.outcome).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(300);
+      expect(waitCalls).toBe(3);
+
+      resolveCurrentWait({
+        status: "ok",
+        startedAt: 2_500,
+        endedAt: 3_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.outcome).toEqual({ status: "ok" });
+      expect(run?.startedAt).toBe(2_500);
+      expect(run?.endedAt).toBe(3_000);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a delayed lifecycle start move the replacement generation backward", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    try {
+      await withPendingAgentWait(async () => {
+        mod.registerSubagentRun({
+          runId: "run-delayed-start-old",
+          childSessionKey: "agent:main:subagent:delayed-start",
+          requesterSessionKey: "agent:main:main",
+          requesterDisplayKey: "main",
+          task: "delayed start",
+          cleanup: "keep",
+        });
+
+        const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(
+          mod.replaceSubagentRunAfterSteer({
+            previousRunId: "run-delayed-start-old",
+            nextRunId: "run-delayed-start-new",
+            fallback: previous,
+            acceptedAt: 2_000,
+          }),
+        ).toBe(true);
+
+        lifecycleHandler?.({
+          stream: "lifecycle",
+          runId: "run-delayed-start-new",
+          data: { phase: "start", startedAt: 1_900 },
+        });
+
+        const afterStaleStart = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(afterStaleStart?.startedAt).toBe(2_000);
+        expect(afterStaleStart?.generationStartedAt).toBe(2_000);
+
+        lifecycleHandler?.({
+          stream: "lifecycle",
+          runId: "run-delayed-start-new",
+          data: { phase: "start", startedAt: 2_100 },
+        });
+
+        const afterCurrentStart = mod.listSubagentRunsForRequester("agent:main:main")[0];
+        expect(afterCurrentStart?.startedAt).toBe(2_100);
+        expect(afterCurrentStart?.generationStartedAt).toBe(2_100);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a stale agent.wait startedAt move the replacement generation backward", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let waitCalls = 0;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        return await new Promise<never>(() => undefined);
+      }
+      return {
+        status: "error",
+        startedAt: 1_900,
+        endedAt: 2_100,
+        error: "late stale wait",
+      };
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-stale-wait-start-old",
+        childSessionKey: "agent:main:subagent:stale-wait-start",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "stale wait start",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-stale-wait-start-old",
+          nextRunId: "run-stale-wait-start-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.startedAt).toBe(2_000);
+      expect(run?.generationStartedAt).toBe(2_000);
+      expect(run?.outcome).toBeUndefined();
+      expect(announceSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps transcript timestamp skew when gateway wait times out", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let waitCalls = 0;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        waitCalls += 1;
+        if (waitCalls === 1) {
+          return await new Promise<never>(() => undefined);
+        }
+        return { status: "timeout" };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "transcript failure" }],
+              stopReason: "error",
+              errorMessage: "transcript failure",
+              timestamp: 1_900,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-transcript-skew-old",
+        childSessionKey: "agent:main:subagent:transcript-skew",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "transcript skew",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-transcript-skew-old",
+          nextRunId: "run-transcript-skew-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(25);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.outcome).toEqual({ status: "error", error: "transcript failure" });
+      expect(run?.endedAt).toBe(1_900);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops an old lifecycle completion when a retry starts during transcript inspection", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let resolveHistory!: (value: unknown) => void;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return await new Promise<never>(() => undefined);
+      }
+      if (typed.method === "chat.history") {
+        return await new Promise<unknown>((resolve) => {
+          resolveHistory = resolve;
+        });
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-transcript-race-old",
+        childSessionKey: "agent:main:subagent:transcript-race",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "transcript race",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-transcript-race-old",
+          nextRunId: "run-transcript-race-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-transcript-race-new",
+        data: { phase: "end", endedAt: 2_100 },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-transcript-race-new",
+        data: { phase: "start", startedAt: 2_200 },
+      });
+      resolveHistory({ messages: [] });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.startedAt).toBe(2_200);
+      expect(run?.generationStartedAt).toBe(2_200);
+      expect(run?.outcome).toBeUndefined();
+      expect(announceSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a scheduled completion when a retry starts during its transcript recheck", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let historyCalls = 0;
+    let resolveScheduledHistory!: (value: unknown) => void;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return await new Promise<never>(() => undefined);
+      }
+      if (typed.method === "chat.history") {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          return {
+            messages: [
+              {
+                role: "assistant",
+                content: [{ type: "text", text: "transient failure" }],
+                stopReason: "error",
+                errorMessage: "transient failure",
+                timestamp: 2_100,
+              },
+            ],
+          };
+        }
+        return await new Promise<unknown>((resolve) => {
+          resolveScheduledHistory = resolve;
+        });
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-scheduled-race-old",
+        childSessionKey: "agent:main:subagent:scheduled-race",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "scheduled race",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-scheduled-race-old",
+          nextRunId: "run-scheduled-race-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-scheduled-race-new",
+        data: { phase: "end", endedAt: 2_100 },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(historyCalls).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(historyCalls).toBe(2);
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-scheduled-race-new",
+        data: { phase: "start", startedAt: 2_200 },
+      });
+      resolveScheduledHistory({ messages: [] });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.startedAt).toBe(2_200);
+      expect(run?.generationStartedAt).toBe(2_200);
+      expect(run?.outcome).toBeUndefined();
+      expect(announceSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a replacement terminal snapshot completed before registry replacement", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(4_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let waitCalls = 0;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        return await new Promise<never>(() => undefined);
+      }
+      return {
+        status: "ok",
+        startedAt: 2_100,
+        endedAt: 2_200,
+      };
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-fast-replacement-old",
+        childSessionKey: "agent:main:subagent:fast-replacement",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "fast replacement",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-fast-replacement-old",
+          nextRunId: "run-fast-replacement-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.outcome).toEqual({ status: "ok" });
+      expect(run?.startedAt).toBe(2_100);
+      expect(run?.endedAt).toBe(2_200);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("backs off when agent.wait repeatedly returns the same stale cached snapshot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let waitCalls = 0;
+    let returnCurrentSnapshot = false;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        return await new Promise<never>(() => undefined);
+      }
+      if (!returnCurrentSnapshot) {
+        return {
+          status: "error",
+          startedAt: 500,
+          endedAt: 1_000,
+          error: "cached stale abort",
+        };
+      }
+      return {
+        status: "ok",
+        startedAt: 2_100,
+        endedAt: 2_200,
+      };
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-cached-stale-old",
+        childSessionKey: "agent:main:subagent:cached-stale",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "cached stale",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-cached-stale-old",
+          nextRunId: "run-cached-stale-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(waitCalls).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(waitCalls).toBe(2);
+
+      returnCurrentSnapshot = true;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(waitCalls).toBe(3);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.outcome).toEqual({ status: "ok" });
+      expect(run?.startedAt).toBe(2_100);
+      expect(run?.endedAt).toBe(2_200);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("limits agent.wait calls when the same stale cached snapshot persists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let waitCalls = 0;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        return await new Promise<never>(() => undefined);
+      }
+      return {
+        status: "error",
+        startedAt: 500,
+        endedAt: 1_000,
+        error: "cached stale abort",
+      };
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-persistent-cached-stale-old",
+        childSessionKey: "agent:main:subagent:persistent-cached-stale",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "persistent cached stale",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-persistent-cached-stale-old",
+          nextRunId: "run-persistent-cached-stale-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(waitCalls).toBeGreaterThanOrEqual(8);
+      expect(waitCalls).toBeLessThanOrEqual(15);
+      expect(announceSpy).not.toHaveBeenCalled();
+      expect(mod.listSubagentRunsForRequester("agent:main:main")[0]?.outcome).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("clears pending completion and resets the wait deadline for same-run steer replacements", async () => {

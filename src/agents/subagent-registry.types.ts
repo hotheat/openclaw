@@ -20,6 +20,8 @@ export type SubagentRunRecord = {
   trackingTaskFlowId?: string;
   createdAt: number;
   startedAt?: number;
+  /** Earliest accepted start boundary used to reject terminal snapshots from an older generation. */
+  generationStartedAt?: number;
   endedAt?: number;
   outcome?: SubagentRunOutcome;
   archiveAtMs?: number;

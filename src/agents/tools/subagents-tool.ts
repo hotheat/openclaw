@@ -618,8 +618,10 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
 
         const idempotencyKey = crypto.randomUUID();
         let runId: string = idempotencyKey;
+        const requestStartedAt = Date.now();
+        let acceptedAt = requestStartedAt;
         try {
-          const response = await callGateway<{ runId: string }>({
+          const response = await callGateway<{ runId: string; acceptedAt?: number }>({
             method: "agent",
             params: {
               message,
@@ -635,6 +637,9 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
           });
           if (typeof response?.runId === "string" && response.runId) {
             runId = response.runId;
+          }
+          if (typeof response?.acceptedAt === "number" && Number.isFinite(response.acceptedAt)) {
+            acceptedAt = response.acceptedAt;
           }
         } catch (err) {
           // Replacement launch failed; restore normal announce behavior for the
@@ -657,6 +662,7 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
           nextRunId: runId,
           fallback: resolved.entry,
           runTimeoutSeconds: resolved.entry.runTimeoutSeconds ?? 0,
+          acceptedAt,
         });
 
         return jsonResult({

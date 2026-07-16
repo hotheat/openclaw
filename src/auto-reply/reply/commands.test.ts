@@ -1274,7 +1274,7 @@ describe("handleCommands subagents", () => {
     callGatewayMock.mockImplementation(async (opts: unknown) => {
       const request = opts as { method?: string };
       if (request.method === "agent") {
-        return { runId: "run-steer-1" };
+        return { runId: "run-steer-1", acceptedAt: 2_000 };
       }
       return {};
     });
@@ -1331,6 +1331,8 @@ describe("handleCommands subagents", () => {
     const trackedRuns = listSubagentRunsForRequester("agent:main:main");
     expect(trackedRuns).toHaveLength(1);
     expect(trackedRuns[0].runId).toBe("run-steer-1");
+    expect(trackedRuns[0].startedAt).toBe(2_000);
+    expect(trackedRuns[0].generationStartedAt).toBe(2_000);
     expect(trackedRuns[0].endedAt).toBeUndefined();
   });
 

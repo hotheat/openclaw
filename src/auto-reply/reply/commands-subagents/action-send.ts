@@ -92,8 +92,10 @@ export async function handleSubagentsSendAction(
 
   const idempotencyKey = crypto.randomUUID();
   let runId: string = idempotencyKey;
+  const requestStartedAt = Date.now();
+  let acceptedAt = requestStartedAt;
   try {
-    const response = await callGateway<{ runId: string }>({
+    const response = await callGateway<{ runId: string; acceptedAt?: number }>({
       method: "agent",
       params: {
         message,
@@ -111,6 +113,9 @@ export async function handleSubagentsSendAction(
     if (responseRunId) {
       runId = responseRunId;
     }
+    if (typeof response?.acceptedAt === "number" && Number.isFinite(response.acceptedAt)) {
+      acceptedAt = response.acceptedAt;
+    }
   } catch (err) {
     if (steerRequested) {
       clearSubagentRunSteerRestart(targetResolution.entry.runId);
@@ -126,6 +131,7 @@ export async function handleSubagentsSendAction(
       nextRunId: runId,
       fallback: targetResolution.entry,
       runTimeoutSeconds: targetResolution.entry.runTimeoutSeconds ?? 0,
+      acceptedAt,
     });
     return stopWithText(
       `steered ${formatRunLabel(targetResolution.entry)} (run ${runId.slice(0, 8)}).`,

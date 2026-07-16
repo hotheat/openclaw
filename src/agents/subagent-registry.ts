@@ -54,6 +54,8 @@ const MAX_ANNOUNCE_RETRY_DELAY_MS = 8_000;
 const SUBAGENT_COMPLETION_END_STABILIZE_MS = 2_000;
 const SUBAGENT_COMPLETION_ERROR_STABILIZE_MS = 15_000;
 const SUBAGENT_WAIT_POLL_INTERVAL_MS = FAST_TEST_MODE ? 25 : 15_000;
+const SUBAGENT_STALE_TERMINAL_RETRY_INITIAL_DELAY_MS = 250;
+const SUBAGENT_STALE_TERMINAL_RETRY_MAX_DELAY_MS = 15_000;
 const SUBAGENT_TRANSCRIPT_ERROR_STABILIZE_MS = FAST_TEST_MODE ? 25 : 20_000;
 const SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS = 250;
 /**
@@ -81,6 +83,9 @@ type ScheduledSubagentRunCompletionResolution =
   | {
       action: "rearm";
       continuationAfterMs: number;
+    }
+  | {
+      action: "ignore";
     };
 
 async function sleepMs(ms: number): Promise<void> {
@@ -92,6 +97,26 @@ async function sleepMs(ms: number): Promise<void> {
     const timer = setTimeout(resolve, delayMs);
     timer.unref?.();
   });
+}
+
+function resolveStaleTerminalRetryDelayMs(runId: string, retryAttempt: number) {
+  const boundedAttempt = Math.max(0, Math.min(16, Math.floor(retryAttempt)));
+  const exponentialDelayMs = Math.min(
+    SUBAGENT_STALE_TERMINAL_RETRY_MAX_DELAY_MS,
+    SUBAGENT_STALE_TERMINAL_RETRY_INITIAL_DELAY_MS * 2 ** boundedAttempt,
+  );
+
+  // Stable jitter spreads concurrent retries without making timer tests nondeterministic.
+  let hash = 2_166_136_261;
+  for (const char of `${runId}:${boundedAttempt}`) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  const jitterPercent = 90 + ((hash >>> 0) % 21);
+  return Math.min(
+    SUBAGENT_STALE_TERMINAL_RETRY_MAX_DELAY_MS,
+    Math.max(1, Math.floor((exponentialDelayMs * jitterPercent) / 100)),
+  );
 }
 
 function resolveAnnounceRetryDelayMs(retryCount: number) {
@@ -241,6 +266,48 @@ function asFiniteTimestampMs(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function isTerminalSnapshotBeforeRunStart(
+  entry: SubagentRunRecord,
+  snapshot: { startedAt?: number; endedAt?: number },
+  skewMs = 0,
+) {
+  const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
+  const snapshotStartedAt = asFiniteTimestampMs(snapshot.startedAt);
+  const snapshotEndedAt = asFiniteTimestampMs(snapshot.endedAt);
+  const snapshotGenerationAt = snapshotStartedAt ?? snapshotEndedAt;
+  const boundedSkewMs = Math.max(0, Math.floor(skewMs));
+  return (
+    typeof generationStartedAt === "number" &&
+    typeof snapshotGenerationAt === "number" &&
+    snapshotGenerationAt + boundedSkewMs < generationStartedAt
+  );
+}
+
+function advanceRunGenerationStart(entry: SubagentRunRecord, startedAt: number) {
+  const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
+  if (typeof generationStartedAt === "number" && startedAt < generationStartedAt) {
+    return false;
+  }
+  entry.startedAt = startedAt;
+  entry.generationStartedAt = startedAt;
+  return true;
+}
+
+function logIgnoredStaleTerminal(
+  entry: SubagentRunRecord,
+  snapshot: { startedAt?: number; endedAt?: number },
+) {
+  defaultRuntime.log(
+    `[warn] Ignoring stale subagent terminal snapshot run=${entry.runId} generationStartedAt=${String(entry.generationStartedAt)} snapshotStartedAt=${String(snapshot.startedAt)} snapshotEndedAt=${String(snapshot.endedAt)}`,
+  );
+}
+
+function logIgnoredStaleStart(entry: SubagentRunRecord, startedAt: number) {
+  defaultRuntime.log(
+    `[warn] Ignoring stale subagent start run=${entry.runId} generationStartedAt=${String(entry.generationStartedAt)} startedAt=${String(startedAt)}`,
+  );
+}
+
 async function emitSubagentEndedHookForRun(params: {
   entry: SubagentRunRecord;
   reason?: SubagentLifecycleEndedReason;
@@ -337,6 +404,7 @@ async function completeSubagentRun(params: {
 type ScheduleSubagentRunCompletionParams = {
   runId: string;
   endedAt?: number;
+  terminalSkewMs?: number;
   outcome: SubagentRunOutcome;
   reason: SubagentLifecycleEndedReason;
   sendFarewell?: boolean;
@@ -351,9 +419,14 @@ type ScheduleSubagentRunCompletionParams = {
 async function resolveScheduledSubagentRunCompletion(
   params: ScheduleSubagentRunCompletionParams,
 ): Promise<ScheduledSubagentRunCompletionResolution> {
-  const entry = subagentRuns.get(params.runId);
+  let entry = subagentRuns.get(params.runId);
   if (!entry) {
     return { action: "complete", params };
+  }
+  const terminalTiming = { endedAt: params.endedAt };
+  if (isTerminalSnapshotBeforeRunStart(entry, terminalTiming, params.terminalSkewMs)) {
+    logIgnoredStaleTerminal(entry, terminalTiming);
+    return { action: "ignore" };
   }
   if (params.rearmOnStaleTerminal === true && isTerminalErrorOutcome(params.outcome)) {
     const continuationAfterMs = await findTranscriptContinuationAfterTerminal({
@@ -361,6 +434,14 @@ async function resolveScheduledSubagentRunCompletion(
       endedAt: params.endedAt,
       afterMs: params.rearmContinuationAfterMs,
     });
+    entry = subagentRuns.get(params.runId);
+    if (!entry) {
+      return { action: "complete", params };
+    }
+    if (isTerminalSnapshotBeforeRunStart(entry, terminalTiming, params.terminalSkewMs)) {
+      logIgnoredStaleTerminal(entry, terminalTiming);
+      return { action: "ignore" };
+    }
     if (continuationAfterMs !== undefined && hasStaleTerminalRearmBudget(params)) {
       return { action: "rearm", continuationAfterMs };
     }
@@ -372,7 +453,21 @@ async function resolveScheduledSubagentRunCompletion(
     childSessionKey: entry.childSessionKey,
     nowMs: Date.now(),
   });
+  entry = subagentRuns.get(params.runId);
+  if (!entry) {
+    return { action: "complete", params };
+  }
+  if (isTerminalSnapshotBeforeRunStart(entry, terminalTiming, params.terminalSkewMs)) {
+    logIgnoredStaleTerminal(entry, terminalTiming);
+    return { action: "ignore" };
+  }
   if (!transcriptTerminal) {
+    return { action: "complete", params };
+  }
+  if (
+    isTerminalSnapshotBeforeRunStart(entry, transcriptTerminal, SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS)
+  ) {
+    logIgnoredStaleTerminal(entry, transcriptTerminal);
     return { action: "complete", params };
   }
   return {
@@ -432,6 +527,11 @@ function scheduleSubagentRunCompletion(params: ScheduleSubagentRunCompletionPara
   if (!entry) {
     return;
   }
+  const terminalTiming = { endedAt: params.endedAt };
+  if (isTerminalSnapshotBeforeRunStart(entry, terminalTiming, params.terminalSkewMs)) {
+    logIgnoredStaleTerminal(entry, terminalTiming);
+    return;
+  }
   clearPendingSubagentCompletion(params.runId);
   const shouldConfirmOkTranscriptError = params.confirmOkTranscriptError === true;
   if (!shouldConfirmOkTranscriptError && !shouldStabilizeCompletion(entry, params.outcome)) {
@@ -445,6 +545,9 @@ function scheduleSubagentRunCompletion(params: ScheduleSubagentRunCompletionPara
     pendingCompletionTimers.delete(params.runId);
     void (async () => {
       const resolution = await resolveScheduledSubagentRunCompletion(params);
+      if (resolution.action === "ignore") {
+        return;
+      }
       if (resolution.action === "rearm") {
         rearmSubagentCompletionTracking(params, resolution.continuationAfterMs);
         return;
@@ -858,10 +961,13 @@ function ensureListener() {
       }
       const phase = evt.data?.phase;
       if (phase === "start") {
+        const startedAt = asFiniteTimestampMs(evt.data?.startedAt);
+        if (typeof startedAt === "number" && !advanceRunGenerationStart(entry, startedAt)) {
+          logIgnoredStaleStart(entry, startedAt);
+          return;
+        }
         clearPendingSubagentCompletion(evt.runId);
-        const startedAt = typeof evt.data?.startedAt === "number" ? evt.data.startedAt : undefined;
-        if (startedAt) {
-          entry.startedAt = startedAt;
+        if (typeof startedAt === "number") {
           persistSubagentRuns();
         }
         return;
@@ -869,7 +975,13 @@ function ensureListener() {
       if (phase !== "end" && phase !== "error") {
         return;
       }
+      const startedAt = typeof evt.data?.startedAt === "number" ? evt.data.startedAt : undefined;
       const endedAt = typeof evt.data?.endedAt === "number" ? evt.data.endedAt : Date.now();
+      const snapshotTiming = { startedAt, endedAt };
+      if (isTerminalSnapshotBeforeRunStart(entry, snapshotTiming)) {
+        logIgnoredStaleTerminal(entry, snapshotTiming);
+        return;
+      }
       const error = typeof evt.data?.error === "string" ? evt.data.error : undefined;
       const outcome: SubagentRunOutcome =
         phase === "error"
@@ -1109,6 +1221,7 @@ export function replaceSubagentRunAfterSteer(params: {
   nextRunId: string;
   fallback?: SubagentRunRecord;
   runTimeoutSeconds?: number;
+  acceptedAt?: number;
 }) {
   const previousRunId = params.previousRunId.trim();
   const nextRunId = params.nextRunId.trim();
@@ -1130,6 +1243,7 @@ export function replaceSubagentRunAfterSteer(params: {
   }
 
   const now = Date.now();
+  const acceptedAt = asFiniteTimestampMs(params.acceptedAt) ?? now;
   const cfg = loadConfig();
   const archiveAfterMs = resolveArchiveAfterMs(cfg);
   const spawnMode = source.spawnMode === "session" ? "session" : "run";
@@ -1141,7 +1255,8 @@ export function replaceSubagentRunAfterSteer(params: {
   const next: SubagentRunRecord = {
     ...source,
     runId: nextRunId,
-    startedAt: now,
+    startedAt: acceptedAt,
+    generationStartedAt: acceptedAt,
     endedAt: undefined,
     endedReason: undefined,
     endedHookEmittedAt: undefined,
@@ -1247,6 +1362,8 @@ async function waitForSubagentCompletion(params: {
   const { runId, token, deadlineMs, staleContinuationAfterMs } = params;
   try {
     let effectiveNowMs = Date.now();
+    let lastIgnoredWaitSnapshotKey: string | undefined;
+    let staleWaitRetryAttempt = 0;
 
     while (true) {
       if (!isActiveSubagentWaiter(runId, token)) {
@@ -1291,10 +1408,53 @@ async function waitForSubagentCompletion(params: {
       }
       effectiveNowMs = Date.now();
 
+      const waitEndedAt =
+        typeof wait.endedAt === "number" && Number.isFinite(wait.endedAt)
+          ? wait.endedAt
+          : undefined;
+      const waitStartedAt =
+        typeof wait.startedAt === "number" && Number.isFinite(wait.startedAt)
+          ? wait.startedAt
+          : undefined;
+      const waitSnapshotTiming = { startedAt: waitStartedAt, endedAt: waitEndedAt };
+      if (isTerminalSnapshotBeforeRunStart(entry, waitSnapshotTiming)) {
+        const waitSnapshotKey = `${wait.status}:${String(waitStartedAt)}:${String(waitEndedAt)}`;
+        if (waitSnapshotKey !== lastIgnoredWaitSnapshotKey) {
+          logIgnoredStaleTerminal(entry, waitSnapshotTiming);
+          lastIgnoredWaitSnapshotKey = waitSnapshotKey;
+        }
+        if (effectiveNowMs < deadlineMs) {
+          const retryDelayMs = resolveStaleTerminalRetryDelayMs(runId, staleWaitRetryAttempt);
+          staleWaitRetryAttempt += 1;
+          await sleepMs(Math.min(retryDelayMs, deadlineMs - effectiveNowMs));
+          if (!isActiveSubagentWaiter(runId, token)) {
+            return;
+          }
+          effectiveNowMs = Date.now();
+          continue;
+        }
+        scheduleSubagentRunCompletion({
+          runId,
+          endedAt: effectiveNowMs,
+          outcome: { status: "timeout" },
+          reason: SUBAGENT_ENDED_REASON_COMPLETE,
+          sendFarewell: true,
+          accountId: entry.requesterOrigin?.accountId,
+          triggerCleanup: true,
+        });
+        return;
+      }
+
+      lastIgnoredWaitSnapshotKey = undefined;
+      staleWaitRetryAttempt = 0;
+
       let mutated = false;
-      if (typeof wait.startedAt === "number" && entry.startedAt !== wait.startedAt) {
-        entry.startedAt = wait.startedAt;
-        mutated = true;
+      if (typeof waitStartedAt === "number" && entry.startedAt !== waitStartedAt) {
+        if (advanceRunGenerationStart(entry, waitStartedAt)) {
+          mutated = true;
+        } else {
+          logIgnoredStaleStart(entry, waitStartedAt);
+        }
       }
       if (mutated) {
         persistSubagentRuns();
@@ -1310,22 +1470,33 @@ async function waitForSubagentCompletion(params: {
           return;
         }
         if (transcriptTerminal) {
-          scheduleSubagentRunCompletion({
-            runId,
-            endedAt: transcriptTerminal.endedAt ?? Date.now(),
-            outcome: transcriptTerminal.outcome,
-            reason:
-              transcriptTerminal.outcome.status === "error"
-                ? SUBAGENT_ENDED_REASON_ERROR
-                : SUBAGENT_ENDED_REASON_COMPLETE,
-            sendFarewell: true,
-            accountId: entry.requesterOrigin?.accountId,
-            triggerCleanup: true,
-            rearmOnStaleTerminal: isTerminalErrorOutcome(transcriptTerminal.outcome),
-            rearmWaitDeadlineMs: deadlineMs,
-            rearmContinuationAfterMs: staleContinuationAfterMs,
-          });
-          return;
+          if (
+            isTerminalSnapshotBeforeRunStart(
+              entry,
+              transcriptTerminal,
+              SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS,
+            )
+          ) {
+            logIgnoredStaleTerminal(entry, transcriptTerminal);
+          } else {
+            scheduleSubagentRunCompletion({
+              runId,
+              endedAt: transcriptTerminal.endedAt ?? Date.now(),
+              terminalSkewMs: SUBAGENT_TERMINAL_ACTIVITY_SKEW_MS,
+              outcome: transcriptTerminal.outcome,
+              reason:
+                transcriptTerminal.outcome.status === "error"
+                  ? SUBAGENT_ENDED_REASON_ERROR
+                  : SUBAGENT_ENDED_REASON_COMPLETE,
+              sendFarewell: true,
+              accountId: entry.requesterOrigin?.accountId,
+              triggerCleanup: true,
+              rearmOnStaleTerminal: isTerminalErrorOutcome(transcriptTerminal.outcome),
+              rearmWaitDeadlineMs: deadlineMs,
+              rearmContinuationAfterMs: staleContinuationAfterMs,
+            });
+            return;
+          }
         }
         effectiveNowMs = Math.max(effectiveNowMs, Date.now());
         if (effectiveNowMs < deadlineMs) {
@@ -1355,7 +1526,7 @@ async function waitForSubagentCompletion(params: {
             : { status: "ok" };
       scheduleSubagentRunCompletion({
         runId,
-        endedAt: typeof wait.endedAt === "number" ? wait.endedAt : Date.now(),
+        endedAt: waitEndedAt ?? Date.now(),
         outcome,
         reason:
           wait.status === "error" ? SUBAGENT_ENDED_REASON_ERROR : SUBAGENT_ENDED_REASON_COMPLETE,
