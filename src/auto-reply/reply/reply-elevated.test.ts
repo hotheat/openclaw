@@ -28,6 +28,55 @@ function buildContext(overrides?: Partial<MsgContext>): MsgContext {
 }
 
 describe("resolveElevatedPermissions", () => {
+  it("falls back to the legacy webchat global allowlist for Control UI", () => {
+    const result = resolveElevatedPermissions({
+      cfg: {
+        tools: { elevated: { allowFrom: { webchat: ["owner"] } } },
+      } as OpenClawConfig,
+      agentId: "main",
+      provider: "control-ui",
+      ctx: buildContext({ Provider: "control-ui", Surface: "control-ui", SenderId: "owner" }),
+    });
+
+    expect(result.allowed).toBe(true);
+  });
+
+  it("prefers the explicit Control UI global allowlist over legacy webchat", () => {
+    const result = resolveElevatedPermissions({
+      cfg: {
+        tools: {
+          elevated: { allowFrom: { "control-ui": [], webchat: ["owner"] } },
+        },
+      } as OpenClawConfig,
+      agentId: "main",
+      provider: "control-ui",
+      ctx: buildContext({ Provider: "control-ui", Surface: "control-ui", SenderId: "owner" }),
+    });
+
+    expect(result.allowed).toBe(false);
+  });
+
+  it("falls back to the legacy webchat agent allowlist for Control UI", () => {
+    const result = resolveElevatedPermissions({
+      cfg: {
+        tools: { elevated: { allowFrom: { "control-ui": ["*"] } } },
+        agents: {
+          list: [
+            {
+              id: "main",
+              tools: { elevated: { allowFrom: { webchat: ["owner"] } } },
+            },
+          ],
+        },
+      } as OpenClawConfig,
+      agentId: "main",
+      provider: "control-ui",
+      ctx: buildContext({ Provider: "control-ui", Surface: "control-ui", SenderId: "owner" }),
+    });
+
+    expect(result.allowed).toBe(true);
+  });
+
   it("authorizes when sender matches allowFrom", () => {
     const result = resolveElevatedPermissions({
       cfg: buildConfig(["+15550001111"]),

@@ -1,4 +1,5 @@
 import { getChannelPlugin } from "../../../channels/plugins/index.js";
+import { resolveControlUiConfigValue } from "../../../config/control-ui-config-compat.js";
 import type { InboundDebounceByProvider } from "../../../config/types.messages.js";
 import { normalizeQueueDropPolicy, normalizeQueueMode } from "./normalize.js";
 import { DEFAULT_QUEUE_CAP, DEFAULT_QUEUE_DEBOUNCE_MS, DEFAULT_QUEUE_DROP } from "./state.js";
@@ -16,7 +17,11 @@ function resolveChannelDebounce(
   if (!channelKey || !byChannel) {
     return undefined;
   }
-  const value = byChannel[channelKey];
+  const value = resolveControlUiConfigValue({
+    values: byChannel,
+    channel: channelKey,
+    configPath: "messages.queue.debounceMsByChannel",
+  });
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined;
 }
 
@@ -32,10 +37,11 @@ function resolvePluginDebounce(channelKey: string | undefined): number | undefin
 export function resolveQueueSettings(params: ResolveQueueSettingsParams): QueueSettings {
   const channelKey = params.channel?.trim().toLowerCase();
   const queueCfg = params.cfg.messages?.queue;
-  const providerModeRaw =
-    channelKey && queueCfg?.byChannel
-      ? (queueCfg.byChannel as Record<string, string | undefined>)[channelKey]
-      : undefined;
+  const providerModeRaw = resolveControlUiConfigValue({
+    values: queueCfg?.byChannel as Record<string, string | undefined> | undefined,
+    channel: channelKey,
+    configPath: "messages.queue.byChannel",
+  });
   const resolvedMode =
     params.inlineMode ??
     normalizeQueueMode(params.sessionEntry?.queueMode) ??

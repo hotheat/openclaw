@@ -136,7 +136,7 @@ describe("gateway send mirroring", () => {
     );
   });
 
-  it("returns actionable guidance when channel is internal webchat", async () => {
+  it("returns actionable guidance when channel is webchat", async () => {
     const { respond } = await runSend({
       to: "x",
       message: "hi",

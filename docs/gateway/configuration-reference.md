@@ -2125,6 +2125,10 @@ See [Plugins](/tools/plugin).
       // allowInsecureAuth: false,
       // dangerouslyDisableDeviceAuth: false,
     },
+    webchat: {
+      enabled: false,
+      // allowedOrigins: ["https://chat.example.com"],
+    },
     remote: {
       url: "ws://gateway.tailnet:18789",
       transport: "ssh", // ssh | direct
@@ -2155,6 +2159,9 @@ See [Plugins](/tools/plugin).
 - `auth.allowTailscale`: when `true`, Tailscale Serve identity headers can satisfy Control UI/WebSocket auth (verified via `tailscale whois`); HTTP API endpoints still require token/password auth. This tokenless flow assumes the gateway host is trusted. Defaults to `true` when `tailscale.mode = "serve"`.
 - `auth.rateLimit`: optional failed-auth limiter. Applies per client IP and per auth scope (shared-secret and device-token are tracked independently). Blocked attempts return `429` + `Retry-After`.
   - `auth.rateLimit.exemptLoopback` defaults to `true`; set `false` when you intentionally want localhost traffic rate-limited too (for test setups or strict proxy deployments).
+- `webchat.enabled`: enables standalone clients whose reported ID or mode identifies them as external WebChat. Default `false`.
+- `webchat.allowedOrigins`: browser-origin allowlist for external WebChat. This is separate from `controlUi.allowedOrigins`.
+- WebChat client classification uses the identity reported during the WebSocket handshake. Treat `webchat.enabled` as an ingress filter, not an authentication boundary, and enforce `gateway.auth`.
 - `tailscale.mode`: `serve` (tailnet only, loopback bind) or `funnel` (public, requires auth).
 - `remote.transport`: `ssh` (default) or `direct` (ws/wss). For `direct`, `remote.url` must be `ws://` or `wss://`.
 - `gateway.remote.token` is for remote CLI calls only; does not enable local gateway auth.

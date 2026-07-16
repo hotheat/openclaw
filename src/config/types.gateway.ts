@@ -68,7 +68,7 @@ export type GatewayControlUiConfig = {
   basePath?: string;
   /** Optional filesystem root for Control UI assets (defaults to dist/control-ui). */
   root?: string;
-  /** Allowed browser origins for Control UI/WebChat websocket connections. */
+  /** Allowed browser origins for Control UI websocket connections. */
   allowedOrigins?: string[];
   /**
    * Insecure-auth toggle.
@@ -78,6 +78,13 @@ export type GatewayControlUiConfig = {
   allowInsecureAuth?: boolean;
   /** DANGEROUS: Disable device identity checks for the Control UI (default: false). */
   dangerouslyDisableDeviceAuth?: boolean;
+};
+
+export type GatewayWebchatConfig = {
+  /** Enable external WebChat websocket clients (default: false). */
+  enabled?: boolean;
+  /** Allowed browser origins for external WebChat websocket connections. */
+  allowedOrigins?: string[];
 };
 
 export type GatewayAuthMode = "none" | "token" | "password" | "trusted-proxy";
@@ -301,6 +308,7 @@ export type GatewayConfig = {
   /** Custom IP address for bind="custom" mode. Fallback: 0.0.0.0. */
   customBindHost?: string;
   controlUi?: GatewayControlUiConfig;
+  webchat?: GatewayWebchatConfig;
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
   remote?: GatewayRemoteConfig;

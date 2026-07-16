@@ -94,6 +94,107 @@ describe("Integration: saveSessionStore with pruning", () => {
     expect(loaded.fresh).toBeDefined();
   });
 
+  it("drops stale webchat routes written by heartbeat main sessions", async () => {
+    const store: Record<string, SessionEntry> = {
+      "agent:feishu-user:main": {
+        sessionId: "heartbeat-main",
+        updatedAt: Date.now(),
+        channel: "webchat",
+        lastChannel: "webchat",
+        lastTo: "heartbeat",
+        deliveryContext: {
+          channel: "webchat",
+          to: "heartbeat",
+        },
+        origin: {
+          label: "heartbeat",
+          provider: "heartbeat",
+          from: "heartbeat",
+          to: "heartbeat",
+        },
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(store), "utf-8");
+
+    const loaded = loadSessionStore(storePath, { skipCache: true });
+    const entry = loaded["agent:feishu-user:main"];
+
+    expect(entry?.channel).toBeUndefined();
+    expect(entry?.lastChannel).toBeUndefined();
+    expect(entry?.lastTo).toBeUndefined();
+    expect(entry?.deliveryContext).toBeUndefined();
+  });
+
+  it("drops heartbeat targets written after internal channel separation", async () => {
+    const store: Record<string, SessionEntry> = {
+      "agent:feishu-user:main": {
+        sessionId: "internal-heartbeat-main",
+        updatedAt: Date.now(),
+        lastChannel: "feishu",
+        lastTo: "heartbeat",
+        lastAccountId: "researcher",
+        lastThreadId: "om_456",
+        deliveryContext: {
+          channel: "feishu",
+          to: "heartbeat",
+          accountId: "researcher",
+          threadId: "om_456",
+        },
+        origin: {
+          label: "heartbeat",
+          provider: "internal",
+          from: "heartbeat",
+          to: "heartbeat",
+        },
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(store), "utf-8");
+
+    const loaded = loadSessionStore(storePath, { skipCache: true });
+    const entry = loaded["agent:feishu-user:main"];
+
+    expect(entry?.lastChannel).toBe("feishu");
+    expect(entry?.lastTo).toBeUndefined();
+    expect(entry?.lastAccountId).toBe("researcher");
+    expect(entry?.lastThreadId).toBe("om_456");
+    expect(entry?.deliveryContext).toEqual({
+      channel: "feishu",
+      accountId: "researcher",
+      threadId: "om_456",
+    });
+  });
+
+  it("preserves real webchat session routes", async () => {
+    const store: Record<string, SessionEntry> = {
+      "agent:main:main": {
+        sessionId: "webchat-main",
+        updatedAt: Date.now(),
+        channel: "webchat",
+        lastChannel: "webchat",
+        lastTo: "webchat:user-123",
+        deliveryContext: {
+          channel: "webchat",
+          to: "webchat:user-123",
+        },
+        origin: {
+          label: "WebChat",
+          provider: "webchat",
+          from: "webchat:user-123",
+          to: "webchat:user-123",
+        },
+      },
+    };
+    await fs.writeFile(storePath, JSON.stringify(store), "utf-8");
+
+    const loaded = loadSessionStore(storePath, { skipCache: true });
+    const entry = loaded["agent:main:main"];
+
+    expect(entry?.channel).toBe("webchat");
+    expect(entry?.lastChannel).toBe("webchat");
+    expect(entry?.lastTo).toBe("webchat:user-123");
+    expect(entry?.deliveryContext?.channel).toBe("webchat");
+  });
+
   it("archives transcript files for stale sessions pruned on write", async () => {
     applyEnforcedMaintenanceConfig(mockLoadConfig);
 

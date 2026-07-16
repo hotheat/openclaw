@@ -34,6 +34,8 @@ export function createOpenClawTools(options?: {
   allowHostBrowserControl?: boolean;
   agentSessionKey?: string;
   agentChannel?: string;
+  /** Suppress external provider binding for heartbeat/cron/internal agent turns. */
+  internalExecution?: boolean;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   agentTo?: string;
@@ -117,7 +119,7 @@ export function createOpenClawTools(options?: {
         agentSessionKey: options?.agentSessionKey,
         config: options?.config,
         currentChannelId: options?.currentChannelId,
-        currentChannelProvider: options?.agentChannel,
+        currentChannelProvider: options?.internalExecution ? undefined : options?.agentChannel,
         currentThreadTs: options?.currentThreadTs,
         workspaceDir,
         replyToMode: options?.replyToMode,

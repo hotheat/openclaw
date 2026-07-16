@@ -628,6 +628,12 @@ export async function spawnSubagentDirect(
         deliver: false,
         lane: AGENT_LANE_SUBAGENT,
         extraSystemPrompt: childSystemPrompt,
+        inputProvenance: {
+          kind: "internal_system",
+          sourceSessionKey: requesterInternalKey,
+          sourceChannel: requesterOrigin?.channel,
+          sourceTool: "sessions_spawn",
+        },
         thinking: thinkingOverride,
         timeout: runTimeoutSeconds,
         label: sessionLabel,

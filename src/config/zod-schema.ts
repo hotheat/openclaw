@@ -471,6 +471,13 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        webchat: z
+          .object({
+            enabled: z.boolean().optional(),
+            allowedOrigins: z.array(z.string()).optional(),
+          })
+          .strict()
+          .optional(),
         auth: z
           .object({
             mode: z

@@ -18,5 +18,6 @@ export type QueueModeByProvider = {
   signal?: QueueMode;
   imessage?: QueueMode;
   msteams?: QueueMode;
+  "control-ui"?: QueueMode;
   webchat?: QueueMode;
 };

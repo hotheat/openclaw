@@ -2,7 +2,8 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetControlUiConfigCompatWarningsForTesting } from "../control-ui-config-compat.js";
 import {
   clearSessionStoreCacheForTest,
   evaluateSessionFreshness,
@@ -16,7 +17,7 @@ import {
   resolveSessionTranscriptPathInDir,
   validateSessionId,
 } from "./paths.js";
-import { resolveSessionResetPolicy } from "./reset.js";
+import { resolveChannelResetConfig, resolveSessionResetPolicy } from "./reset.js";
 import { appendAssistantMessageToSessionTranscript } from "./transcript.js";
 import type { SessionEntry } from "./types.js";
 
@@ -102,6 +103,54 @@ describe("resolveSessionResetPolicy", () => {
     expect(policy.mode).toBe("weekly");
     expect(policy.weekday).toBe(1);
     expect(policy.atHour).toBe(4);
+  });
+});
+
+describe("resolveChannelResetConfig", () => {
+  beforeEach(() => {
+    resetControlUiConfigCompatWarningsForTesting();
+  });
+
+  it("prefers an explicit control-ui reset over the legacy webchat reset", () => {
+    const controlUiReset = { mode: "idle" as const, idleMinutes: 30 };
+    const legacyReset = { mode: "daily" as const, atHour: 6 };
+
+    expect(
+      resolveChannelResetConfig({
+        sessionCfg: {
+          resetByChannel: { "control-ui": controlUiReset, webchat: legacyReset },
+        },
+        channel: "control-ui",
+      }),
+    ).toBe(controlUiReset);
+  });
+
+  it("falls back to the legacy webchat reset and emits a migration warning", () => {
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const legacyReset = { mode: "idle" as const, idleMinutes: 45 };
+
+    expect(
+      resolveChannelResetConfig({
+        sessionCfg: { resetByChannel: { webchat: legacyReset } },
+        channel: "control-ui",
+      }),
+    ).toBe(legacyReset);
+    expect(emitWarning).toHaveBeenCalledWith(
+      expect.stringContaining("session.resetByChannel.control-ui"),
+      expect.objectContaining({ code: "OPENCLAW_CONTROL_UI_LEGACY_WEBCHAT_CONFIG" }),
+    );
+    emitWarning.mockRestore();
+  });
+
+  it("keeps unrelated channel reset lookup unchanged", () => {
+    const discordReset = { mode: "weekly" as const, weekday: 1, atHour: 4 };
+
+    expect(
+      resolveChannelResetConfig({
+        sessionCfg: { resetByChannel: { discord: discordReset } },
+        channel: " Discord ",
+      }),
+    ).toBe(discordReset);
   });
 });
 

@@ -145,6 +145,21 @@ describe("buildThreadingToolContext", () => {
     expect(result.currentChannelId).toBe("C1");
     expect(result.currentThreadTs).toBe("123.456");
   });
+
+  it("does not bind heartbeat turns to a synthetic channel provider", () => {
+    const result = buildThreadingToolContext({
+      sessionCtx: {
+        Provider: "heartbeat",
+        From: "heartbeat",
+        To: "heartbeat",
+      } as TemplateContext,
+      config: cfg,
+      hasRepliedRef: undefined,
+    });
+
+    expect(result.currentChannelProvider).toBeUndefined();
+    expect(result.currentChannelId).toBeUndefined();
+  });
 });
 
 describe("applyReplyThreading auto-threading", () => {

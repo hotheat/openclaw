@@ -5,6 +5,7 @@ import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
 import { defaultRuntime } from "../runtime.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveAssistantStreamDeltaText } from "./agent-event-assistant-text.js";
 import {
   buildAgentMessageFromConversationEntries,
@@ -52,7 +53,11 @@ function buildAgentCommandInput(params: {
     sessionKey: params.sessionKey,
     runId: params.runId,
     deliver: false as const,
-    messageChannel: "webchat" as const,
+    messageChannel: INTERNAL_MESSAGE_CHANNEL,
+    runContext: {
+      messageChannel: INTERNAL_MESSAGE_CHANNEL,
+      internalExecution: true,
+    },
     bestEffortDeliver: false as const,
   };
 }

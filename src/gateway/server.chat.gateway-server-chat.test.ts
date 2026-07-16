@@ -86,7 +86,7 @@ describe("gateway server chat", () => {
           id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
           version: "dev",
           platform: "web",
-          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          mode: GATEWAY_CLIENT_MODES.UI,
         },
       });
 
@@ -349,32 +349,35 @@ describe("gateway server chat", () => {
 
   test("agent events include sessionKey and agent.wait covers lifecycle flows", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
-    testState.sessionStorePath = path.join(dir, "sessions.json");
-    await writeSessionStore({
-      entries: {
-        main: {
-          sessionId: "sess-main",
-          updatedAt: Date.now(),
-          verboseLevel: "off",
-        },
-      },
-    });
-
-    const webchatWs = new WebSocket(`ws://127.0.0.1:${port}`, {
-      headers: { origin: `http://127.0.0.1:${port}` },
-    });
-    trackConnectChallengeNonce(webchatWs);
-    await new Promise<void>((resolve) => webchatWs.once("open", resolve));
-    await connectOk(webchatWs, {
-      client: {
-        id: GATEWAY_CLIENT_NAMES.WEBCHAT,
-        version: "1.0.0",
-        platform: "test",
-        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
-      },
-    });
+    let webchatWs: WebSocket | undefined;
 
     try {
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-main",
+            updatedAt: Date.now(),
+            verboseLevel: "off",
+          },
+        },
+      });
+      testState.gatewayWebchat = { enabled: true };
+
+      webchatWs = new WebSocket(`ws://127.0.0.1:${port}`, {
+        headers: { origin: `http://127.0.0.1:${port}` },
+      });
+      trackConnectChallengeNonce(webchatWs);
+      await new Promise<void>((resolve) => webchatWs?.once("open", resolve));
+      await connectOk(webchatWs, {
+        client: {
+          id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+          version: "1.0.0",
+          platform: "test",
+          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        },
+      });
+
       registerAgentRunContext("run-tool-1", {
         sessionKey: "main",
         verboseLevel: "on",
@@ -490,7 +493,8 @@ describe("gateway server chat", () => {
         expect(res.payload?.endedAt).toBe(456);
       }
     } finally {
-      webchatWs.close();
+      testState.gatewayWebchat = undefined;
+      webchatWs?.close();
       await fs.rm(dir, { recursive: true, force: true });
       testState.sessionStorePath = undefined;
     }

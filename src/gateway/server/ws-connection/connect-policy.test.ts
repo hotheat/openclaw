@@ -1,11 +1,63 @@
 import { describe, expect, test } from "vitest";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../../../utils/message-channel.js";
 import {
   evaluateMissingDeviceIdentity,
+  resolveGatewayBrowserClientPolicy,
   resolveControlUiAuthPolicy,
   shouldSkipControlUiPairing,
 } from "./connect-policy.js";
 
 describe("ws connect policy", () => {
+  test("separates Control UI from disabled-by-default external WebChat", () => {
+    const controlUi = resolveGatewayBrowserClientPolicy({
+      client: {
+        id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+        version: "dev",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+      controlUiConfig: { allowedOrigins: ["https://control.example"] },
+      webchatConfig: { allowedOrigins: ["https://chat.example"] },
+    });
+    expect(controlUi).toEqual({
+      kind: "control-ui",
+      enabled: true,
+      allowedOrigins: ["https://control.example"],
+    });
+
+    const disabledWebchat = resolveGatewayBrowserClientPolicy({
+      client: {
+        id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+        version: "dev",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+    });
+    expect(disabledWebchat).toEqual({
+      kind: "webchat",
+      enabled: false,
+      allowedOrigins: undefined,
+    });
+
+    const enabledWebchat = resolveGatewayBrowserClientPolicy({
+      client: {
+        id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+        version: "dev",
+        platform: "web",
+        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+      webchatConfig: {
+        enabled: true,
+        allowedOrigins: ["https://chat.example"],
+      },
+    });
+    expect(enabledWebchat).toEqual({
+      kind: "webchat",
+      enabled: true,
+      allowedOrigins: ["https://chat.example"],
+    });
+  });
+
   test("resolves control-ui auth policy", () => {
     const bypass = resolveControlUiAuthPolicy({
       isControlUi: true,

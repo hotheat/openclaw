@@ -5,7 +5,7 @@ import { removeRemoteNodeInfo } from "../../infra/skills-remote.js";
 import { upsertPresence } from "../../infra/system-presence.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
 import { truncateUtf16Safe } from "../../utils.js";
-import { isWebchatClient } from "../../utils/message-channel.js";
+import { isControlUiClient, isWebchatClient } from "../../utils/message-channel.js";
 import type { AuthRateLimiter } from "../auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "../auth.js";
 import { isLoopbackAddress } from "../net.js";
@@ -221,7 +221,11 @@ export function attachGatewayWsConnectionHandler(params: {
           closeContext,
         );
       }
-      if (client && isWebchatClient(client.connect.client)) {
+      if (client && isControlUiClient(client.connect.client)) {
+        logWsControl.info(
+          `control-ui disconnected code=${code} reason=${logReason || "n/a"} conn=${connId}`,
+        );
+      } else if (client && isWebchatClient(client.connect.client)) {
         logWsControl.info(
           `webchat disconnected code=${code} reason=${logReason || "n/a"} conn=${connId}`,
         );

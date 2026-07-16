@@ -208,7 +208,7 @@ export class GatewayBrowserClient {
       const payload = buildDeviceAuthPayload({
         deviceId: deviceIdentity.deviceId,
         clientId: this.opts.clientName ?? GATEWAY_CLIENT_NAMES.CONTROL_UI,
-        clientMode: this.opts.mode ?? GATEWAY_CLIENT_MODES.WEBCHAT,
+        clientMode: this.opts.mode ?? GATEWAY_CLIENT_MODES.UI,
         role,
         scopes,
         signedAtMs,
@@ -231,7 +231,7 @@ export class GatewayBrowserClient {
         id: this.opts.clientName ?? GATEWAY_CLIENT_NAMES.CONTROL_UI,
         version: this.opts.clientVersion ?? "dev",
         platform: this.opts.platform ?? navigator.platform ?? "web",
-        mode: this.opts.mode ?? GATEWAY_CLIENT_MODES.WEBCHAT,
+        mode: this.opts.mode ?? GATEWAY_CLIENT_MODES.UI,
         instanceId: this.opts.instanceId,
       },
       role,

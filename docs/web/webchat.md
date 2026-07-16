@@ -1,53 +1,67 @@
 ---
-summary: "Loopback WebChat static host and Gateway WS usage for chat UI"
+summary: "External WebChat WebSocket ingress and gateway configuration"
 read_when:
-  - Debugging or configuring WebChat access
+  - Connecting a standalone WebChat client to the Gateway
+  - Configuring external WebChat access or allowed origins
 title: "WebChat"
 ---
 
-# WebChat (Gateway WebSocket UI)
+# WebChat
 
-Status: the macOS/iOS SwiftUI chat UI talks directly to the Gateway WebSocket.
+External WebChat is the reserved Gateway WebSocket ingress for standalone chat clients whose
+reported client ID or mode identifies them as WebChat. It is separate from the built-in browser
+Control UI and the first-party TUI, macOS, iOS, and Android interfaces.
 
-## What it is
+External WebChat is disabled by default. Enable it explicitly before connecting a standalone
+client:
 
-- A native chat UI for the gateway (no embedded browser and no local static server).
-- Uses the same sessions and routing rules as other channels.
-- Deterministic routing: replies always go back to WebChat.
+```json5
+{
+  gateway: {
+    webchat: {
+      enabled: true,
+      allowedOrigins: ["https://chat.example.com"],
+    },
+    auth: {
+      mode: "token",
+      token: "replace-me",
+    },
+  },
+}
+```
 
-## Quick start
+## Connection behavior
 
-1. Start the gateway.
-2. Open the WebChat UI (macOS/iOS app) or the Control UI chat tab.
-3. Ensure gateway auth is configured (required by default, even on loopback).
+- The client connects to the Gateway WebSocket and uses methods such as `chat.history`,
+  `chat.send`, `chat.abort`, and `chat.inject`.
+- `gateway.webchat.enabled` must be `true`; otherwise the Gateway rejects the handshake with
+  close code `1008`.
+- `gateway.webchat.allowedOrigins` controls accepted browser origins for external WebChat. It is
+  independent from `gateway.controlUi.allowedOrigins`.
+- Gateway authentication still applies. Use `gateway.auth` for access control on every exposed
+  deployment.
 
-## How it works (behavior)
+`gateway.webchat.enabled` classifies clients from the identity they report in the WebSocket
+handshake. It is an ingress hygiene filter, not an authentication boundary. Do not rely on this
+setting in place of `gateway.auth`.
 
-- The UI connects to the Gateway WebSocket and uses `chat.history`, `chat.send`, and `chat.inject`.
-- `chat.history` is bounded for stability: Gateway may truncate long text fields, omit heavy metadata, and replace oversized entries with `[chat.history omitted: message too large]`.
-- `chat.inject` appends an assistant note directly to the transcript and broadcasts it to the UI (no agent run).
-- Aborted runs can keep partial assistant output visible in the UI.
-- Gateway persists aborted partial assistant text into transcript history when buffered output exists, and marks those entries with abort metadata.
-- History is always fetched from the gateway (no local file watching).
-- If the gateway is unreachable, WebChat is read-only.
+## Channel-specific configuration migration
 
-## Remote use
+Built-in and first-party interactive clients now use the `control-ui` message-channel key.
+Standalone external WebChat clients continue to use `webchat`.
 
-- Remote mode tunnels the gateway WebSocket over SSH/Tailscale.
-- You do not need to run a separate WebChat server.
+If an existing configuration used `webchat` for the built-in Control UI, move the value to
+`control-ui` in these maps:
 
-## Configuration reference (WebChat)
+- `messages.queue.byChannel`
+- `messages.queue.debounceMsByChannel`
+- `tools.elevated.allowFrom`
+- `agents.list[].tools.elevated.allowFrom`
+- `session.resetByChannel`
 
-Full configuration: [Configuration](/gateway/configuration)
+The legacy `webchat` value remains a compatibility fallback for Control UI when no explicit
+`control-ui` value exists. OpenClaw emits a deprecation warning when it uses that fallback. An
+explicit `control-ui` value always wins.
 
-Channel options:
-
-- No dedicated `webchat.*` block. WebChat uses the gateway endpoint + auth settings below.
-
-Related global options:
-
-- `gateway.port`, `gateway.bind`: WebSocket host/port.
-- `gateway.auth.mode`, `gateway.auth.token`, `gateway.auth.password`: WebSocket auth (token/password).
-- `gateway.auth.mode: "trusted-proxy"`: reverse-proxy auth for browser clients (see [Trusted Proxy Auth](/gateway/trusted-proxy-auth)).
-- `gateway.remote.url`, `gateway.remote.token`, `gateway.remote.password`: remote gateway target.
-- `session.*`: session storage and main key defaults.
+See [Control UI](/web/control-ui) for the built-in browser interface and
+[Configuration Reference](/gateway/configuration-reference) for all Gateway settings.

@@ -2,6 +2,7 @@ import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { getChannelDock } from "../../channels/dock.js";
 import { normalizeChannelId } from "../../channels/plugins/index.js";
 import type { AgentElevatedAllowFromConfig, OpenClawConfig } from "../../config/config.js";
+import { resolveControlUiConfigValue } from "../../config/control-ui-config-compat.js";
 import type { MsgContext } from "../templating.js";
 import {
   type AllowFromFormatter,
@@ -18,12 +19,17 @@ export { formatElevatedUnavailableMessage } from "./elevated-unavailable.js";
 function resolveElevatedAllowList(
   allowFrom: AgentElevatedAllowFromConfig | undefined,
   provider: string,
+  configPath: string,
   fallbackAllowFrom?: Array<string | number>,
 ): Array<string | number> | undefined {
   if (!allowFrom) {
     return fallbackAllowFrom;
   }
-  const value = allowFrom[provider];
+  const value = resolveControlUiConfigValue({
+    values: allowFrom,
+    channel: provider,
+    configPath,
+  });
   return Array.isArray(value) ? value : fallbackAllowFrom;
 }
 
@@ -53,11 +59,13 @@ function isApprovedElevatedSender(params: {
   ctx: MsgContext;
   formatAllowFrom: AllowFromFormatter;
   allowFrom?: AgentElevatedAllowFromConfig;
+  allowFromConfigPath: string;
   fallbackAllowFrom?: Array<string | number>;
 }): boolean {
   const rawAllow = resolveElevatedAllowList(
     params.allowFrom,
     params.provider,
+    params.allowFromConfigPath,
     params.fallbackAllowFrom,
   );
   if (!rawAllow || rawAllow.length === 0) {
@@ -206,6 +214,7 @@ export function resolveElevatedPermissions(params: {
     ctx: params.ctx,
     formatAllowFrom,
     allowFrom: globalConfig?.allowFrom,
+    allowFromConfigPath: "tools.elevated.allowFrom",
     fallbackAllowFrom,
   });
   if (!globalAllowed) {
@@ -222,6 +231,7 @@ export function resolveElevatedPermissions(params: {
         ctx: params.ctx,
         formatAllowFrom,
         allowFrom: agentConfig.allowFrom,
+        allowFromConfigPath: "agents.list[].tools.elevated.allowFrom",
         fallbackAllowFrom,
       })
     : true;

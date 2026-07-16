@@ -38,7 +38,9 @@ import { normalizeMainKey } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 import {
+  CONTROL_UI_MESSAGE_CHANNEL,
   INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
@@ -250,13 +252,17 @@ function resolveLastChannelRaw(params: {
   const persistedChannel = normalizeMessageChannel(params.persistedLastChannel);
   const sessionKeyChannelHint = resolveSessionKeyChannelHint(params.sessionKey);
   let resolved = params.originatingChannelRaw || params.persistedLastChannel;
-  // Internal webchat/system turns should not overwrite previously known external
+  // Non-delivery turns should not overwrite previously known external
   // delivery routes (or explicit channel hints encoded in the session key).
-  if (originatingChannel === INTERNAL_MESSAGE_CHANNEL) {
+  if (
+    originatingChannel === INTERNAL_MESSAGE_CHANNEL ||
+    originatingChannel === CONTROL_UI_MESSAGE_CHANNEL
+  ) {
     if (
       persistedChannel &&
       persistedChannel !== INTERNAL_MESSAGE_CHANNEL &&
-      isDeliverableMessageChannel(persistedChannel)
+      persistedChannel !== CONTROL_UI_MESSAGE_CHANNEL &&
+      persistedChannel !== WEBCHAT_MESSAGE_CHANNEL
     ) {
       resolved = persistedChannel;
     } else if (
@@ -265,6 +271,8 @@ function resolveLastChannelRaw(params: {
       isDeliverableMessageChannel(sessionKeyChannelHint)
     ) {
       resolved = sessionKeyChannelHint;
+    } else {
+      resolved = undefined;
     }
   }
   return resolved;
@@ -530,24 +538,43 @@ export async function initSessionState(params: {
   const baseEntry = !isNewSession && freshEntry ? existingSessionEntry : undefined;
   // Track the originating channel/to for announce routing (subagent announce-back).
   const originatingChannelRaw = ctx.OriginatingChannel as string | undefined;
+  const originatingChannel = normalizeMessageChannel(originatingChannelRaw);
+  const preservePersistedDeliveryRoute =
+    originatingChannel === INTERNAL_MESSAGE_CHANNEL ||
+    originatingChannel === CONTROL_UI_MESSAGE_CHANNEL;
   const lastChannelRaw = resolveLastChannelRaw({
     originatingChannelRaw,
-    persistedLastChannel: baseEntry?.lastChannel,
+    persistedLastChannel: baseEntry?.lastChannel ?? baseEntry?.deliveryContext?.channel,
     sessionKey,
   });
-  const lastToRaw = ctx.OriginatingTo || ctx.To || baseEntry?.lastTo;
-  const lastAccountIdRaw = ctx.AccountId || baseEntry?.lastAccountId;
+  const lastToRaw = preservePersistedDeliveryRoute
+    ? (baseEntry?.lastTo ?? baseEntry?.deliveryContext?.to)
+    : ctx.OriginatingTo || ctx.To || baseEntry?.lastTo || baseEntry?.deliveryContext?.to;
+  const lastAccountIdRaw = preservePersistedDeliveryRoute
+    ? (baseEntry?.lastAccountId ?? baseEntry?.deliveryContext?.accountId)
+    : ctx.AccountId || baseEntry?.lastAccountId || baseEntry?.deliveryContext?.accountId;
   // Only fall back to persisted threadId for thread sessions.  Non-thread
   // sessions (e.g. DM without topics) must not inherit a stale threadId from a
   // previous interaction that happened inside a topic/thread.
-  const lastThreadIdRaw = ctx.MessageThreadId || (isThread ? baseEntry?.lastThreadId : undefined);
+  // Internal and Control UI turns are not delivery sources, so they preserve
+  // the existing route atomically, including a thread target on a main session.
+  const lastThreadIdRaw = preservePersistedDeliveryRoute
+    ? (baseEntry?.lastThreadId ?? baseEntry?.deliveryContext?.threadId)
+    : ctx.MessageThreadId || (isThread ? baseEntry?.lastThreadId : undefined);
   const deliveryFields = normalizeSessionDeliveryFields({
-    deliveryContext: {
-      channel: lastChannelRaw,
-      to: lastToRaw,
-      accountId: lastAccountIdRaw,
-      threadId: lastThreadIdRaw,
-    },
+    lastChannel: lastChannelRaw,
+    lastTo: lastToRaw,
+    lastAccountId: lastAccountIdRaw,
+    lastThreadId: lastThreadIdRaw,
+    deliveryContext: baseEntry?.deliveryContext
+      ? {
+          ...baseEntry.deliveryContext,
+          threadId:
+            preservePersistedDeliveryRoute || isThread
+              ? baseEntry.deliveryContext.threadId
+              : undefined,
+        }
+      : undefined,
   });
   const lastChannel = deliveryFields.lastChannel ?? lastChannelRaw;
   const lastTo = deliveryFields.lastTo ?? lastToRaw;

@@ -26,6 +26,8 @@ export type RunEmbeddedPiAgentParams = {
   agentId?: string;
   messageChannel?: string;
   messageProvider?: string;
+  /** Internal runs must not bind the message tool to a synthetic channel. */
+  internalExecution?: boolean;
   agentAccountId?: string;
   /** Delivery target (e.g. telegram:group:123:topic:456) for topic/thread routing. */
   messageTo?: string;

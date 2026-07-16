@@ -29,6 +29,7 @@ import {
   type InputImageSource,
 } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
 import { resolveAssistantStreamDeltaText } from "./agent-event-assistant-text.js";
 import {
   buildAgentMessageFromConversationEntries,
@@ -321,7 +322,11 @@ async function runResponsesAgentCommand(params: {
       sessionKey: params.sessionKey,
       runId: params.runId,
       deliver: false,
-      messageChannel: "webchat",
+      messageChannel: INTERNAL_MESSAGE_CHANNEL,
+      runContext: {
+        messageChannel: INTERNAL_MESSAGE_CHANNEL,
+        internalExecution: true,
+      },
       bestEffortDeliver: false,
     },
     defaultRuntime,

@@ -357,6 +357,7 @@ export const QueueModeBySurfaceSchema = z
     signal: QueueModeSchema.optional(),
     imessage: QueueModeSchema.optional(),
     msteams: QueueModeSchema.optional(),
+    "control-ui": QueueModeSchema.optional(),
     webchat: QueueModeSchema.optional(),
   })
   .strict()

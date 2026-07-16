@@ -4,7 +4,9 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { BlockStreamingCoalesceConfig } from "../../config/types.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import {
+  CONTROL_UI_MESSAGE_CHANNEL,
   INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
   listDeliverableMessageChannels,
 } from "../../utils/message-channel.js";
 import { resolveChunkMode, resolveTextChunkLimit, type TextChunkProvider } from "../chunk.js";
@@ -13,7 +15,12 @@ const DEFAULT_BLOCK_STREAM_MIN = 800;
 const DEFAULT_BLOCK_STREAM_MAX = 1200;
 const DEFAULT_BLOCK_STREAM_COALESCE_IDLE_MS = 1000;
 const getBlockChunkProviders = () =>
-  new Set<TextChunkProvider>([...listDeliverableMessageChannels(), INTERNAL_MESSAGE_CHANNEL]);
+  new Set<TextChunkProvider>([
+    ...listDeliverableMessageChannels(),
+    INTERNAL_MESSAGE_CHANNEL,
+    CONTROL_UI_MESSAGE_CHANNEL,
+    WEBCHAT_MESSAGE_CHANNEL,
+  ]);
 
 function normalizeChunkProvider(provider?: string): TextChunkProvider | undefined {
   if (!provider) {

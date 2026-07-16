@@ -163,6 +163,13 @@ describe("OpenResponses HTTP API (e2e)", () => {
       expect((optsHeader as { sessionKey?: string } | undefined)?.sessionKey ?? "").toMatch(
         /^agent:beta:/,
       );
+      expect(optsHeader).toMatchObject({
+        messageChannel: "internal",
+        runContext: {
+          messageChannel: "internal",
+          internalExecution: true,
+        },
+      });
       await ensureResponseConsumed(resHeader);
 
       mockAgentOnce([{ text: "hello" }]);

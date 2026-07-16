@@ -69,6 +69,11 @@ export function isInterSessionInputProvenance(value: unknown): boolean {
   return normalizeInputProvenance(value)?.kind === "inter_session";
 }
 
+export function isInternalInputProvenance(value: unknown): boolean {
+  const kind = normalizeInputProvenance(value)?.kind;
+  return kind === "inter_session" || kind === "internal_system";
+}
+
 export function hasInterSessionUserProvenance(
   message: { role?: unknown; provenance?: unknown } | undefined,
 ): boolean {

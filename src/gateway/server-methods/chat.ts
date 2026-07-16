@@ -16,7 +16,7 @@ import {
   stripInlineDirectiveTagsForDisplay,
   stripInlineDirectiveTagsFromMessageForDisplay,
 } from "../../utils/directive-tags.js";
-import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
+import { resolveGatewayClientMessageChannel } from "../../utils/message-channel.js";
 import {
   abortChatRunById,
   abortChatRunsForSessionKey,
@@ -808,6 +808,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       const commandBody = injectThinking ? `/think ${p.thinking} ${parsedMessage}` : parsedMessage;
       const clientInfo = client?.connect?.client;
+      const messageChannel = resolveGatewayClientMessageChannel(clientInfo);
       // Inject timestamp so agents know the current date/time.
       // Only BodyForAgent gets the timestamp — Body stays raw for UI display.
       // See: https://github.com/moltbot/moltbot/issues/3658
@@ -820,9 +821,9 @@ export const chatHandlers: GatewayRequestHandlers = {
         RawBody: parsedMessage,
         CommandBody: commandBody,
         SessionKey: sessionKey,
-        Provider: INTERNAL_MESSAGE_CHANNEL,
-        Surface: INTERNAL_MESSAGE_CHANNEL,
-        OriginatingChannel: INTERNAL_MESSAGE_CHANNEL,
+        Provider: messageChannel,
+        Surface: messageChannel,
+        OriginatingChannel: messageChannel,
         ChatType: "direct",
         CommandAuthorized: true,
         MessageSid: clientRunId,
@@ -839,13 +840,13 @@ export const chatHandlers: GatewayRequestHandlers = {
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg,
         agentId,
-        channel: INTERNAL_MESSAGE_CHANNEL,
+        channel: messageChannel,
       });
       const finalReplyParts: string[] = [];
       const dispatcher = createReplyDispatcher({
         ...prefixOptions,
         onError: (err) => {
-          context.logGateway.warn(`webchat dispatch failed: ${formatForLog(err)}`);
+          context.logGateway.warn(`${messageChannel} dispatch failed: ${formatForLog(err)}`);
         },
         deliver: async (payload, info) => {
           if (info.kind !== "final") {
@@ -876,7 +877,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           });
           if (!routed.ok) {
             context.logGateway.warn(
-              `webchat external delivery failed: ${routed.error ?? "unknown error"}`,
+              `${messageChannel} external delivery failed: ${routed.error ?? "unknown error"}`,
             );
           }
         },
@@ -937,7 +938,7 @@ export const chatHandlers: GatewayRequestHandlers = {
                 message = appended.message;
               } else {
                 context.logGateway.warn(
-                  `webchat transcript append failed: ${appended.error ?? "unknown error"}`,
+                  `${messageChannel} transcript append failed: ${appended.error ?? "unknown error"}`,
                 );
                 const now = Date.now();
                 message = {
@@ -1053,7 +1054,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    // Broadcast to webchat for immediate UI update
+    // Broadcast to connected chat clients for immediate UI updates.
     const chatPayload = {
       runId: `inject-${appended.messageId}`,
       sessionKey: rawSessionKey,

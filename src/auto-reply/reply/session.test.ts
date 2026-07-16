@@ -2239,7 +2239,7 @@ describe("initSessionState stale threadId fallback", () => {
 });
 
 describe("initSessionState internal channel routing preservation", () => {
-  it("keeps persisted external lastChannel when OriginatingChannel is internal webchat", async () => {
+  it("keeps persisted external lastChannel when OriginatingChannel is internal", async () => {
     const storePath = await createStorePath("preserve-external-channel-");
     const sessionKey = "agent:main:telegram:group:12345";
     await saveSessionStore(storePath, {
@@ -2248,9 +2248,13 @@ describe("initSessionState internal channel routing preservation", () => {
         updatedAt: Date.now(),
         lastChannel: "telegram",
         lastTo: "group:12345",
+        lastAccountId: "alerts",
+        lastThreadId: 42,
         deliveryContext: {
           channel: "telegram",
           to: "group:12345",
+          accountId: "alerts",
+          threadId: 42,
         },
       },
     });
@@ -2259,8 +2263,38 @@ describe("initSessionState internal channel routing preservation", () => {
     const result = await initSessionState({
       ctx: {
         Body: "internal follow-up",
+        From: "heartbeat",
+        To: "heartbeat",
+        Provider: "heartbeat",
         SessionKey: sessionKey,
-        OriginatingChannel: "webchat",
+        OriginatingChannel: "internal",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry.lastChannel).toBe("telegram");
+    expect(result.sessionEntry.lastTo).toBe("group:12345");
+    expect(result.sessionEntry.lastAccountId).toBe("alerts");
+    expect(result.sessionEntry.lastThreadId).toBe(42);
+    expect(result.sessionEntry.deliveryContext).toEqual({
+      channel: "telegram",
+      to: "group:12345",
+      accountId: "alerts",
+      threadId: 42,
+    });
+  });
+
+  it("uses session key channel hint when first turn is internal", async () => {
+    const storePath = await createStorePath("session-key-channel-hint-");
+    const sessionKey = "agent:main:telegram:group:98765";
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: sessionKey,
+        OriginatingChannel: "internal",
       },
       cfg,
       commandAuthorized: true,
@@ -2270,23 +2304,99 @@ describe("initSessionState internal channel routing preservation", () => {
     expect(result.sessionEntry.deliveryContext?.channel).toBe("telegram");
   });
 
-  it("uses session key channel hint when first turn is internal webchat", async () => {
-    const storePath = await createStorePath("session-key-channel-hint-");
-    const sessionKey = "agent:main:telegram:group:98765";
+  it("does not persist internal as the last channel for main sessions", async () => {
+    const storePath = await createStorePath("internal-main-no-route-");
     const cfg = { session: { store: storePath } } as OpenClawConfig;
 
     const result = await initSessionState({
       ctx: {
-        Body: "hello",
-        SessionKey: sessionKey,
-        OriginatingChannel: "webchat",
+        Body: "heartbeat",
+        From: "heartbeat",
+        To: "heartbeat",
+        Provider: "heartbeat",
+        SessionKey: "agent:main:main",
+        OriginatingChannel: "internal",
       },
       cfg,
       commandAuthorized: true,
     });
 
-    expect(result.sessionEntry.lastChannel).toBe("telegram");
-    expect(result.sessionEntry.deliveryContext?.channel).toBe("telegram");
+    expect(result.sessionEntry.lastChannel).toBeUndefined();
+    expect(result.sessionEntry.lastTo).toBeUndefined();
+    expect(result.sessionEntry.deliveryContext).toBeUndefined();
+  });
+
+  it("keeps a Feishu delivery route when the Control UI sends into the session", async () => {
+    const storePath = await createStorePath("control-ui-preserve-feishu-route-");
+    const sessionKey = "agent:feishu-user:main";
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId: "sess-feishu",
+        updatedAt: Date.now(),
+        lastChannel: "feishu",
+        lastTo: "user:ou_123",
+        lastAccountId: "researcher",
+        lastThreadId: "om_456",
+        deliveryContext: {
+          channel: "feishu",
+          to: "user:ou_123",
+          accountId: "researcher",
+          threadId: "om_456",
+        },
+      },
+    });
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "operator follow-up",
+        SessionKey: sessionKey,
+        Provider: "control-ui",
+        Surface: "control-ui",
+        OriginatingChannel: "control-ui",
+        To: "control-ui",
+        AccountId: "ui-account",
+        MessageThreadId: "ui-thread",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry.lastChannel).toBe("feishu");
+    expect(result.sessionEntry.lastTo).toBe("user:ou_123");
+    expect(result.sessionEntry.lastAccountId).toBe("researcher");
+    expect(result.sessionEntry.lastThreadId).toBe("om_456");
+    expect(result.sessionEntry.deliveryContext).toEqual({
+      channel: "feishu",
+      to: "user:ou_123",
+      accountId: "researcher",
+      threadId: "om_456",
+    });
+    expect(result.sessionEntry.origin).toMatchObject({
+      provider: "control-ui",
+      surface: "control-ui",
+    });
+  });
+
+  it("records Control UI origin without creating a delivery route", async () => {
+    const storePath = await createStorePath("control-ui-main-no-route-");
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: "agent:main:main",
+        Provider: "control-ui",
+        Surface: "control-ui",
+        OriginatingChannel: "control-ui",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.sessionEntry.lastChannel).toBeUndefined();
+    expect(result.sessionEntry.deliveryContext).toBeUndefined();
+    expect(result.sessionEntry.origin?.provider).toBe("control-ui");
   });
 
   it("keeps webchat channel for webchat/main sessions", async () => {

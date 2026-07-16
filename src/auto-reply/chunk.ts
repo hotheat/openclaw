@@ -7,9 +7,19 @@ import type { OpenClawConfig } from "../config/config.js";
 import { findFenceSpanAt, isSafeFenceBreak, parseFenceSpans } from "../markdown/fences.js";
 import { normalizeAccountId } from "../routing/session-key.js";
 import { chunkTextByBreakResolver } from "../shared/text-chunking.js";
-import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import {
+  CONTROL_UI_MESSAGE_CHANNEL,
+  INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
+  type ControlUiMessageChannel,
+  type WebchatMessageChannel,
+} from "../utils/message-channel.js";
 
-export type TextChunkProvider = ChannelId | typeof INTERNAL_MESSAGE_CHANNEL;
+export type TextChunkProvider =
+  | ChannelId
+  | typeof INTERNAL_MESSAGE_CHANNEL
+  | ControlUiMessageChannel
+  | WebchatMessageChannel;
 
 /**
  * Chunking mode for outbound messages:
@@ -65,7 +75,12 @@ export function resolveTextChunkLimit(
       ? opts.fallbackLimit
       : DEFAULT_CHUNK_LIMIT;
   const providerOverride = (() => {
-    if (!provider || provider === INTERNAL_MESSAGE_CHANNEL) {
+    if (
+      !provider ||
+      provider === INTERNAL_MESSAGE_CHANNEL ||
+      provider === CONTROL_UI_MESSAGE_CHANNEL ||
+      provider === WEBCHAT_MESSAGE_CHANNEL
+    ) {
       return undefined;
     }
     const channelsConfig = cfg?.channels as Record<string, unknown> | undefined;
@@ -109,7 +124,12 @@ export function resolveChunkMode(
   provider?: TextChunkProvider,
   accountId?: string | null,
 ): ChunkMode {
-  if (!provider || provider === INTERNAL_MESSAGE_CHANNEL) {
+  if (
+    !provider ||
+    provider === INTERNAL_MESSAGE_CHANNEL ||
+    provider === CONTROL_UI_MESSAGE_CHANNEL ||
+    provider === WEBCHAT_MESSAGE_CHANNEL
+  ) {
     return DEFAULT_CHUNK_MODE;
   }
   const channelsConfig = cfg?.channels as Record<string, unknown> | undefined;

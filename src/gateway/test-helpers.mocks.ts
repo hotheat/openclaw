@@ -227,6 +227,7 @@ export const testState = {
   gatewayBind: undefined as "auto" | "lan" | "tailnet" | "loopback" | undefined,
   gatewayAuth: undefined as Record<string, unknown> | undefined,
   gatewayControlUi: undefined as Record<string, unknown> | undefined,
+  gatewayWebchat: undefined as Record<string, unknown> | undefined,
   hooksConfig: undefined as HooksConfig | undefined,
   canvasHostPort: undefined as number | undefined,
   legacyIssues: [] as Array<{ path: string; message: string }>,
@@ -483,6 +484,9 @@ vi.mock("../config/config.js", async () => {
       }
       if (testState.gatewayControlUi) {
         fileGateway.controlUi = testState.gatewayControlUi;
+      }
+      if (testState.gatewayWebchat) {
+        fileGateway.webchat = testState.gatewayWebchat;
       }
       const gateway = Object.keys(fileGateway).length > 0 ? fileGateway : undefined;
 

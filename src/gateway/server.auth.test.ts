@@ -102,7 +102,7 @@ const CONTROL_UI_CLIENT = {
   id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
   version: "1.0.0",
   platform: "web",
-  mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+  mode: GATEWAY_CLIENT_MODES.UI,
 };
 
 const NODE_CLIENT = {
@@ -561,6 +561,50 @@ describe("gateway server auth/connect", () => {
       await new Promise<void>((resolve) => ws.once("close", () => resolve()));
     });
 
+    test("rejects external WebChat before authentication when ingress is disabled", async () => {
+      const ws = await openWs(port, { origin: originForPort(port) });
+      const closeInfoPromise = new Promise<{ code: number; reason: string }>((resolve) => {
+        ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+      });
+
+      const res = await connectReq(ws, {
+        skipDefaultAuth: true,
+        client: {
+          id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+          version: "1.0.0",
+          platform: "web",
+          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        },
+      });
+
+      expect(res.ok).toBe(false);
+      expect((res.error?.details as { code?: string } | undefined)?.code).toBe(
+        ConnectErrorDetailCodes.WEBCHAT_DISABLED,
+      );
+      const closeInfo = await closeInfoPromise;
+      expect(closeInfo.code).toBe(1008);
+      expect(closeInfo.reason).toContain("external WebChat is disabled");
+    });
+
+    test("accepts external WebChat when ingress is explicitly enabled", async () => {
+      testState.gatewayWebchat = { enabled: true };
+      const ws = await openWs(port, { origin: originForPort(port) });
+      try {
+        const res = await connectReq(ws, {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "web",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+        });
+        expect(res.ok).toBe(true);
+        expect((res.payload as { type?: string } | undefined)?.type).toBe("hello-ok");
+      } finally {
+        ws.close();
+      }
+    });
+
     test("requires nonce for device auth", async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
         headers: { host: "example.com" },
@@ -809,7 +853,7 @@ describe("gateway server auth/connect", () => {
         id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
         version: "1.0.0",
         platform: "web",
-        mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        mode: GATEWAY_CLIENT_MODES.UI,
       },
     });
     expect(res.ok).toBe(true);
@@ -888,7 +932,7 @@ describe("gateway server auth/connect", () => {
           token: "secret",
           scopes,
           clientId: GATEWAY_CLIENT_NAMES.CONTROL_UI,
-          clientMode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          clientMode: GATEWAY_CLIENT_MODES.UI,
           identityPath: path.join(os.tmpdir(), `openclaw-controlui-device-${randomUUID()}.json`),
           nonce: String(nonce),
         });
@@ -926,7 +970,7 @@ describe("gateway server auth/connect", () => {
           token: "secret",
           scopes: [],
           clientId: GATEWAY_CLIENT_NAMES.CONTROL_UI,
-          clientMode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          clientMode: GATEWAY_CLIENT_MODES.UI,
           signedAtMs: Date.now() - 60 * 60 * 1000,
           nonce: String(challengeNonce),
         });

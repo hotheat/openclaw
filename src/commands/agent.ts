@@ -152,6 +152,7 @@ function runAgentAttempt(params: {
     sessionKey: params.sessionKey,
     agentId: params.sessionAgentId,
     messageChannel: params.messageChannel,
+    internalExecution: params.runContext.internalExecution,
     agentAccountId: params.runContext.accountId,
     messageTo: params.opts.replyTo ?? params.opts.to,
     messageThreadId: params.opts.threadId,

@@ -440,7 +440,7 @@ function resolveAnnounceOrigin(
   const normalizedRequester = normalizeDeliveryContext(requesterOrigin);
   const normalizedEntry = deliveryContextFromSession(entry);
   if (normalizedRequester?.channel && !isDeliverableMessageChannel(normalizedRequester.channel)) {
-    // Ignore internal/non-deliverable channel hints (for example webchat)
+    // Ignore non-deliverable channel hints (for example internal or webchat)
     // so a valid persisted route can still be used for outbound delivery.
     return mergeDeliveryContext(
       {

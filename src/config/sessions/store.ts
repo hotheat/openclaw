@@ -21,6 +21,7 @@ import {
   normalizeSessionDeliveryFields,
   type DeliveryContext,
 } from "../../utils/delivery-context.js";
+import { INTERNAL_MESSAGE_CHANNEL, WEBCHAT_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { getFileMtimeMs, isCacheEnabled, resolveCacheTtlMs } from "../cache-utils.js";
 import { loadConfig } from "../config.js";
 import type { SessionMaintenanceConfig, SessionMaintenanceMode } from "../types.base.js";
@@ -54,6 +55,20 @@ function getSessionStoreTtl(): number {
   });
 }
 
+function hasStaleHeartbeatRoute(entry: SessionEntry): boolean {
+  const origin = entry.origin;
+  const hasHeartbeatTarget =
+    entry.lastTo === "heartbeat" || entry.deliveryContext?.to === "heartbeat";
+  const hasHeartbeatProvider =
+    origin?.provider === "heartbeat" || origin?.provider === INTERNAL_MESSAGE_CHANNEL;
+  return (
+    hasHeartbeatProvider &&
+    origin?.from === "heartbeat" &&
+    origin.to === "heartbeat" &&
+    hasHeartbeatTarget
+  );
+}
+
 function isSessionStoreCacheEnabled(): boolean {
   return isCacheEnabled(getSessionStoreTtl());
 }
@@ -69,13 +84,34 @@ function invalidateSessionStoreCache(storePath: string): void {
 }
 
 function normalizeSessionEntryDelivery(entry: SessionEntry): SessionEntry {
+  const dropStaleHeartbeatRoute = hasStaleHeartbeatRoute(entry);
+  const normalizedChannel =
+    dropStaleHeartbeatRoute && entry.channel === WEBCHAT_MESSAGE_CHANNEL
+      ? undefined
+      : entry.channel;
+  const normalizedLastChannel =
+    dropStaleHeartbeatRoute && entry.lastChannel === WEBCHAT_MESSAGE_CHANNEL
+      ? undefined
+      : entry.lastChannel;
+  const normalizedLastTo =
+    dropStaleHeartbeatRoute && entry.lastTo === "heartbeat" ? undefined : entry.lastTo;
+  const normalizedDeliveryContext = dropStaleHeartbeatRoute
+    ? normalizeDeliveryContext({
+        ...entry.deliveryContext,
+        channel:
+          entry.deliveryContext?.channel === WEBCHAT_MESSAGE_CHANNEL
+            ? undefined
+            : entry.deliveryContext?.channel,
+        to: entry.deliveryContext?.to === "heartbeat" ? undefined : entry.deliveryContext?.to,
+      })
+    : entry.deliveryContext;
   const normalized = normalizeSessionDeliveryFields({
-    channel: entry.channel,
-    lastChannel: entry.lastChannel,
-    lastTo: entry.lastTo,
+    channel: normalizedChannel,
+    lastChannel: normalizedLastChannel,
+    lastTo: normalizedLastTo,
     lastAccountId: entry.lastAccountId,
     lastThreadId: entry.lastThreadId ?? entry.deliveryContext?.threadId ?? entry.origin?.threadId,
-    deliveryContext: entry.deliveryContext,
+    deliveryContext: normalizedDeliveryContext,
   });
   const nextDelivery = normalized.deliveryContext;
   const sameDelivery =
@@ -88,11 +124,13 @@ function normalizeSessionEntryDelivery(entry: SessionEntry): SessionEntry {
     entry.lastTo === normalized.lastTo &&
     entry.lastAccountId === normalized.lastAccountId &&
     entry.lastThreadId === normalized.lastThreadId;
-  if (sameDelivery && sameLast) {
+  const sameChannel = entry.channel === normalizedChannel;
+  if (sameDelivery && sameLast && sameChannel) {
     return entry;
   }
   return {
     ...entry,
+    channel: normalizedChannel,
     deliveryContext: nextDelivery,
     lastChannel: normalized.lastChannel,
     lastTo: normalized.lastTo,
@@ -119,6 +157,15 @@ function normalizeSessionStore(store: Record<string, SessionEntry>): void {
     if (normalized !== entry) {
       store[key] = normalized;
     }
+  }
+}
+
+function dropStaleHeartbeatRoutes(store: Record<string, SessionEntry>): void {
+  for (const [key, entry] of Object.entries(store)) {
+    if (!entry || !hasStaleHeartbeatRoute(entry)) {
+      continue;
+    }
+    store[key] = normalizeSessionEntryDelivery(entry);
   }
 }
 
@@ -227,6 +274,7 @@ export function loadSessionStore(
   }
 
   migrateLegacySessionStore(store);
+  dropStaleHeartbeatRoutes(store);
 
   // Cache the result if caching is enabled
   if (!opts.skipCache && isSessionStoreCacheEnabled()) {
@@ -255,6 +303,7 @@ async function loadSessionStoreFromDiskAsync(
       const parsed = JSON.parse(raw);
       const store = isSessionStoreRecord(parsed) ? parsed : {};
       migrateLegacySessionStore(store);
+      dropStaleHeartbeatRoutes(store);
       return store;
     } catch {
       if (attempt < maxReadAttempts - 1) {

@@ -648,7 +648,7 @@ describe("sessions tools", () => {
     for (const call of agentCalls) {
       expect(call.params).toMatchObject({
         lane: "nested",
-        channel: "webchat",
+        channel: "internal",
         inputProvenance: { kind: "inter_session" },
       });
     }
@@ -828,7 +828,7 @@ describe("sessions tools", () => {
     for (const call of agentCalls) {
       expect(call.params).toMatchObject({
         lane: "nested",
-        channel: "webchat",
+        channel: "internal",
         inputProvenance: { kind: "inter_session" },
       });
     }

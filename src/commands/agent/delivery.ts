@@ -18,7 +18,7 @@ import {
   normalizeOutboundPayloadsForJson,
 } from "../../infra/outbound/payloads.js";
 import type { RuntimeEnv } from "../../runtime.js";
-import { isInternalMessageChannel } from "../../utils/message-channel.js";
+import { isDeliverableMessageChannel } from "../../utils/message-channel.js";
 import type { AgentCommandOpts } from "./types.js";
 
 type RunResult = Awaited<
@@ -81,7 +81,7 @@ export async function deliverAgentCommandResult(params: {
   });
   let deliveryChannel = deliveryPlan.resolvedChannel;
   const explicitChannelHint = (opts.replyChannel ?? opts.channel)?.trim();
-  if (deliver && isInternalMessageChannel(deliveryChannel) && !explicitChannelHint) {
+  if (deliver && !isDeliverableMessageChannel(deliveryChannel) && !explicitChannelHint) {
     try {
       const selection = await resolveMessageChannelSelection({ cfg });
       deliveryChannel = selection.channel;
@@ -97,12 +97,12 @@ export async function deliverAgentCommandResult(params: {
           resolvedChannel: deliveryChannel,
         };
   // Channel docking: delivery channels are resolved via plugin registry.
-  const deliveryPlugin = !isInternalMessageChannel(deliveryChannel)
+  const deliveryPlugin = isDeliverableMessageChannel(deliveryChannel)
     ? getChannelPlugin(normalizeChannelId(deliveryChannel) ?? deliveryChannel)
     : undefined;
 
   const isDeliveryChannelKnown =
-    isInternalMessageChannel(deliveryChannel) || Boolean(deliveryPlugin);
+    !isDeliverableMessageChannel(deliveryChannel) || Boolean(deliveryPlugin);
 
   const targetMode =
     opts.deliveryTargetMode ??
@@ -138,7 +138,7 @@ export async function deliverAgentCommandResult(params: {
   };
 
   if (deliver) {
-    if (isInternalMessageChannel(deliveryChannel)) {
+    if (!isDeliverableMessageChannel(deliveryChannel)) {
       const err = new Error(
         "delivery channel is required: pass --channel/--reply-channel or use a main session with a previous channel",
       );
@@ -202,7 +202,7 @@ export async function deliverAgentCommandResult(params: {
       logPayload(payload);
     }
   }
-  if (deliver && deliveryChannel && !isInternalMessageChannel(deliveryChannel)) {
+  if (deliver && deliveryChannel && isDeliverableMessageChannel(deliveryChannel)) {
     if (deliveryTarget) {
       const deliveryAgentId =
         opts.agentId ??

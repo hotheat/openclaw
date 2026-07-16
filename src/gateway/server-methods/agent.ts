@@ -20,7 +20,11 @@ import {
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
 import { classifySessionKeyShape, normalizeAgentId } from "../../routing/session-key.js";
 import { defaultRuntime } from "../../runtime.js";
-import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
+import {
+  isInternalInputProvenance,
+  normalizeInputProvenance,
+  type InputProvenance,
+} from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { normalizeSessionDeliveryFields } from "../../utils/delivery-context.js";
 import {
@@ -211,6 +215,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     let spawnedByValue =
       typeof request.spawnedBy === "string" ? request.spawnedBy.trim() : undefined;
     const inputProvenance = normalizeInputProvenance(request.inputProvenance);
+    const internalInput = isInternalInputProvenance(inputProvenance);
     const traceParent = normalizeAgentTraceParent(request.traceParent);
     const cached = context.dedupe.get(`agent:${idem}`);
     if (cached) {
@@ -386,6 +391,13 @@ export const agentHandlers: GatewayRequestHandlers = {
       resolvedGroupChannel = resolvedGroupChannel || inheritedGroup?.groupChannel;
       resolvedGroupSpace = resolvedGroupSpace || inheritedGroup?.groupSpace;
       const deliveryFields = normalizeSessionDeliveryFields(entry);
+      const normalizedRequestChannel = normalizeMessageChannel(request.channel);
+      const requestChannelForSession =
+        normalizedRequestChannel &&
+        normalizedRequestChannel !== INTERNAL_MESSAGE_CHANNEL &&
+        (!internalInput || isDeliverableMessageChannel(normalizedRequestChannel))
+          ? request.channel?.trim()
+          : undefined;
       const nextEntry: SessionEntry = {
         sessionId,
         updatedAt: now,
@@ -404,7 +416,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         label: labelValue,
         spawnedBy: spawnedByValue,
         spawnDepth: entry?.spawnDepth,
-        channel: entry?.channel ?? request.channel?.trim(),
+        channel: entry?.channel ?? requestChannelForSession,
         groupId: resolvedGroupId ?? entry?.groupId,
         groupChannel: resolvedGroupChannel ?? entry?.groupChannel,
         space: resolvedGroupSpace ?? entry?.space,
@@ -501,7 +513,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     let resolvedTo = deliveryPlan.resolvedTo;
     let effectivePlan = deliveryPlan;
 
-    if (wantsDelivery && resolvedChannel === INTERNAL_MESSAGE_CHANNEL) {
+    if (wantsDelivery && !isDeliverableMessageChannel(resolvedChannel)) {
       const cfgResolved = cfgForAgent ?? cfg;
       try {
         const selection = await resolveMessageChannelSelection({ cfg: cfgResolved });
@@ -532,7 +544,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
-    if (wantsDelivery && resolvedChannel === INTERNAL_MESSAGE_CHANNEL) {
+    if (wantsDelivery && !isDeliverableMessageChannel(resolvedChannel)) {
       respond(
         false,
         undefined,
@@ -544,7 +556,8 @@ export const agentHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    const deliver = request.deliver === true && resolvedChannel !== INTERNAL_MESSAGE_CHANNEL;
+    const deliver = request.deliver === true && isDeliverableMessageChannel(resolvedChannel);
+    const internalExecution = resolvedChannel === INTERNAL_MESSAGE_CHANNEL;
 
     const accepted = {
       runId,
@@ -576,6 +589,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         threadId: resolvedThreadId,
         runContext: {
           messageChannel: resolvedChannel,
+          internalExecution,
           accountId: resolvedAccountId,
           groupId: resolvedGroupId,
           groupChannel: resolvedGroupChannel,

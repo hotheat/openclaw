@@ -4,11 +4,19 @@ import type {
   MediaUnderstandingOutput,
 } from "../media-understanding/types.js";
 import type { StickerMetadata } from "../telegram/bot/types.js";
-import type { InternalMessageChannel } from "../utils/message-channel.js";
+import type {
+  ControlUiMessageChannel,
+  InternalMessageChannel,
+  WebchatMessageChannel,
+} from "../utils/message-channel.js";
 import type { CommandArgs } from "./commands-registry.types.js";
 
 /** Valid message channels for routing. */
-export type OriginatingChannelType = ChannelId | InternalMessageChannel;
+export type OriginatingChannelType =
+  | ChannelId
+  | InternalMessageChannel
+  | ControlUiMessageChannel
+  | WebchatMessageChannel;
 
 export type MsgContext = {
   Body?: string;

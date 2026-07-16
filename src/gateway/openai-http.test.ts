@@ -111,6 +111,13 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
       expect((opts as { sessionKey?: string } | undefined)?.sessionKey ?? "").toMatch(
         request.matcher,
       );
+      expect(opts).toMatchObject({
+        messageChannel: "internal",
+        runContext: {
+          messageChannel: "internal",
+          internalExecution: true,
+        },
+      });
       await res.text();
     };
     const expectMessageContext = (

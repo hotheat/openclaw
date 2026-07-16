@@ -3,7 +3,9 @@ import { logVerbose } from "../../globals.js";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
+  isControlUiMessageChannel,
   isInternalMessageChannel,
+  isWebchatMessageChannel,
 } from "../../utils/message-channel.js";
 import type { CommandHandler } from "./commands-types.js";
 
@@ -86,7 +88,11 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
     return { shouldContinue: false, reply: { text: parsed.error } };
   }
 
-  if (isInternalMessageChannel(params.command.channel)) {
+  if (
+    isInternalMessageChannel(params.command.channel) ||
+    isControlUiMessageChannel(params.command.channel) ||
+    isWebchatMessageChannel(params.command.channel)
+  ) {
     const scopes = params.ctx.GatewayClientScopes ?? [];
     const hasApprovals = scopes.includes("operator.approvals") || scopes.includes("operator.admin");
     if (!hasApprovals) {

@@ -91,6 +91,7 @@ Cron jobs panel notes:
 ## Chat behavior
 
 - `chat.send` is **non-blocking**: it acks immediately with `{ runId, status: "started" }` and the response streams via `chat` events.
+- Control UI and other known first-party clients connecting with `clientMode=ui` use the `control-ui` message-channel key. Internal heartbeat, subagent, cron, and HTTP API runs use `internal`.
 - Re-sending with the same `idempotencyKey` returns `{ status: "in_flight" }` while running, and `{ status: "ok" }` after completion.
 - `chat.history` responses are size-bounded for UI safety. When transcript entries are too large, Gateway may truncate long text fields, omit heavy metadata blocks, and replace oversized messages with a placeholder (`[chat.history omitted: message too large]`).
 - `chat.inject` appends an assistant note to the session transcript and broadcasts a `chat` event for UI-only updates (no agent run, no channel delivery).
@@ -102,6 +103,16 @@ Cron jobs panel notes:
   - When a run is aborted, partial assistant text can still be shown in the UI
   - Gateway persists aborted partial assistant text into transcript history when buffered output exists
   - Persisted entries include abort metadata so transcript consumers can tell abort partials from normal completion output
+
+### Channel-specific configuration migration
+
+Use `control-ui` instead of `webchat` for Control UI-specific entries under
+`messages.queue.byChannel`, `messages.queue.debounceMsByChannel`, `tools.elevated.allowFrom`,
+`agents.list[].tools.elevated.allowFrom`, and `session.resetByChannel`.
+
+Legacy `webchat` values remain as compatibility fallbacks when the corresponding `control-ui`
+value is absent. OpenClaw emits a deprecation warning when it uses a fallback. External WebChat
+clients continue to use the `webchat` key; see [WebChat](/web/webchat).
 
 ## Tailnet access (recommended)
 

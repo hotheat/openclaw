@@ -12,7 +12,9 @@ import type {
   GatewayMessageChannel,
 } from "../../utils/message-channel.js";
 import {
+  CONTROL_UI_MESSAGE_CHANNEL,
   INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
@@ -143,11 +145,21 @@ export function resolveOutboundTarget(params: {
   accountId?: string | null;
   mode?: ChannelOutboundTargetMode;
 }): OutboundTargetResolution {
-  if (params.channel === INTERNAL_MESSAGE_CHANNEL) {
+  if (
+    params.channel === INTERNAL_MESSAGE_CHANNEL ||
+    params.channel === CONTROL_UI_MESSAGE_CHANNEL ||
+    params.channel === WEBCHAT_MESSAGE_CHANNEL
+  ) {
+    const channelLabel =
+      params.channel === WEBCHAT_MESSAGE_CHANNEL
+        ? "WebChat"
+        : params.channel === CONTROL_UI_MESSAGE_CHANNEL
+          ? "Control UI"
+          : "the internal channel";
     return {
       ok: false,
       error: new Error(
-        `Delivering to WebChat is not supported via \`${formatCliCommand("openclaw agent")}\`; use WhatsApp/Telegram or run with --deliver=false.`,
+        `Delivering to ${channelLabel} is not supported via \`${formatCliCommand("openclaw agent")}\`; use a configured external channel or run with --deliver=false.`,
       ),
     };
   }

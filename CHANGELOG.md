@@ -27,6 +27,8 @@ Docs: https://docs.openclaw.ai
 
 ### Breaking
 
+- **BREAKING:** standalone WebChat WebSocket clients are disabled by default and now require `gateway.webchat.enabled: true`; their browser origins use `gateway.webchat.allowedOrigins`. The built-in Control UI and known first-party `clientMode=ui` clients now use the `control-ui` message-channel key. Legacy Control UI values under `webchat` remain compatibility fallbacks for queue, elevated allowlist, and session reset maps, with deprecation warnings.
+- **BREAKING:** OpenAI-compatible Chat Completions and Responses runs are now marked as internal executions. The `message` tool no longer inherits an implicit session delivery target in those runs and requires an explicit target.
 - **BREAKING:** sessions no longer auto-reset on the implicit default daily boundary. When no `session.reset`, `session.resetByType`, `session.resetByChannel`, or legacy `session.idleMinutes` is configured, OpenClaw keeps the existing session and only performs the daily session-memory capture. Configure `session.reset.mode` as `daily`, `weekly`, or `idle` to opt into automatic session id rollover.
 - **BREAKING:** tool-failure replies now hide raw error details by default. OpenClaw still sends a failure summary, but detailed error suffixes (for example provider/runtime messages and local path fragments) now require `/verbose on` or `/verbose full`.
 - **BREAKING:** CLI local onboarding now sets `session.dmScope` to `per-channel-peer` by default for new/implicit DM scope configuration. If you depend on shared DM continuity across senders, explicitly set `session.dmScope` to `main`. (#23468) Thanks @bmendonca3.

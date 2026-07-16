@@ -1,4 +1,5 @@
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
+import { resolveControlUiConfigValue } from "../control-ui-config-compat.js";
 import type { SessionConfig, SessionResetConfig } from "../types.base.js";
 import { DEFAULT_IDLE_MINUTES } from "./types.js";
 
@@ -152,7 +153,11 @@ export function resolveChannelResetConfig(params: {
   if (!key) {
     return undefined;
   }
-  return resetByChannel[key] ?? resetByChannel[key.toLowerCase()];
+  return resolveControlUiConfigValue({
+    values: resetByChannel,
+    channel: key,
+    configPath: "session.resetByChannel",
+  });
 }
 
 export function evaluateSessionFreshness(params: {

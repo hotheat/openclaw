@@ -10,8 +10,15 @@
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveEffectiveMessagesConfig } from "../../agents/identity.js";
 import { normalizeChannelId } from "../../channels/plugins/index.js";
+import type { ChannelId } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
-import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
+import {
+  CONTROL_UI_MESSAGE_CHANNEL,
+  INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
+  isDeliverableMessageChannel,
+  normalizeMessageChannel,
+} from "../../utils/message-channel.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import { normalizeReplyPayload } from "./normalize-reply.js";
@@ -94,10 +101,14 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
     return { ok: true };
   }
 
-  if (channel === INTERNAL_MESSAGE_CHANNEL) {
+  if (
+    channel === INTERNAL_MESSAGE_CHANNEL ||
+    channel === CONTROL_UI_MESSAGE_CHANNEL ||
+    channel === WEBCHAT_MESSAGE_CHANNEL
+  ) {
     return {
       ok: false,
-      error: "Webchat routing not supported for queued replies",
+      error: `${channel} routing not supported for queued replies`,
     };
   }
 
@@ -158,9 +169,6 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
  */
 export function isRoutableChannel(
   channel: OriginatingChannelType | undefined,
-): channel is Exclude<OriginatingChannelType, typeof INTERNAL_MESSAGE_CHANNEL> {
-  if (!channel || channel === INTERNAL_MESSAGE_CHANNEL) {
-    return false;
-  }
-  return normalizeChannelId(channel) !== null;
+): channel is ChannelId {
+  return Boolean(channel && isDeliverableMessageChannel(channel));
 }

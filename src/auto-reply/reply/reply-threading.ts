@@ -56,13 +56,13 @@ export function createReplyToModeFilterForChannel(
 ) {
   const provider = normalizeChannelId(channel);
   const normalized = typeof channel === "string" ? channel.trim().toLowerCase() : undefined;
-  const isWebchat = normalized === "webchat";
+  const isGatewayUi = normalized === "control-ui" || normalized === "webchat";
   // Default: allow explicit reply tags/directives even when replyToMode is "off".
-  // Unknown channels fail closed; internal webchat stays allowed.
+  // Unknown channels fail closed; the WebChat UI channel stays allowed.
   const dock = provider ? getChannelDock(provider) : undefined;
   const allowExplicitReplyTagsWhenOff = provider
     ? (dock?.threading?.allowExplicitReplyTagsWhenOff ?? dock?.threading?.allowTagsWhenOff ?? true)
-    : isWebchat;
+    : isGatewayUi;
   return createReplyToModeFilter(mode, {
     allowExplicitReplyTagsWhenOff,
   });

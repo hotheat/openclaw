@@ -14,8 +14,12 @@ import {
 } from "../gateway/protocol/client-info.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 
-export const INTERNAL_MESSAGE_CHANNEL = "webchat" as const;
+export const INTERNAL_MESSAGE_CHANNEL = "internal" as const;
 export type InternalMessageChannel = typeof INTERNAL_MESSAGE_CHANNEL;
+export const CONTROL_UI_MESSAGE_CHANNEL = "control-ui" as const;
+export type ControlUiMessageChannel = typeof CONTROL_UI_MESSAGE_CHANNEL;
+export const WEBCHAT_MESSAGE_CHANNEL = "webchat" as const;
+export type WebchatMessageChannel = typeof WEBCHAT_MESSAGE_CHANNEL;
 
 const MARKDOWN_CAPABLE_CHANNELS = new Set<string>([
   "slack",
@@ -25,6 +29,8 @@ const MARKDOWN_CAPABLE_CHANNELS = new Set<string>([
   "googlechat",
   "tui",
   INTERNAL_MESSAGE_CHANNEL,
+  CONTROL_UI_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
 ]);
 
 export { GATEWAY_CLIENT_NAMES, GATEWAY_CLIENT_MODES };
@@ -36,6 +42,14 @@ type GatewayClientInfoLike = {
   id?: string | null;
 };
 
+const FIRST_PARTY_UI_CLIENT_NAMES = new Set<GatewayClientName>([
+  GATEWAY_CLIENT_NAMES.CONTROL_UI,
+  GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+  GATEWAY_CLIENT_NAMES.MACOS_APP,
+  GATEWAY_CLIENT_NAMES.IOS_APP,
+  GATEWAY_CLIENT_NAMES.ANDROID_APP,
+]);
+
 export function isGatewayCliClient(client?: GatewayClientInfoLike | null): boolean {
   return normalizeGatewayClientMode(client?.mode) === GATEWAY_CLIENT_MODES.CLI;
 }
@@ -44,12 +58,51 @@ export function isInternalMessageChannel(raw?: string | null): raw is InternalMe
   return normalizeMessageChannel(raw) === INTERNAL_MESSAGE_CHANNEL;
 }
 
+export function isControlUiMessageChannel(raw?: string | null): raw is ControlUiMessageChannel {
+  return normalizeMessageChannel(raw) === CONTROL_UI_MESSAGE_CHANNEL;
+}
+
+export function isControlUiClient(client?: GatewayClientInfoLike | null): boolean {
+  return normalizeGatewayClientName(client?.id) === GATEWAY_CLIENT_NAMES.CONTROL_UI;
+}
+
+export function isFirstPartyUiClient(client?: GatewayClientInfoLike | null): boolean {
+  const clientName = normalizeGatewayClientName(client?.id);
+  return (
+    normalizeGatewayClientMode(client?.mode) === GATEWAY_CLIENT_MODES.UI &&
+    clientName !== undefined &&
+    FIRST_PARTY_UI_CLIENT_NAMES.has(clientName)
+  );
+}
+
+export function isWebchatMessageChannel(raw?: string | null): raw is WebchatMessageChannel {
+  return normalizeMessageChannel(raw) === WEBCHAT_MESSAGE_CHANNEL;
+}
+
 export function isWebchatClient(client?: GatewayClientInfoLike | null): boolean {
+  if (isControlUiClient(client)) {
+    return false;
+  }
   const mode = normalizeGatewayClientMode(client?.mode);
   if (mode === GATEWAY_CLIENT_MODES.WEBCHAT) {
     return true;
   }
-  return normalizeGatewayClientName(client?.id) === GATEWAY_CLIENT_NAMES.WEBCHAT_UI;
+  const clientName = normalizeGatewayClientName(client?.id);
+  return (
+    clientName === GATEWAY_CLIENT_NAMES.WEBCHAT_UI || clientName === GATEWAY_CLIENT_NAMES.WEBCHAT
+  );
+}
+
+export function resolveGatewayClientMessageChannel(
+  client?: GatewayClientInfoLike | null,
+): ControlUiMessageChannel | WebchatMessageChannel | InternalMessageChannel {
+  if (isControlUiClient(client) || isFirstPartyUiClient(client)) {
+    return CONTROL_UI_MESSAGE_CHANNEL;
+  }
+  if (isWebchatClient(client)) {
+    return WEBCHAT_MESSAGE_CHANNEL;
+  }
+  return INTERNAL_MESSAGE_CHANNEL;
 }
 
 export function normalizeMessageChannel(raw?: string | null): string | undefined {
@@ -59,6 +112,12 @@ export function normalizeMessageChannel(raw?: string | null): string | undefined
   }
   if (normalized === INTERNAL_MESSAGE_CHANNEL) {
     return INTERNAL_MESSAGE_CHANNEL;
+  }
+  if (normalized === CONTROL_UI_MESSAGE_CHANNEL) {
+    return CONTROL_UI_MESSAGE_CHANNEL;
+  }
+  if (normalized === WEBCHAT_MESSAGE_CHANNEL) {
+    return WEBCHAT_MESSAGE_CHANNEL;
   }
   const builtIn = normalizeChatChannelId(normalized);
   if (builtIn) {
@@ -97,11 +156,17 @@ export const listDeliverableMessageChannels = (): ChannelId[] =>
 
 export type DeliverableMessageChannel = ChannelId;
 
-export type GatewayMessageChannel = DeliverableMessageChannel | InternalMessageChannel;
+export type GatewayMessageChannel =
+  | DeliverableMessageChannel
+  | InternalMessageChannel
+  | ControlUiMessageChannel
+  | WebchatMessageChannel;
 
 export const listGatewayMessageChannels = (): GatewayMessageChannel[] => [
   ...listDeliverableMessageChannels(),
   INTERNAL_MESSAGE_CHANNEL,
+  CONTROL_UI_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
 ];
 
 export const listGatewayAgentChannelAliases = (): string[] =>

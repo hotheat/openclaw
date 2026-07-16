@@ -134,6 +134,7 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   testState.gatewayBind = undefined;
   testState.gatewayAuth = { mode: "token", token: "test-gateway-token-1234567890" };
   testState.gatewayControlUi = undefined;
+  testState.gatewayWebchat = undefined;
   testState.hooksConfig = undefined;
   testState.canvasHostPort = undefined;
   testState.legacyIssues = [];
@@ -595,6 +596,7 @@ export async function connectWebchatClient(params: {
   origin?: string;
   client?: NonNullable<Parameters<typeof connectReq>[1]>["client"];
 }): Promise<WebSocket> {
+  testState.gatewayWebchat ??= { enabled: true };
   const origin = params.origin ?? `http://127.0.0.1:${params.port}`;
   const ws = new WebSocket(`ws://127.0.0.1:${params.port}`, {
     headers: { origin },

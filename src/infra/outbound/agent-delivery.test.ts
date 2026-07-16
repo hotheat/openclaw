@@ -68,7 +68,7 @@ describe("agent delivery helpers", () => {
       wantsDelivery: true,
     });
 
-    expect(plan.resolvedChannel).toBe("webchat");
+    expect(plan.resolvedChannel).toBe("internal");
     expect(plan.deliveryTargetMode).toBeUndefined();
   });
 

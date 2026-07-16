@@ -71,6 +71,12 @@ export const FIELD_HELP: Record<string, string> = {
     "Control UI hosting settings including enablement, pathing, and browser-origin/auth hardening behavior. Keep UI exposure minimal and pair with strong auth controls before internet-facing deployments.",
   "gateway.controlUi.enabled":
     "Enables serving the gateway Control UI from the gateway HTTP process when true. Keep enabled for local administration, and disable when an external control surface replaces it.",
+  "gateway.webchat":
+    "External WebChat websocket ingress settings. This surface is independent from the built-in Control UI and remains disabled unless explicitly enabled. Client classification uses the self-reported WebSocket client identity, so enforce gateway.auth for access control.",
+  "gateway.webchat.enabled":
+    "Enables clients whose self-reported ID or mode is classified as external WebChat. Default: false. This is an ingress hygiene filter, not an authentication boundary; security depends on gateway.auth and applicable device identity checks.",
+  "gateway.webchat.allowedOrigins":
+    "Browser-origin allowlist for external WebChat websocket clients. Keep this separate from gateway.controlUi.allowedOrigins.",
   "gateway.auth":
     "Authentication policy for gateway HTTP/WebSocket access including mode, credentials, trusted-proxy behavior, and rate limiting. Keep auth enabled for every non-loopback deployment.",
   "gateway.auth.mode":
@@ -314,7 +320,7 @@ export const FIELD_HELP: Record<string, string> = {
   "gateway.controlUi.root":
     "Optional filesystem root for Control UI assets (defaults to dist/control-ui).",
   "gateway.controlUi.allowedOrigins":
-    "Allowed browser origins for Control UI/WebChat websocket connections (full origins only, e.g. https://control.example.com).",
+    "Allowed browser origins for Control UI websocket connections (full origins only, e.g. https://control.example.com).",
   "gateway.controlUi.allowInsecureAuth":
     "Loosens strict browser auth checks for Control UI when you must run a non-standard setup. Keep this off unless you trust your network and proxy path, because impersonation risk is higher.",
   "gateway.controlUi.dangerouslyDisableDeviceAuth":

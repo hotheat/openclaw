@@ -22,7 +22,11 @@ import {
 import type { RuntimeEnv } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
-import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
+import {
+  CONTROL_UI_MESSAGE_CHANNEL,
+  INTERNAL_MESSAGE_CHANNEL,
+  WEBCHAT_MESSAGE_CHANNEL,
+} from "../utils/message-channel.js";
 
 type SandboxExplainOptions = {
   session?: string;
@@ -83,6 +87,12 @@ function inferProviderFromSessionKey(params: {
   if (candidate === INTERNAL_MESSAGE_CHANNEL) {
     return INTERNAL_MESSAGE_CHANNEL;
   }
+  if (candidate === CONTROL_UI_MESSAGE_CHANNEL) {
+    return CONTROL_UI_MESSAGE_CHANNEL;
+  }
+  if (candidate === WEBCHAT_MESSAGE_CHANNEL) {
+    return WEBCHAT_MESSAGE_CHANNEL;
+  }
   return normalizeAnyChannelId(candidate) ?? undefined;
 }
 
@@ -115,6 +125,12 @@ function resolveActiveChannel(params: {
     .toLowerCase();
   if (candidate === INTERNAL_MESSAGE_CHANNEL) {
     return INTERNAL_MESSAGE_CHANNEL;
+  }
+  if (candidate === CONTROL_UI_MESSAGE_CHANNEL) {
+    return CONTROL_UI_MESSAGE_CHANNEL;
+  }
+  if (candidate === WEBCHAT_MESSAGE_CHANNEL) {
+    return WEBCHAT_MESSAGE_CHANNEL;
   }
   const normalized = normalizeAnyChannelId(candidate);
   if (normalized) {

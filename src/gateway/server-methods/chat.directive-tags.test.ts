@@ -3,12 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
+import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../../utils/message-channel.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const mockState = vi.hoisted(() => ({
   transcriptPath: "",
   sessionId: "sess-1",
   finalText: "[[reply_to_current]]",
+  lastContext: undefined as
+    | {
+        Provider?: string;
+        Surface?: string;
+        OriginatingChannel?: string;
+      }
+    | undefined,
   deliveryContext: undefined as
     | {
         channel?: string;
@@ -59,12 +67,18 @@ vi.mock("../../auto-reply/reply/route-reply.js", async (importOriginal) => {
 vi.mock("../../auto-reply/dispatch.js", () => ({
   dispatchInboundMessage: vi.fn(
     async (params: {
+      ctx: {
+        Provider?: string;
+        Surface?: string;
+        OriginatingChannel?: string;
+      };
       dispatcher: {
         sendFinalReply: (payload: { text: string }) => boolean;
         markComplete: () => void;
         waitForIdle: () => Promise<void>;
       };
     }) => {
+      mockState.lastContext = params.ctx;
       params.dispatcher.sendFinalReply({ text: mockState.finalText });
       params.dispatcher.markComplete();
       await params.dispatcher.waitForIdle();
@@ -166,7 +180,17 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       },
       respond,
       req: {} as never,
-      client: null,
+      client: {
+        connect: {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+            version: "dev",
+            platform: "web",
+            mode: GATEWAY_CLIENT_MODES.UI,
+          },
+          scopes: ["operator.admin"],
+        },
+      } as never,
       isWebchatConnect: () => false,
       context: context as GatewayRequestContext,
     });
@@ -184,6 +208,91 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         mirror: false,
       }),
     );
+    expect(mockState.lastContext).toMatchObject({
+      Provider: "control-ui",
+      Surface: "control-ui",
+      OriginatingChannel: "control-ui",
+    });
+  });
+
+  it("keeps external WebChat as a separate chat.send origin", async () => {
+    createTranscriptFixture("openclaw-chat-send-webchat-origin-");
+    mockState.finalText = "hello";
+    mockState.deliveryContext = undefined;
+    mockState.lastContext = undefined;
+    const respond = vi.fn();
+
+    await chatHandlers["chat.send"]({
+      params: {
+        sessionKey: "main",
+        message: "hello",
+        deliver: false,
+        idempotencyKey: "idem-webchat-origin",
+      },
+      respond,
+      req: {} as never,
+      client: {
+        connect: {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "dev",
+            platform: "web",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+          scopes: ["operator.admin"],
+        },
+      } as never,
+      isWebchatConnect: () => true,
+      context: createChatContext() as GatewayRequestContext,
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.lastContext).toMatchObject({
+        Provider: "webchat",
+        Surface: "webchat",
+        OriginatingChannel: "webchat",
+      });
+    });
+  });
+
+  it("records TUI chat.send input as a first-party UI origin", async () => {
+    createTranscriptFixture("openclaw-chat-send-tui-origin-");
+    mockState.finalText = "hello";
+    mockState.deliveryContext = undefined;
+    mockState.lastContext = undefined;
+    const respond = vi.fn();
+
+    await chatHandlers["chat.send"]({
+      params: {
+        sessionKey: "main",
+        message: "hello",
+        deliver: false,
+        idempotencyKey: "idem-tui-origin",
+      },
+      respond,
+      req: {} as never,
+      client: {
+        connect: {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
+            version: "dev",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.UI,
+          },
+          scopes: ["operator.admin"],
+        },
+      } as never,
+      isWebchatConnect: () => false,
+      context: createChatContext() as GatewayRequestContext,
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.lastContext).toMatchObject({
+        Provider: "control-ui",
+        Surface: "control-ui",
+        OriginatingChannel: "control-ui",
+      });
+    });
   });
 
   it("chat.inject keeps message defined when directive tag is the only content", async () => {

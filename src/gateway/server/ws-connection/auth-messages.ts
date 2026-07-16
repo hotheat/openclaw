@@ -1,4 +1,4 @@
-import { isGatewayCliClient, isWebchatClient } from "../../../utils/message-channel.js";
+import { isGatewayCliClient } from "../../../utils/message-channel.js";
 import type { ResolvedGatewayAuth } from "../../auth.js";
 import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
 
@@ -13,16 +13,15 @@ export function formatGatewayAuthFailureMessage(params: {
   const { authMode, authProvided, reason, client } = params;
   const isCli = isGatewayCliClient(client);
   const isControlUi = client?.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
-  const isWebchat = isWebchatClient(client);
   const uiHint = "open the dashboard URL and paste the token in Control UI settings";
   const tokenHint = isCli
     ? "set gateway.remote.token to match gateway.auth.token"
-    : isControlUi || isWebchat
+    : isControlUi
       ? uiHint
       : "provide gateway auth token";
   const passwordHint = isCli
     ? "set gateway.remote.password to match gateway.auth.password"
-    : isControlUi || isWebchat
+    : isControlUi
       ? "enter the password in Control UI settings"
       : "provide gateway auth password";
   switch (reason) {

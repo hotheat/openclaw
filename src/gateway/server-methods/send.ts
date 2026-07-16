@@ -45,7 +45,7 @@ const getInflightMap = (context: GatewayRequestContext) => {
 async function resolveRequestedChannel(params: {
   requestChannel: unknown;
   unsupportedMessage: (input: string) => string;
-  rejectWebchatAsInternalOnly?: boolean;
+  rejectWebchat?: boolean;
 }): Promise<
   | {
       cfg: ReturnType<typeof loadConfig>;
@@ -60,11 +60,11 @@ async function resolveRequestedChannel(params: {
   const normalizedChannel = channelInput ? normalizeChannelId(channelInput) : null;
   if (channelInput && !normalizedChannel) {
     const normalizedInput = channelInput.trim().toLowerCase();
-    if (params.rejectWebchatAsInternalOnly && normalizedInput === "webchat") {
+    if (params.rejectWebchat && normalizedInput === "webchat") {
       return {
         error: errorShape(
           ErrorCodes.INVALID_REQUEST,
-          "unsupported channel: webchat (internal-only). Use `chat.send` for WebChat UI messages or choose a deliverable channel.",
+          "unsupported channel: webchat. Use `chat.send` for WebChat UI messages or choose a deliverable outbound channel.",
         ),
       };
     }
@@ -149,7 +149,7 @@ export const sendHandlers: GatewayRequestHandlers = {
     const resolvedChannel = await resolveRequestedChannel({
       requestChannel: request.channel,
       unsupportedMessage: (input) => `unsupported channel: ${input}`,
-      rejectWebchatAsInternalOnly: true,
+      rejectWebchat: true,
     });
     if ("error" in resolvedChannel) {
       respond(false, undefined, resolvedChannel.error);

@@ -734,6 +734,7 @@ export async function runEmbeddedAttempt(
           },
           sandbox,
           messageProvider: params.messageChannel ?? params.messageProvider,
+          internalExecution: params.internalExecution,
           agentAccountId: params.agentAccountId,
           messageTo: params.messageTo,
           messageThreadId: params.messageThreadId,

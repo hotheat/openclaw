@@ -22,7 +22,7 @@ import { loadVoiceWakeConfig } from "../../../infra/voicewake.js";
 import { rawDataToString } from "../../../infra/ws.js";
 import type { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
-import { isGatewayCliClient, isWebchatClient } from "../../../utils/message-channel.js";
+import { isGatewayCliClient } from "../../../utils/message-channel.js";
 import { resolveRuntimeServiceVersion } from "../../../version.js";
 import type { AuthRateLimiter } from "../../auth-rate-limit.js";
 import type { GatewayAuthResult, ResolvedGatewayAuth } from "../../auth.js";
@@ -41,7 +41,6 @@ import {
 } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
 import { checkBrowserOrigin } from "../../origin-check.js";
-import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
 import {
   ConnectErrorDetailCodes,
   resolveAuthConnectErrorDetailCode,
@@ -75,6 +74,7 @@ import { resolveConnectAuthDecision, resolveConnectAuthState } from "./auth-cont
 import { formatGatewayAuthFailureMessage, type AuthProvidedKind } from "./auth-messages.js";
 import {
   evaluateMissingDeviceIdentity,
+  resolveGatewayBrowserClientPolicy,
   resolveControlUiAuthPolicy,
   shouldSkipControlUiPairing,
 } from "./connect-policy.js";
@@ -189,7 +189,9 @@ export function attachGatewayWsMessageHandler(params: {
     );
   }
 
-  const isWebchatConnect = (p: ConnectParams | null | undefined) => isWebchatClient(p?.client);
+  // Keep the legacy handler callback name while restricting both gateway UI surfaces.
+  const isWebchatConnect = (p: ConnectParams | null | undefined) =>
+    resolveGatewayBrowserClientPolicy({ client: p?.client }).kind !== "other";
 
   socket.on("message", async (data) => {
     if (isClosed()) {
@@ -325,17 +327,38 @@ export function attachGatewayWsMessageHandler(params: {
         connectParams.role = role;
         connectParams.scopes = scopes;
 
-        const isControlUi = connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
-        const isWebchat = isWebchatConnect(connectParams);
+        const browserClientPolicy = resolveGatewayBrowserClientPolicy({
+          client: connectParams.client,
+          controlUiConfig: configSnapshot.gateway?.controlUi,
+          webchatConfig: configSnapshot.gateway?.webchat,
+        });
+        const isControlUi = browserClientPolicy.kind === "control-ui";
+        const isWebchat = browserClientPolicy.kind === "webchat";
+        if (!browserClientPolicy.enabled) {
+          const errorMessage =
+            "external WebChat is disabled; set gateway.webchat.enabled=true to allow it";
+          markHandshakeFailure("webchat-disabled", {
+            client: connectParams.client.id,
+            mode: connectParams.client.mode,
+          });
+          sendHandshakeErrorResponse(ErrorCodes.INVALID_REQUEST, errorMessage, {
+            details: { code: ConnectErrorDetailCodes.WEBCHAT_DISABLED },
+          });
+          close(1008, truncateCloseReason(errorMessage));
+          return;
+        }
         if (isControlUi || isWebchat) {
+          const surfaceLabel = isControlUi ? "Control UI" : "external WebChat";
           const originCheck = checkBrowserOrigin({
             requestHost,
             origin: requestOrigin,
-            allowedOrigins: configSnapshot.gateway?.controlUi?.allowedOrigins,
+            allowedOrigins: browserClientPolicy.allowedOrigins,
           });
           if (!originCheck.ok) {
-            const errorMessage =
-              "origin not allowed (open the Control UI from the gateway host or allow it in gateway.controlUi.allowedOrigins)";
+            const configPath = isControlUi
+              ? "gateway.controlUi.allowedOrigins"
+              : "gateway.webchat.allowedOrigins";
+            const errorMessage = `origin not allowed for ${surfaceLabel} (add it to ${configPath})`;
             markHandshakeFailure("origin-mismatch", {
               origin: requestOrigin ?? "n/a",
               host: requestHost ?? "n/a",
@@ -745,7 +768,11 @@ export function attachGatewayWsMessageHandler(params: {
           auth: authMethod,
         });
 
-        if (isWebchatConnect(connectParams)) {
+        if (isControlUi) {
+          logWsControl.info(
+            `control-ui connected conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version}`,
+          );
+        } else if (isWebchat) {
           logWsControl.info(
             `webchat connected conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version}`,
           );

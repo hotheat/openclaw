@@ -173,6 +173,15 @@ describe("openclaw-tools: subagents (sessions_spawn model + thinking)", () => {
       key: expect.stringContaining("subagent:"),
       model: "claude-haiku-4-5",
     });
+    const agentCall = calls.find((call) => call.method === "agent");
+    expect(agentCall?.params).toMatchObject({
+      inputProvenance: {
+        kind: "internal_system",
+        sourceSessionKey: "discord:group:req",
+        sourceChannel: "discord",
+        sourceTool: "sessions_spawn",
+      },
+    });
   });
 
   it("sessions_spawn forwards the active tool observation as trace parent", async () => {

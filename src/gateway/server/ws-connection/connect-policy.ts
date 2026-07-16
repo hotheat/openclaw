@@ -1,6 +1,40 @@
+import { isControlUiClient, isWebchatClient } from "../../../utils/message-channel.js";
 import type { ConnectParams } from "../../protocol/index.js";
 import type { GatewayRole } from "../../role-policy.js";
 import { roleCanSkipDeviceIdentity } from "../../role-policy.js";
+
+export type GatewayBrowserClientPolicy = {
+  kind: "control-ui" | "webchat" | "other";
+  enabled: boolean;
+  allowedOrigins?: string[];
+};
+
+export function resolveGatewayBrowserClientPolicy(params: {
+  client?: ConnectParams["client"] | null;
+  controlUiConfig?: {
+    allowedOrigins?: string[];
+  };
+  webchatConfig?: {
+    enabled?: boolean;
+    allowedOrigins?: string[];
+  };
+}): GatewayBrowserClientPolicy {
+  if (isControlUiClient(params.client)) {
+    return {
+      kind: "control-ui",
+      enabled: true,
+      allowedOrigins: params.controlUiConfig?.allowedOrigins,
+    };
+  }
+  if (isWebchatClient(params.client)) {
+    return {
+      kind: "webchat",
+      enabled: params.webchatConfig?.enabled === true,
+      allowedOrigins: params.webchatConfig?.allowedOrigins,
+    };
+  }
+  return { kind: "other", enabled: true };
+}
 
 export type ControlUiAuthPolicy = {
   allowInsecureAuthConfigured: boolean;

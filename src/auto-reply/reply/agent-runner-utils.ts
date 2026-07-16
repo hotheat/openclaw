@@ -12,6 +12,11 @@ import type { ReplyPayload } from "../types.js";
 import type { FollowupRun } from "./queue.js";
 
 const BUN_FETCH_SOCKET_ERROR_RE = /socket connection was closed unexpectedly/i;
+const INTERNAL_EXECUTION_PROVIDERS = new Set(["heartbeat", "cron-event", "exec-event"]);
+
+function isInternalExecutionProvider(provider?: string): boolean {
+  return INTERNAL_EXECUTION_PROVIDERS.has(provider?.trim().toLowerCase() ?? "");
+}
 
 /**
  * Build provider-specific threading context for tool auto-injection.
@@ -28,6 +33,9 @@ export function buildThreadingToolContext(params: {
   const rawProvider = sessionCtx.Provider?.trim().toLowerCase();
   if (!rawProvider) {
     return {};
+  }
+  if (isInternalExecutionProvider(rawProvider)) {
+    return { hasRepliedRef };
   }
   const provider = normalizeChannelId(rawProvider) ?? normalizeAnyChannelId(rawProvider);
   // Fallback for unrecognized/plugin channels (e.g., BlueBubbles before plugin registry init)
@@ -191,6 +199,7 @@ export function buildEmbeddedContextFromTemplate(params: {
     sessionKey: params.run.sessionKey,
     agentId: params.run.agentId,
     messageProvider: params.sessionCtx.Provider?.trim().toLowerCase() || undefined,
+    internalExecution: isInternalExecutionProvider(params.sessionCtx.Provider),
     agentAccountId: params.sessionCtx.AccountId,
     messageTo: params.sessionCtx.OriginatingTo ?? params.sessionCtx.To,
     messageThreadId: params.sessionCtx.MessageThreadId ?? undefined,

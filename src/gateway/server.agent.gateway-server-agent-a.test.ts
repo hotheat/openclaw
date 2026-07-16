@@ -206,9 +206,72 @@ describe("gateway server agent", () => {
     const call = latestAgentCall();
     expect(call.sessionKey).toBe("agent:main:subagent:abc");
     expect(call.sessionId).toBe("sess-sub");
-    expectChannels(call, "webchat");
+    expectChannels(call, "internal");
     expect(call.deliver).toBe(false);
     expect(call.to).toBeUndefined();
+  });
+
+  test("internal agent runs use the internal fallback channel", async () => {
+    setRegistry(defaultRegistry);
+    await setTestSessionStore({
+      entries: {
+        "agent:main:subagent:internal": {
+          sessionId: "sess-sub-internal",
+          updatedAt: Date.now(),
+        },
+      },
+    });
+    const res = await rpcReq(ws, "agent", {
+      message: "hi",
+      sessionKey: "agent:main:subagent:internal",
+      channel: "heartbeat",
+      deliver: false,
+      inputProvenance: {
+        kind: "internal_system",
+        sourceSessionKey: "agent:main:main",
+        sourceChannel: "heartbeat",
+        sourceTool: "sessions_spawn",
+      },
+      idempotencyKey: "idem-agent-internal-channel",
+    });
+    expect(res.ok).toBe(true);
+
+    const call = latestAgentCall();
+    expectChannels(call, "internal");
+    const runContext = call.runContext as { internalExecution?: boolean } | undefined;
+    expect(runContext?.internalExecution).toBe(true);
+  });
+
+  test("internal child runs preserve a real external channel binding", async () => {
+    setRegistry(defaultRegistry);
+    await setTestSessionStore({
+      entries: {
+        "agent:main:subagent:external": {
+          sessionId: "sess-sub-external",
+          updatedAt: Date.now(),
+        },
+      },
+    });
+    const res = await rpcReq(ws, "agent", {
+      message: "hi",
+      sessionKey: "agent:main:subagent:external",
+      channel: "whatsapp",
+      to: "+1555",
+      deliver: false,
+      inputProvenance: {
+        kind: "internal_system",
+        sourceSessionKey: "agent:main:whatsapp:direct:+1555",
+        sourceChannel: "whatsapp",
+        sourceTool: "sessions_spawn",
+      },
+      idempotencyKey: "idem-agent-inherited-channel",
+    });
+    expect(res.ok).toBe(true);
+
+    const call = latestAgentCall();
+    expectChannels(call, "whatsapp");
+    const runContext = call.runContext as { internalExecution?: boolean } | undefined;
+    expect(runContext?.internalExecution).toBe(false);
   });
 
   test("agent preserves spawnDepth on subagent sessions", async () => {
@@ -415,7 +478,7 @@ describe("gateway server agent", () => {
 
     const call = latestAgentCall();
     expect(call.sessionKey).toBe("agent:main:main");
-    expectChannels(call, "webchat");
+    expectChannels(call, "internal");
     expect(typeof call.message).toBe("string");
     expect(call.message).toContain("what is in the image?");
 

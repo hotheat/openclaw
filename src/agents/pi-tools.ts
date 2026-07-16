@@ -194,6 +194,7 @@ export function createOpenClawCodingTools(options?: {
   agentId?: string;
   exec?: ExecToolDefaults & ProcessToolDefaults;
   messageProvider?: string;
+  internalExecution?: boolean;
   agentAccountId?: string;
   messageTo?: string;
   messageThreadId?: string | number;
@@ -471,6 +472,7 @@ export function createOpenClawCodingTools(options?: {
       allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
       agentSessionKey: options?.sessionKey,
       agentChannel: messageChannelHint,
+      internalExecution: options?.internalExecution,
       agentAccountId: options?.agentAccountId,
       agentTo: options?.messageTo,
       agentThreadId: options?.messageThreadId,
@@ -500,7 +502,8 @@ export function createOpenClawCodingTools(options?: {
       replyToMode: options?.replyToMode,
       hasRepliedRef: options?.hasRepliedRef,
       modelHasVision: options?.modelHasVision,
-      requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
+      requireExplicitMessageTarget:
+        options?.requireExplicitMessageTarget || options?.internalExecution,
       disableMessageTool: options?.disableMessageTool,
       requesterAgentIdOverride: agentId,
       requesterSenderId: options?.senderId,

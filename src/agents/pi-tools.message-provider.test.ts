@@ -3,7 +3,13 @@ import "./test-helpers/fast-coding-tools.js";
 import { createOpenClawCodingTools } from "./pi-tools.js";
 
 const mocks = vi.hoisted(() => ({
-  createOpenClawTools: vi.fn<(options?: { agentChannel?: string }) => unknown[]>(() => []),
+  createOpenClawTools: vi.fn<
+    (options?: {
+      agentChannel?: string;
+      internalExecution?: boolean;
+      requireExplicitMessageTarget?: boolean;
+    }) => unknown[]
+  >(() => []),
 }));
 
 vi.mock("./openclaw-tools.js", () => ({
@@ -22,5 +28,19 @@ describe("createOpenClawCodingTools message provider", () => {
       | { agentChannel?: string }
       | undefined;
     expect(call?.agentChannel).toBe("feishu");
+  });
+
+  it("marks internal runs and requires explicit message targets", () => {
+    createOpenClawCodingTools({
+      messageProvider: "internal",
+      internalExecution: true,
+    });
+
+    const call = mocks.createOpenClawTools.mock.calls[0]?.[0];
+    expect(call).toMatchObject({
+      agentChannel: "internal",
+      internalExecution: true,
+      requireExplicitMessageTarget: true,
+    });
   });
 });

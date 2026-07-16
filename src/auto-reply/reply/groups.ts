@@ -2,7 +2,11 @@ import { getChannelDock } from "../../channels/dock.js";
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { GroupKeyResolution, SessionEntry } from "../../config/sessions.js";
-import { isInternalMessageChannel } from "../../utils/message-channel.js";
+import {
+  isControlUiMessageChannel,
+  isInternalMessageChannel,
+  isWebchatMessageChannel,
+} from "../../utils/message-channel.js";
 import { normalizeGroupActivation } from "../group-activation.js";
 import type { TemplateContext } from "../templating.js";
 
@@ -68,6 +72,12 @@ function resolveProviderLabel(rawProvider: string | undefined): string {
     return "chat";
   }
   if (isInternalMessageChannel(providerKey)) {
+    return "Internal";
+  }
+  if (isControlUiMessageChannel(providerKey)) {
+    return "Control UI";
+  }
+  if (isWebchatMessageChannel(providerKey)) {
     return "WebChat";
   }
   const providerId = normalizeChannelId(rawProvider?.trim());

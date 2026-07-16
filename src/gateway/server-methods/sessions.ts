@@ -89,7 +89,7 @@ function rejectWebchatSessionMutation(params: {
     undefined,
     errorShape(
       ErrorCodes.INVALID_REQUEST,
-      `webchat clients cannot ${params.action} sessions; use chat.send for session-scoped updates`,
+      `gateway UI clients cannot ${params.action} sessions; use chat.send for session-scoped updates`,
     ),
   );
   return true;

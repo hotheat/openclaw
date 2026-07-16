@@ -71,6 +71,20 @@ describe("buildInboundMetaSystemPrompt", () => {
     const payload = parseInboundMetaPayload(prompt);
     expect(payload["sender_id"]).toBeUndefined();
   });
+
+  it("preserves webchat as an explicit channel", () => {
+    const prompt = buildInboundMetaSystemPrompt({
+      Provider: "webchat",
+      Surface: "webchat",
+      OriginatingChannel: "webchat",
+      ChatType: "direct",
+    } as TemplateContext);
+
+    const payload = parseInboundMetaPayload(prompt);
+    expect(payload["channel"]).toBe("webchat");
+    expect(payload["provider"]).toBe("webchat");
+    expect(payload["surface"]).toBe("webchat");
+  });
 });
 
 describe("buildInboundUserContextPrefix", () => {

@@ -18,6 +18,8 @@ export type AgentStreamParams = {
 
 export type AgentRunContext = {
   messageChannel?: string;
+  /** Internal runs have no external provider binding and require explicit message targets. */
+  internalExecution?: boolean;
   accountId?: string;
   groupId?: string | null;
   groupChannel?: string | null;

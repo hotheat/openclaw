@@ -255,7 +255,7 @@ describe("gateway server agent", () => {
     expect(vi.mocked(agentCommand)).not.toHaveBeenCalled();
   });
 
-  test("agent uses webchat for internal runs when last provider is webchat", async () => {
+  test("agent uses internal for non-delivery runs when last provider is webchat", async () => {
     await writeMainSessionEntry({
       sessionId: "sess-main-webchat-internal",
       lastChannel: "webchat",
@@ -270,7 +270,7 @@ describe("gateway server agent", () => {
     });
     expect(res.ok).toBe(true);
 
-    expectAgentRoutingCall({ channel: "webchat", deliver: false });
+    expectAgentRoutingCall({ channel: "internal", deliver: false });
   });
 
   test("agent routes bare /new through session reset before running greeting prompt", async () => {
