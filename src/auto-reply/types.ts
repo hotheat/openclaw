@@ -13,6 +13,10 @@ export type ModelSelectedContext = {
   thinkLevel: string | undefined;
 };
 
+export type SessionLaneStartContext = {
+  sessionId: string;
+};
+
 export type GetReplyOptions = {
   /** Override run id for agent events (defaults to random UUID). */
   runId?: string;
@@ -27,6 +31,10 @@ export type GetReplyOptions = {
   onTypingCleanup?: () => void;
   onTypingController?: (typing: TypingController) => void;
   isHeartbeat?: boolean;
+  /** Internal lifecycle hook invoked after the embedded session lane is acquired. */
+  onSessionLaneStart?: (context: SessionLaneStartContext) => Promise<void> | void;
+  /** Internal lifecycle hook invoked before the embedded session lane is released. */
+  onSessionLaneComplete?: (payloads: ReplyPayload[] | undefined) => Promise<void> | void;
   /** Resolved heartbeat model override (provider/model string from merged per-agent config). */
   heartbeatModelOverride?: string;
   /** Resolved heartbeat thinking override from merged per-agent config. */

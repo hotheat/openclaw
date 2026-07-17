@@ -245,6 +245,36 @@ const runDefaultEmbeddedTurn = async (sessionFile: string, prompt: string, sessi
 };
 
 describe("runEmbeddedPiAgent", () => {
+  it("runs lifecycle callbacks before releasing the session lane", async () => {
+    const sessionFile = nextSessionFile();
+    const events: string[] = [];
+    const result = await runEmbeddedPiAgent({
+      sessionId: "session:test",
+      sessionKey: nextSessionKey(),
+      sessionFile,
+      workspaceDir,
+      config: makeOpenAiConfig(["mock-1"]),
+      prompt: "hello",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      runId: nextRunId("session-lane-callbacks"),
+      enqueue: immediateEnqueue,
+      onSessionLaneStart: () => {
+        events.push("start");
+      },
+      onSessionLaneComplete: async (payloads) => {
+        expect(payloads?.length).toBeGreaterThan(0);
+        await expect(fs.stat(sessionFile)).resolves.toBeTruthy();
+        events.push("complete");
+      },
+    });
+
+    expect(result.payloads?.length).toBeGreaterThan(0);
+    expect(events).toEqual(["start", "complete"]);
+  });
+
   it("handles prompt error paths without dropping user state", async () => {
     for (const testCase of [
       {
@@ -566,6 +596,7 @@ describe("runEmbeddedPiAgent", () => {
     const cfg = makeOpenAiConfig(["mock-1"]);
     const sessionId = "session:pending-global-abort";
     const sessionKey = nextSessionKey();
+    const lifecycleEvents: string[] = [];
 
     const execution = runEmbeddedPiAgent({
       sessionId,
@@ -580,6 +611,12 @@ describe("runEmbeddedPiAgent", () => {
       agentDir,
       runId: nextRunId("pending-global-abort"),
       enqueue: gatedEnqueue,
+      onSessionLaneStart: () => {
+        lifecycleEvents.push("start");
+      },
+      onSessionLaneComplete: () => {
+        lifecycleEvents.push("complete");
+      },
     });
 
     try {
@@ -588,23 +625,27 @@ describe("runEmbeddedPiAgent", () => {
         { timeoutMs: 1000, intervalMs: 10 },
       );
       expect(queuedTwice).toBeGreaterThanOrEqual(2);
+      expect(lifecycleEvents).toEqual(["start"]);
       expect(isEmbeddedPiRunActive(sessionId)).toBe(true);
       expect(abortEmbeddedPiRun(sessionId)).toBe(true);
-      expect(await waitForEmbeddedPiRunEnd(sessionId, 100)).toBe(true);
 
-      const outcome = await Promise.race([execution, delay(200).then(() => "timeout" as const)]);
-
-      expect(outcome).not.toBe("timeout");
-      if (outcome !== "timeout") {
-        expect(outcome.meta.aborted).toBe(true);
-        expect(outcome.payloads).toBeUndefined();
-      }
-
-      expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
-      await delay(20);
-      await expect(fs.stat(sessionFile)).rejects.toBeTruthy();
+      const earlyOutcome = await Promise.race([
+        execution,
+        delay(200).then(() => "timeout" as const),
+      ]);
+      expect(earlyOutcome).toBe("timeout");
+      expect(lifecycleEvents).toEqual(["start"]);
     } finally {
       releaseGlobalGate?.();
     }
+
+    const outcome = await execution;
+    expect(outcome.meta.aborted).toBe(true);
+    expect(outcome.payloads).toBeUndefined();
+    expect(lifecycleEvents).toEqual(["start", "complete"]);
+    expect(await waitForEmbeddedPiRunEnd(sessionId, 100)).toBe(true);
+    expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
+    await delay(20);
+    await expect(fs.stat(sessionFile)).rejects.toBeTruthy();
   });
 });

@@ -106,4 +106,39 @@ describe("subscribeEmbeddedPiSession", () => {
 
     expect(subscription.assistantTexts).toEqual(["Response from non-streaming model"]);
   });
+  it("emits non-streaming tool-use text at message_end without duplicates", () => {
+    const onBlockReply = vi.fn();
+    const { emit, subscription } = createTextEndBlockReplyHarness({ onBlockReply });
+    const firstAssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "I will inspect the files now." }],
+      stopReason: "toolUse",
+    } as AssistantMessage;
+    const secondAssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: "I will update the XML next." }],
+      stopReason: "toolUse",
+    } as AssistantMessage;
+
+    emit({ type: "message_start", message: firstAssistantMessage });
+    emit({ type: "message_end", message: firstAssistantMessage });
+    emit({ type: "message_end", message: firstAssistantMessage });
+    emitAssistantTextEnd({ emit, content: "I will inspect the files now.\n" });
+    emit({ type: "message_start", message: secondAssistantMessage });
+    emit({ type: "message_end", message: secondAssistantMessage });
+
+    expect(onBlockReply).toHaveBeenCalledTimes(2);
+    expect(subscription.assistantTexts).toEqual([
+      "I will inspect the files now.",
+      "I will update the XML next.",
+    ]);
+    expect(onBlockReply).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ text: "I will inspect the files now." }),
+    );
+    expect(onBlockReply).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ text: "I will update the XML next." }),
+    );
+  });
 });

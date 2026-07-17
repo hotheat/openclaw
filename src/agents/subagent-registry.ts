@@ -274,7 +274,10 @@ function isTerminalSnapshotBeforeRunStart(
   const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
   const snapshotStartedAt = asFiniteTimestampMs(snapshot.startedAt);
   const snapshotEndedAt = asFiniteTimestampMs(snapshot.endedAt);
-  const snapshotGenerationAt = snapshotStartedAt ?? snapshotEndedAt;
+  // A terminal snapshot is stale only when it fully completed before the
+  // current generation. Startup timestamps can legitimately precede the
+  // lifecycle start boundary for the same run.
+  const snapshotGenerationAt = snapshotEndedAt ?? snapshotStartedAt;
   const boundedSkewMs = Math.max(0, Math.floor(skewMs));
   return (
     typeof generationStartedAt === "number" &&

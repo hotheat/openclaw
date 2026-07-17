@@ -434,32 +434,32 @@ async function waitForPendingRunResult<T>(params: {
   task: Promise<T>;
   onCancelled: () => T;
 }): Promise<T> {
-  if (isPendingEmbeddedRunCancelled(params.token)) {
-    return params.onCancelled();
-  }
   return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finishResolve = (value: T) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
+    let cancelled = isPendingEmbeddedRunCancelled(params.token);
+    const cleanup = () => {
       params.token.abortSignal.removeEventListener("abort", onAbort);
-      resolve(value);
-    };
-    const finishReject = (error: unknown) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      params.token.abortSignal.removeEventListener("abort", onAbort);
-      reject(error);
     };
     const onAbort = () => {
-      finishResolve(params.onCancelled());
+      cancelled = true;
     };
     params.token.abortSignal.addEventListener("abort", onAbort, { once: true });
-    params.task.then(finishResolve, finishReject);
+    if (params.token.abortSignal.aborted) {
+      cancelled = true;
+    }
+    params.task.then(
+      (value) => {
+        cleanup();
+        resolve(cancelled ? params.onCancelled() : value);
+      },
+      (error) => {
+        cleanup();
+        if (cancelled) {
+          resolve(params.onCancelled());
+          return;
+        }
+        reject(error);
+      },
+    );
   });
 }
 
@@ -511,12 +511,15 @@ export async function runEmbeddedPiAgent(
   try {
     return await enqueueSession(async (): Promise<EmbeddedPiRunResult> => {
       const sessionTaskStarted = Date.now();
+      await params.onSessionLaneStart?.({ sessionId: params.sessionId });
       if (isPendingEmbeddedRunCancelled(pendingRunToken)) {
-        return buildCancelledRunResult({
+        const result = buildCancelledRunResult({
           startedAt: sessionTaskStarted,
           provider: params.provider,
           model: params.model,
         });
+        await params.onSessionLaneComplete?.(result.payloads);
+        return result;
       }
       const globalRunPromise = enqueueGlobal(async (): Promise<EmbeddedPiRunResult> => {
         const started = Date.now();
@@ -1775,7 +1778,7 @@ export async function runEmbeddedPiAgent(
           process.chdir(prevCwd);
         }
       });
-      return await waitForPendingRunResult({
+      const result = await waitForPendingRunResult({
         token: pendingRunToken,
         task: globalRunPromise,
         onCancelled: () =>
@@ -1785,6 +1788,8 @@ export async function runEmbeddedPiAgent(
             model: params.model,
           }),
       });
+      await params.onSessionLaneComplete?.(result.payloads);
+      return result;
     });
   } finally {
     clearPendingEmbeddedRun(pendingRunToken);

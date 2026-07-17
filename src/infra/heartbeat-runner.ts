@@ -18,7 +18,7 @@ import {
 } from "../auto-reply/heartbeat.js";
 import { getReplyFromConfig } from "../auto-reply/reply.js";
 import { HEARTBEAT_TOKEN } from "../auto-reply/tokens.js";
-import type { ReplyPayload } from "../auto-reply/types.js";
+import type { ReplyPayload, SessionLaneStartContext } from "../auto-reply/types.js";
 import { getChannelPlugin } from "../channels/plugins/index.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
@@ -31,6 +31,7 @@ import {
   loadSessionStore,
   resolveAgentIdFromSessionKey,
   resolveAgentMainSessionKey,
+  resolveSessionFilePath,
   resolveStorePath,
   runWithSessionStoreOwnership,
   updateSessionStore,
@@ -381,6 +382,107 @@ async function restoreHeartbeatUpdatedAt(params: {
   });
 }
 
+type HeartbeatTranscriptState = {
+  storePath: string;
+  sessionKey: string;
+  agentId?: string;
+  sessionId: string;
+  leaseRunId: string;
+  heartbeatOnlyRunId?: string;
+  transcriptPath?: string;
+  preHeartbeatSize?: number;
+};
+
+async function captureHeartbeatTranscriptState(params: {
+  storePath: string;
+  sessionKey: string;
+  agentId?: string;
+  sessionId: string;
+}): Promise<HeartbeatTranscriptState> {
+  const { storePath, sessionKey, agentId, sessionId } = params;
+  assertSessionStoreOwnership(storePath);
+  const entry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+  if (entry?.sessionId !== sessionId || !entry.heartbeatLease?.runId) {
+    throw new Error("heartbeat session ownership changed");
+  }
+  const state: HeartbeatTranscriptState = {
+    storePath,
+    sessionKey,
+    agentId,
+    sessionId,
+    leaseRunId: entry.heartbeatLease.runId,
+    heartbeatOnlyRunId: entry.heartbeatOnly?.runId,
+  };
+  try {
+    const transcriptPath = resolveSessionFilePath(sessionId, entry, {
+      agentId,
+      sessionsDir: path.dirname(storePath),
+    });
+    const stat = await fs.stat(transcriptPath);
+    return { ...state, transcriptPath, preHeartbeatSize: stat.size };
+  } catch {
+    return state;
+  }
+}
+
+function loadOwnedHeartbeatEntry(state: HeartbeatTranscriptState) {
+  assertSessionStoreOwnership(state.storePath);
+  const entry = loadSessionStore(state.storePath, { skipCache: true })[state.sessionKey];
+  if (
+    entry?.sessionId !== state.sessionId ||
+    entry.heartbeatLease?.runId !== state.leaseRunId ||
+    entry.heartbeatOnly?.runId !== state.heartbeatOnlyRunId
+  ) {
+    throw new Error("heartbeat session ownership changed");
+  }
+  return entry;
+}
+
+async function truncateOwnedHeartbeatTranscript(state: HeartbeatTranscriptState): Promise<void> {
+  if (!state.transcriptPath || typeof state.preHeartbeatSize !== "number") {
+    return;
+  }
+  loadOwnedHeartbeatEntry(state);
+  try {
+    const stat = await fs.stat(state.transcriptPath);
+    if (stat.size > state.preHeartbeatSize) {
+      await fs.truncate(state.transcriptPath, state.preHeartbeatSize);
+    }
+  } catch (error) {
+    if (!hasErrnoCode(error, "ENOENT")) {
+      throw error;
+    }
+  }
+}
+
+async function deleteOwnedHeartbeatOnlySession(state: HeartbeatTranscriptState): Promise<void> {
+  const runId = state.heartbeatOnlyRunId;
+  if (!runId) {
+    return;
+  }
+  const entry = loadOwnedHeartbeatEntry(state);
+  const transcriptPath = resolveSessionFilePath(state.sessionId, entry, {
+    agentId: state.agentId,
+    sessionsDir: path.dirname(state.storePath),
+  });
+  let deleted = false;
+  await updateSessionStore(state.storePath, (store) => {
+    const current = store[state.sessionKey];
+    if (
+      current?.sessionId !== state.sessionId ||
+      current.heartbeatLease?.runId !== state.leaseRunId ||
+      current.heartbeatOnly?.runId !== runId
+    ) {
+      return;
+    }
+    delete store[state.sessionKey];
+    deleted = true;
+  });
+  if (deleted) {
+    await fs.rm(transcriptPath, { force: true });
+  }
+}
+
 function stripLeadingHeartbeatResponsePrefix(
   text: string,
   responsePrefix: string | undefined,
@@ -423,6 +525,49 @@ function normalizeHeartbeatReply(
     finalText = `${responsePrefix} ${finalText}`;
   }
   return { shouldSkip: false, text: finalText, hasMedia };
+}
+
+function shouldPruneHeartbeatReply(params: {
+  replyResult: ReplyPayload | ReplyPayload[] | undefined;
+  responsePrefix?: string;
+  ackMaxChars: number;
+  hasExecCompletion: boolean;
+  includeReasoning: boolean;
+  previousHeartbeatText?: string;
+  previousHeartbeatAt?: number;
+  startedAt: number;
+}): boolean {
+  const replyPayload = resolveHeartbeatReplyPayload(params.replyResult);
+  if (
+    !replyPayload ||
+    (!replyPayload.text && !replyPayload.mediaUrl && !replyPayload.mediaUrls?.length)
+  ) {
+    return true;
+  }
+  if (params.hasExecCompletion) {
+    return false;
+  }
+  const reasoningPayloads = params.includeReasoning
+    ? resolveHeartbeatReasoningPayloads(params.replyResult).filter(
+        (payload) => payload !== replyPayload,
+      )
+    : [];
+  const normalized = normalizeHeartbeatReply(
+    replyPayload,
+    params.responsePrefix,
+    params.ackMaxChars,
+  );
+  if (normalized.shouldSkip && !normalized.hasMedia && reasoningPayloads.length === 0) {
+    return true;
+  }
+  return (
+    !normalized.shouldSkip &&
+    !normalized.hasMedia &&
+    Boolean(params.previousHeartbeatText?.trim()) &&
+    normalized.text.trim() === params.previousHeartbeatText?.trim() &&
+    typeof params.previousHeartbeatAt === "number" &&
+    params.startedAt - params.previousHeartbeatAt < 24 * 60 * 60 * 1000
+  );
 }
 
 type HeartbeatReasonFlags = {
@@ -665,6 +810,11 @@ export async function runHeartbeatOnce(opts: {
   };
 
   try {
+    const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
+    const includeReasoning = heartbeat?.includeReasoning === true;
+    let transcriptState: HeartbeatTranscriptState | undefined;
+    let transcriptPruneRequested = false;
+    let transcriptPruneHandled = false;
     const heartbeatModelOverride = heartbeat?.model?.trim() || undefined;
     const heartbeatThinkingOverride = heartbeat?.thinking?.trim() || undefined;
     const suppressToolErrorWarnings = heartbeat?.suppressToolErrorWarnings === true;
@@ -673,14 +823,50 @@ export async function runHeartbeatOnce(opts: {
       ...(heartbeatModelOverride ? { heartbeatModelOverride } : {}),
       ...(heartbeatThinkingOverride ? { heartbeatThinkingOverride } : {}),
       suppressToolErrorWarnings,
+      onSessionLaneStart: async ({ sessionId }: SessionLaneStartContext) => {
+        transcriptState = await captureHeartbeatTranscriptState({
+          storePath,
+          sessionKey,
+          agentId,
+          sessionId,
+        });
+      },
+      onSessionLaneComplete: async (payloads: ReplyPayload[] | undefined) => {
+        transcriptPruneRequested = shouldPruneHeartbeatReply({
+          replyResult: payloads,
+          responsePrefix,
+          ackMaxChars,
+          hasExecCompletion,
+          includeReasoning,
+          previousHeartbeatText:
+            typeof entry?.lastHeartbeatText === "string" ? entry.lastHeartbeatText : undefined,
+          previousHeartbeatAt:
+            typeof entry?.lastHeartbeatSentAt === "number" ? entry.lastHeartbeatSentAt : undefined,
+          startedAt,
+        });
+        if (transcriptPruneRequested && transcriptState && !transcriptState.heartbeatOnlyRunId) {
+          await truncateOwnedHeartbeatTranscript(transcriptState);
+          transcriptPruneHandled = true;
+        }
+      },
     };
     const replyResult = await getReplyFromConfig(ctx, replyOpts, cfg);
     assertSessionStoreOwnership(storePath);
     const replyPayload = resolveHeartbeatReplyPayload(replyResult);
-    const includeReasoning = heartbeat?.includeReasoning === true;
     const reasoningPayloads = includeReasoning
       ? resolveHeartbeatReasoningPayloads(replyResult).filter((payload) => payload !== replyPayload)
       : [];
+    const finalizeTranscriptPrune = async () => {
+      if (!transcriptPruneRequested || !transcriptState || transcriptPruneHandled) {
+        return;
+      }
+      if (transcriptState.heartbeatOnlyRunId) {
+        await deleteOwnedHeartbeatOnlySession(transcriptState);
+      } else {
+        await truncateOwnedHeartbeatTranscript(transcriptState);
+      }
+      transcriptPruneHandled = true;
+    };
 
     if (
       !replyPayload ||
@@ -692,6 +878,7 @@ export async function runHeartbeatOnce(opts: {
         updatedAt: previousUpdatedAt,
       });
       const okSent = await maybeSendHeartbeatOk();
+      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "ok-empty",
         reason: opts.reason,
@@ -704,7 +891,6 @@ export async function runHeartbeatOnce(opts: {
       return { status: "ran", durationMs: Date.now() - startedAt };
     }
 
-    const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const normalized = normalizeHeartbeatReply(replyPayload, responsePrefix, ackMaxChars);
     // For exec completion events, don't skip even if the response looks like HEARTBEAT_OK.
     // The model should be responding with exec results, not ack tokens.
@@ -726,6 +912,7 @@ export async function runHeartbeatOnce(opts: {
         updatedAt: previousUpdatedAt,
       });
       const okSent = await maybeSendHeartbeatOk();
+      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "ok-token",
         reason: opts.reason,
@@ -761,6 +948,7 @@ export async function runHeartbeatOnce(opts: {
         sessionKey,
         updatedAt: previousUpdatedAt,
       });
+      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "skipped",
         reason: "duplicate",

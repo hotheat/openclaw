@@ -71,10 +71,10 @@ When block streaming is enabled, OpenClaw can **merge consecutive block chunks**
 before sending them out. This reduces “single-line spam” while still providing
 progressive output.
 
-- Coalescing waits for **idle gaps** (`idleMs`) before flushing.
+- Coalescing waits for **idle gaps** (`idleMs`) before flushing; each new block resets the timer.
 - Buffers are capped by `maxChars` and will flush if they exceed it.
-- `minChars` prevents tiny fragments from sending until enough text accumulates
-  (final flush always sends remaining text).
+- `minChars` prevents tiny fragments during normal aggregation. Idle expiry and
+  the final forced flush send any remaining text even below `minChars`.
 - Joiner is derived from `blockStreamingChunk.breakPreference`
   (`paragraph` → `\n\n`, `newline` → `\n`, `sentence` → space).
 - Channel overrides are available via `*.blockStreamingCoalesce` (including per-account configs).

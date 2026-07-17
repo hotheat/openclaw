@@ -1022,7 +1022,7 @@ describe("initSessionState RawBody", () => {
 
 describe("initSessionState reset policy", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     resetGlobalHookRunner();
   });
 

@@ -574,7 +574,7 @@ describe("subagent registry steer restarts", () => {
     }
   });
 
-  it("does not let a stale agent.wait startedAt move the replacement generation backward", async () => {
+  it("accepts an overlapping terminal snapshot without moving the generation backward", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
     const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
@@ -593,25 +593,26 @@ describe("subagent registry steer restarts", () => {
         status: "error",
         startedAt: 1_900,
         endedAt: 2_100,
-        error: "late stale wait",
+        error: "overlapping wait",
       };
     });
 
     try {
       mod.registerSubagentRun({
-        runId: "run-stale-wait-start-old",
-        childSessionKey: "agent:main:subagent:stale-wait-start",
+        runId: "run-overlap-wait-start-old",
+        childSessionKey: "agent:main:subagent:overlap-wait-start",
         requesterSessionKey: "agent:main:main",
         requesterDisplayKey: "main",
-        task: "stale wait start",
+        task: "overlapping wait start",
         cleanup: "keep",
+        expectsCompletionMessage: true,
       });
 
       const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
       expect(
         mod.replaceSubagentRunAfterSteer({
-          previousRunId: "run-stale-wait-start-old",
-          nextRunId: "run-stale-wait-start-new",
+          previousRunId: "run-overlap-wait-start-old",
+          nextRunId: "run-overlap-wait-start-new",
           fallback: previous,
           acceptedAt: 2_000,
         }),
@@ -623,7 +624,71 @@ describe("subagent registry steer restarts", () => {
       expect(run?.startedAt).toBe(2_000);
       expect(run?.generationStartedAt).toBe(2_000);
       expect(run?.outcome).toBeUndefined();
-      expect(announceSpy).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const completedRun = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(completedRun?.startedAt).toBe(2_000);
+      expect(completedRun?.generationStartedAt).toBe(2_000);
+      expect(completedRun?.outcome).toEqual({
+        status: "error",
+        error: "overlapping wait",
+      });
+      expect(completedRun?.endedAt).toBe(2_100);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("accepts a terminal snapshot that starts before lifecycle registration but ends after it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+    let resolveWait!: (value: unknown) => void;
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method !== "agent.wait") {
+        return {};
+      }
+      return await new Promise<unknown>((resolve) => {
+        resolveWait = resolve;
+      });
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-start-registration-race",
+        childSessionKey: "agent:main:subagent:start-registration-race",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "start registration race",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+      });
+
+      lifecycleHandler?.({
+        stream: "lifecycle",
+        runId: "run-start-registration-race",
+        data: { phase: "start", startedAt: 1_320 },
+      });
+
+      resolveWait({
+        status: "ok",
+        startedAt: 1_000,
+        endedAt: 2_000,
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.startedAt).toBe(1_320);
+      expect(run?.generationStartedAt).toBe(1_320);
+      expect(run?.outcome).toEqual({ status: "ok" });
+      expect(run?.endedAt).toBe(2_000);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

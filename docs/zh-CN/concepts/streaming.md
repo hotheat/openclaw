@@ -76,9 +76,9 @@ OpenClaw 有两个独立的"流式传输"层：
 
 启用分块流式传输时，OpenClaw 可以在发送前**合并连续的块分块**。这减少了"单行刷屏"，同时仍提供渐进式输出。
 
-- 合并在**空闲间隙**（`idleMs`）后刷新。
+- 合并在**空闲间隙**（`idleMs`）后刷新；每个新块都会重置计时器。
 - 缓冲区受 `maxChars` 限制，超过时将刷新。
-- `minChars` 防止微小片段发送，直到累积足够文本（最终刷新始终发送剩余文本）。
+- `minChars` 在正常聚合期间阻止微小片段发送。空闲超时和最终强制刷新会发送剩余文本，即使未达到 `minChars`。
 - 连接符从 `blockStreamingChunk.breakPreference` 派生（`paragraph` → `\n\n`，`newline` → `\n`，`sentence` → 空格）。
 - 渠道覆盖通过 `*.blockStreamingCoalesce` 可用（包括每账户配置）。
 - 除非覆盖，Signal/Slack/Discord 的默认合并 `minChars` 提高到 1500。

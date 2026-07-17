@@ -393,6 +393,8 @@ export function handleMessageEnd(
 
   const addedDuringMessage = ctx.state.assistantTexts.length > ctx.state.assistantTextBaseline;
   const chunkerHasBuffered = ctx.blockChunker?.hasBuffered() ?? false;
+  const shouldEmitNonStreamingToolUse =
+    normalizedAssistantMessage.stopReason === "toolUse" && ctx.state.deltaBuffer.length === 0;
   ctx.finalizeAssistantTexts({ text, addedDuringMessage, chunkerHasBuffered });
 
   const onBlockReply = ctx.params.onBlockReply;
@@ -418,6 +420,7 @@ export function handleMessageEnd(
 
   if (
     (ctx.state.blockReplyBreak === "message_end" ||
+      shouldEmitNonStreamingToolUse ||
       (ctx.blockChunker ? ctx.blockChunker.hasBuffered() : ctx.state.blockBuffer.length > 0)) &&
     text &&
     onBlockReply

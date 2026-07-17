@@ -10,6 +10,7 @@ export type BlockReplyPipeline = {
   hasBuffered: () => boolean;
   didStream: () => boolean;
   isAborted: () => boolean;
+  hasEnqueuedPayload: (payload: ReplyPayload) => boolean;
   hasSentPayload: (payload: ReplyPayload) => boolean;
 };
 
@@ -82,6 +83,7 @@ export function createBlockReplyPipeline(params: {
   const sentKeys = new Set<string>();
   const pendingKeys = new Set<string>();
   const seenKeys = new Set<string>();
+  const enqueuedKeys = new Set<string>();
   const bufferedKeys = new Set<string>();
   const bufferedPayloadKeys = new Set<string>();
   const bufferedPayloads: ReplyPayload[] = [];
@@ -196,6 +198,8 @@ export function createBlockReplyPipeline(params: {
     if (aborted) {
       return;
     }
+    const payloadKey = createBlockReplyPayloadKey(payload);
+    enqueuedKeys.add(payloadKey);
     if (bufferPayload(payload)) {
       return;
     }
@@ -206,7 +210,6 @@ export function createBlockReplyPipeline(params: {
       return;
     }
     if (coalescer) {
-      const payloadKey = createBlockReplyPayloadKey(payload);
       if (seenKeys.has(payloadKey) || pendingKeys.has(payloadKey) || bufferedKeys.has(payloadKey)) {
         return;
       }
@@ -234,6 +237,10 @@ export function createBlockReplyPipeline(params: {
     hasBuffered: () => Boolean(coalescer?.hasBuffered() || bufferedPayloads.length > 0),
     didStream: () => didStream,
     isAborted: () => aborted,
+    hasEnqueuedPayload: (payload) => {
+      const payloadKey = createBlockReplyPayloadKey(payload);
+      return enqueuedKeys.has(payloadKey);
+    },
     hasSentPayload: (payload) => {
       const payloadKey = createBlockReplyPayloadKey(payload);
       return sentKeys.has(payloadKey);

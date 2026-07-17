@@ -45,7 +45,7 @@ export function createBlockReplyCoalescer(params: {
     }
     clearIdleTimer();
     idleTimer = setTimeout(() => {
-      void flush({ force: false });
+      void flush({ force: true });
     }, idleMs);
   };
 

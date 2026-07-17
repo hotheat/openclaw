@@ -534,6 +534,47 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(result).toBeUndefined();
   });
 
+  it("returns a final payload after coalescing intermediate block replies", async () => {
+    const onBlockReply = vi.fn();
+    state.runEmbeddedPiAgentMock.mockImplementationOnce(async (params: AgentRunParams) => {
+      await params.onBlockReply?.({ text: "checking schema" });
+      await params.onBlockReply?.({ text: "running query" });
+      await params.onBlockReplyFlush?.();
+      return {
+        payloads: [
+          { text: "checking schema" },
+          { text: "running query" },
+          { text: "query complete" },
+        ],
+        meta: {},
+      };
+    });
+
+    const { run } = createMinimalRun({
+      blockStreamingEnabled: true,
+      opts: { onBlockReply },
+      runOverrides: {
+        config: {
+          agents: {
+            defaults: {
+              blockStreamingCoalesce: {
+                minChars: 1,
+                maxChars: 200,
+                idleMs: 1_000,
+              },
+            },
+          },
+        },
+      },
+    });
+    const result = await run();
+
+    expect(onBlockReply).toHaveBeenCalledTimes(1);
+    expect(onBlockReply.mock.calls[0]?.[0]?.text).toContain("checking schema");
+    expect(onBlockReply.mock.calls[0]?.[0]?.text).toContain("running query");
+    expect(result).toMatchObject({ text: "query complete", audioAsVoice: false });
+  });
+
   it("handles typing for normal and silent tool results", async () => {
     const cases = [
       {

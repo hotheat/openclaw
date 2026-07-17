@@ -84,9 +84,10 @@ export function buildReplyPayloads(params: {
     })
     .filter(isRenderablePayload);
 
-  // Drop final payloads only when block streaming succeeded end-to-end.
-  // If streaming aborted (e.g., timeout), fall back to final payloads.
-  const shouldDropFinalPayloads =
+  // A mixed final list can contain streamed progress blocks plus a later non-streamed answer.
+  // Preserve historical whole-list suppression when no final payload matches the pipeline.
+  // If streaming aborted, suppress only payloads that were actually delivered.
+  const didCompleteBlockStreaming =
     params.blockStreamingEnabled &&
     Boolean(params.blockReplyPipeline?.didStream()) &&
     !params.blockReplyPipeline?.isAborted();
@@ -116,12 +117,18 @@ export function buildReplyPayloads(params: {
         sentMediaUrls: params.messagingToolSentMediaUrls ?? [],
       })
     : dedupedPayloads;
+  const includesEnqueuedBlockPayload =
+    didCompleteBlockStreaming &&
+    mediaFilteredPayloads.some((payload) => params.blockReplyPipeline?.hasEnqueuedPayload(payload));
+  const shouldDropAllFinalPayloads = didCompleteBlockStreaming && !includesEnqueuedBlockPayload;
   // Filter out payloads already sent via pipeline or directly during tool flush.
-  const filteredPayloads = shouldDropFinalPayloads
+  const filteredPayloads = shouldDropAllFinalPayloads
     ? []
     : params.blockStreamingEnabled
-      ? mediaFilteredPayloads.filter(
-          (payload) => !params.blockReplyPipeline?.hasSentPayload(payload),
+      ? mediaFilteredPayloads.filter((payload) =>
+          didCompleteBlockStreaming
+            ? !params.blockReplyPipeline?.hasEnqueuedPayload(payload)
+            : !params.blockReplyPipeline?.hasSentPayload(payload),
         )
       : params.directlySentBlockKeys?.size
         ? mediaFilteredPayloads.filter(

@@ -1,5 +1,6 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { ReasoningLevel, ThinkLevel, VerboseLevel } from "../../../auto-reply/thinking.js";
+import type { SessionLaneStartContext } from "../../../auto-reply/types.js";
 import type { AgentStreamParams } from "../../../commands/agent/types.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import type { enqueueCommand } from "../../../process/command-queue.js";
@@ -100,6 +101,18 @@ export type RunEmbeddedPiAgentParams = {
   onReasoningEnd?: () => void | Promise<void>;
   onToolResult?: (payload: { text?: string; mediaUrls?: string[] }) => void | Promise<void>;
   onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+  onSessionLaneStart?: (context: SessionLaneStartContext) => void | Promise<void>;
+  onSessionLaneComplete?: (
+    payloads:
+      | Array<{
+          text?: string;
+          mediaUrl?: string;
+          mediaUrls?: string[];
+          replyToId?: string;
+          isError?: boolean;
+        }>
+      | undefined,
+  ) => void | Promise<void>;
   lane?: string;
   enqueue?: typeof enqueueCommand;
   extraSystemPrompt?: string;

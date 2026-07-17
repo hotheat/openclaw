@@ -504,14 +504,18 @@ describe("block reply coalescer", () => {
     });
 
     coalescer.enqueue({ text: "Hello" });
+    await vi.advanceTimersByTimeAsync(75);
     coalescer.enqueue({ text: "world" });
 
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(flushes).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(75);
     expect(flushes).toEqual(["Hello world"]);
     coalescer.stop();
   });
 
-  it("waits until minChars before idle flush", async () => {
+  it("flushes below minChars when the idle window expires", async () => {
     vi.useFakeTimers();
     const flushes: string[] = [];
     const coalescer = createBlockReplyCoalescer({
@@ -523,12 +527,11 @@ describe("block reply coalescer", () => {
     });
 
     coalescer.enqueue({ text: "short" });
-    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(49);
     expect(flushes).toEqual([]);
 
-    coalescer.enqueue({ text: "message" });
-    await vi.advanceTimersByTimeAsync(50);
-    expect(flushes).toEqual(["short message"]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(flushes).toEqual(["short"]);
     coalescer.stop();
   });
 

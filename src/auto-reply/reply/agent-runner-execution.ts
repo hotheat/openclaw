@@ -314,6 +314,8 @@ export async function runAgentTurnWithFallback(params: {
             suppressToolErrorWarnings: params.opts?.suppressToolErrorWarnings,
             images: params.opts?.images,
             abortSignal: params.opts?.abortSignal,
+            onSessionLaneStart: params.opts?.onSessionLaneStart,
+            onSessionLaneComplete: params.opts?.onSessionLaneComplete,
             blockReplyBreak: params.resolvedBlockStreamingBreak,
             blockReplyChunking: params.blockReplyChunking,
             onPartialReply: async (payload) => {
