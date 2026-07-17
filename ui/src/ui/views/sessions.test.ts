@@ -79,7 +79,7 @@ describe("sessions view", () => {
     ).toBe(true);
   });
 
-  it("does not render heartbeat-only sessions", async () => {
+  it("renders heartbeat-like sessions returned by the gateway", async () => {
     const container = document.createElement("div");
     render(
       renderSessions(
@@ -90,8 +90,6 @@ describe("sessions view", () => {
               kind: "direct",
               displayName: "heartbeat",
               updatedAt: Date.now(),
-              deliveryContext: { to: "heartbeat" },
-              lastTo: "heartbeat",
               origin: {
                 label: "heartbeat",
                 provider: "heartbeat",
@@ -105,6 +103,12 @@ describe("sessions view", () => {
               displayName: "Feishu User",
               updatedAt: Date.now(),
             },
+            {
+              key: "agent:ops:feishu:direct:heartbeat",
+              kind: "direct",
+              displayName: "legacy-heartbeat",
+              updatedAt: Date.now(),
+            },
           ),
         ),
       ),
@@ -112,29 +116,8 @@ describe("sessions view", () => {
     );
     await Promise.resolve();
 
-    expect(container.textContent).not.toContain("agent:ops:main");
-    expect(container.textContent).not.toContain("heartbeat");
+    expect(container.textContent).toContain("agent:ops:main");
     expect(container.textContent).toContain("agent:ops:feishu:direct:user");
-  });
-
-  it("keeps ordinary sessions whose display name is heartbeat", async () => {
-    const container = document.createElement("div");
-    render(
-      renderSessions(
-        buildProps(
-          buildResult({
-            key: "agent:ops:manual-heartbeat",
-            kind: "direct",
-            displayName: "heartbeat",
-            updatedAt: Date.now(),
-          }),
-        ),
-      ),
-      container,
-    );
-    await Promise.resolve();
-
-    expect(container.textContent).toContain("agent:ops:manual-heartbeat");
-    expect(container.textContent).toContain("heartbeat");
+    expect(container.textContent).toContain("agent:ops:feishu:direct:heartbeat");
   });
 });

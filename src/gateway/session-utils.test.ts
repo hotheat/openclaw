@@ -529,15 +529,14 @@ describe("listSessionsFromStore search", () => {
     expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:cron:job-1"]);
   });
 
-  test("hides internal heartbeat-only main sessions from sessions list", () => {
+  test("hides only explicitly marked heartbeat-only sessions", () => {
     const now = Date.now();
     const store: Record<string, SessionEntry> = {
       "agent:main:main": {
         sessionId: "heartbeat-session",
         updatedAt: now,
         chatType: "direct",
-        deliveryContext: { to: "heartbeat" },
-        lastTo: "heartbeat",
+        heartbeatOnly: { runId: "heartbeat-run" },
         origin: {
           label: "heartbeat",
           provider: "heartbeat",
@@ -548,9 +547,26 @@ describe("listSessionsFromStore search", () => {
       "agent:main:regular": {
         sessionId: "regular-session",
         updatedAt: now - 1000,
+        heartbeatLease: { runId: "active-heartbeat-run" },
         displayName: "heartbeat",
         label: "heartbeat",
         chatType: "direct",
+      } as SessionEntry,
+      "agent:main:feishu:direct:heartbeat": {
+        sessionId: "legacy-heartbeat-session",
+        updatedAt: now - 2000,
+        chatType: "direct",
+      } as SessionEntry,
+      "agent:main:heartbeat-worker": {
+        sessionId: "heartbeat-worker-session",
+        updatedAt: now - 3000,
+        chatType: "direct",
+        origin: {
+          label: "heartbeat",
+          provider: "heartbeat",
+          from: "heartbeat",
+          to: "heartbeat",
+        },
       } as SessionEntry,
     };
 
@@ -561,7 +577,11 @@ describe("listSessionsFromStore search", () => {
       opts: {},
     });
 
-    expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:regular"]);
+    expect(result.sessions.map((session) => session.key)).toEqual([
+      "agent:main:regular",
+      "agent:main:feishu:direct:heartbeat",
+      "agent:main:heartbeat-worker",
+    ]);
   });
 
   test("keeps heartbeat runs that target a real delivery recipient", () => {

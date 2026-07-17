@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,6 +30,143 @@ import { deriveSessionMetaPatch } from "./metadata.js";
 import { mergeSessionEntry, type SessionEntry } from "./types.js";
 
 const log = createSubsystemLogger("sessions/store");
+
+type SessionStoreOwnership = {
+  storePath: string;
+  sessionKey: string;
+  sessionId: string;
+  runId: string;
+  heartbeatOnly: boolean;
+};
+
+type SessionStoreOwnershipContext = {
+  ownership?: SessionStoreOwnership;
+  abortController: AbortController;
+  closed: boolean;
+};
+
+const SESSION_STORE_OWNERSHIP = new AsyncLocalStorage<SessionStoreOwnershipContext>();
+const ACTIVE_SESSION_STORE_OWNERSHIPS = new Map<string, AbortController>();
+
+function sessionStoreOwnershipKey(storePath: string, sessionKey: string, runId: string): string {
+  return `${storePath}\0${sessionKey}\0${runId}`;
+}
+
+function unregisterSessionStoreOwnership(context: SessionStoreOwnershipContext): void {
+  const ownership = context.ownership;
+  if (!ownership) {
+    return;
+  }
+  const key = sessionStoreOwnershipKey(ownership.storePath, ownership.sessionKey, ownership.runId);
+  const active = ACTIVE_SESSION_STORE_OWNERSHIPS.get(key);
+  if (active === context.abortController) {
+    ACTIVE_SESSION_STORE_OWNERSHIPS.delete(key);
+  }
+}
+
+function isSessionStoreOwnershipActive(
+  context: SessionStoreOwnershipContext,
+  ownership: SessionStoreOwnership,
+): boolean {
+  if (context.closed) {
+    return false;
+  }
+  const key = sessionStoreOwnershipKey(ownership.storePath, ownership.sessionKey, ownership.runId);
+  return ACTIVE_SESSION_STORE_OWNERSHIPS.get(key) === context.abortController;
+}
+
+export class SessionStoreOwnershipLostError extends Error {
+  constructor() {
+    super("heartbeat session ownership changed");
+    this.name = "SessionStoreOwnershipLostError";
+  }
+}
+
+export function hasSessionStoreOwnershipContext(): boolean {
+  return SESSION_STORE_OWNERSHIP.getStore() != null;
+}
+
+export async function runWithSessionStoreOwnership<T>(fn: () => Promise<T>): Promise<T> {
+  const context: SessionStoreOwnershipContext = {
+    abortController: new AbortController(),
+    closed: false,
+  };
+  return await SESSION_STORE_OWNERSHIP.run(context, async () => {
+    try {
+      return await fn();
+    } finally {
+      context.closed = true;
+      unregisterSessionStoreOwnership(context);
+      context.ownership = undefined;
+      if (!context.abortController.signal.aborted) {
+        context.abortController.abort(new SessionStoreOwnershipLostError());
+      }
+    }
+  });
+}
+
+export function getSessionStoreOwnershipAbortSignal(): AbortSignal | undefined {
+  return SESSION_STORE_OWNERSHIP.getStore()?.abortController.signal;
+}
+
+export function setSessionStoreOwnership(ownership: SessionStoreOwnership): void {
+  const context = SESSION_STORE_OWNERSHIP.getStore();
+  if (!context) {
+    return;
+  }
+  if (context.closed) {
+    throw new SessionStoreOwnershipLostError();
+  }
+  unregisterSessionStoreOwnership(context);
+  context.ownership = ownership;
+  ACTIVE_SESSION_STORE_OWNERSHIPS.set(
+    sessionStoreOwnershipKey(ownership.storePath, ownership.sessionKey, ownership.runId),
+    context.abortController,
+  );
+  try {
+    assertSessionStoreOwnership(ownership.storePath);
+  } catch (error) {
+    unregisterSessionStoreOwnership(context);
+    context.abortController.abort(error);
+    throw error;
+  }
+}
+
+export function revokeSessionStoreOwnership(params: {
+  storePath: string;
+  sessionKey: string;
+  runId: string;
+}): boolean {
+  const key = sessionStoreOwnershipKey(params.storePath, params.sessionKey, params.runId);
+  const abortController = ACTIVE_SESSION_STORE_OWNERSHIPS.get(key);
+  if (!abortController) {
+    return false;
+  }
+  ACTIVE_SESSION_STORE_OWNERSHIPS.delete(key);
+  abortController.abort(new SessionStoreOwnershipLostError());
+  return true;
+}
+
+export function assertSessionStoreOwnership(storePath: string): void {
+  const context = SESSION_STORE_OWNERSHIP.getStore();
+  if (context?.closed) {
+    throw new SessionStoreOwnershipLostError();
+  }
+  const ownership = context?.ownership;
+  if (!ownership || ownership.storePath !== storePath) {
+    return;
+  }
+  if (!isSessionStoreOwnershipActive(context, ownership)) {
+    throw new SessionStoreOwnershipLostError();
+  }
+  const current = loadSessionStore(storePath, { skipCache: true })[ownership.sessionKey];
+  if (
+    current?.sessionId !== ownership.sessionId ||
+    current.heartbeatLease?.runId !== ownership.runId
+  ) {
+    throw new SessionStoreOwnershipLostError();
+  }
+}
 
 // ============================================================================
 // Session Store Cache with TTL Support
@@ -815,7 +953,56 @@ export async function updateSessionStore<T>(
   mutator: (store: Record<string, SessionEntry>) => Promise<T> | T,
   opts?: SaveSessionStoreOptions,
 ): Promise<T> {
-  return await getSessionMutationQueue().enqueue(storePath, mutator, opts);
+  const context = SESSION_STORE_OWNERSHIP.getStore();
+  if (context?.closed) {
+    throw new SessionStoreOwnershipLostError();
+  }
+  const ownership = context?.ownership;
+  return await getSessionMutationQueue().enqueue(
+    storePath,
+    async (store) => {
+      if (context?.closed) {
+        throw new SessionStoreOwnershipLostError();
+      }
+      if (!ownership || ownership.storePath !== storePath) {
+        return await mutator(store);
+      }
+      if (!isSessionStoreOwnershipActive(context, ownership)) {
+        throw new SessionStoreOwnershipLostError();
+      }
+      const current = store[ownership.sessionKey];
+      const ownershipMatches =
+        current?.sessionId === ownership.sessionId &&
+        current.heartbeatLease?.runId === ownership.runId;
+      if (!ownershipMatches) {
+        throw new SessionStoreOwnershipLostError();
+      }
+
+      const result = await mutator(store);
+      if (!isSessionStoreOwnershipActive(context, ownership)) {
+        throw new SessionStoreOwnershipLostError();
+      }
+      const next = store[ownership.sessionKey];
+      if (!next) {
+        return result;
+      }
+      if (next.heartbeatLease && next.heartbeatLease.runId !== ownership.runId) {
+        throw new SessionStoreOwnershipLostError();
+      }
+      next.heartbeatLease = { runId: ownership.runId };
+      if (ownership.heartbeatOnly) {
+        if (next.heartbeatOnly && next.heartbeatOnly.runId !== ownership.runId) {
+          throw new SessionStoreOwnershipLostError();
+        }
+        next.heartbeatOnly = { runId: ownership.runId };
+      } else if (next.heartbeatOnly) {
+        throw new SessionStoreOwnershipLostError();
+      }
+      ownership.sessionId = next.sessionId;
+      return result;
+    },
+    opts,
+  );
 }
 
 type SessionStoreLockOptions = {

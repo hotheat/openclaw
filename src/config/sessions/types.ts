@@ -36,6 +36,14 @@ export type SessionRecentMediaSnapshot = {
   pendingFollowup?: boolean;
 };
 
+export type HeartbeatOnlySession = {
+  runId: string;
+};
+
+export type HeartbeatSessionLease = {
+  runId: string;
+};
+
 export type SessionEntry = {
   /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
@@ -123,6 +131,10 @@ export type SessionEntry = {
   groupChannel?: string;
   space?: string;
   origin?: SessionOrigin;
+  /** Run-scoped lease used to reject stale heartbeat writes after user activity. */
+  heartbeatLease?: HeartbeatSessionLease;
+  /** Marks a heartbeat-created session until real inbound traffic claims it. */
+  heartbeatOnly?: HeartbeatOnlySession;
   recentMediaSnapshot?: SessionRecentMediaSnapshot;
   /**
    * Internal marker for an image snapshot staged before full session init

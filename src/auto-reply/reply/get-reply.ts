@@ -10,6 +10,11 @@ import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, loadConfig } from "../../config/config.js";
+import {
+  getSessionStoreOwnershipAbortSignal,
+  hasSessionStoreOwnershipContext,
+  runWithSessionStoreOwnership,
+} from "../../config/sessions.js";
 import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -24,7 +29,11 @@ import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
 import { applyResetModelOverride } from "./session-reset-model.js";
-import { initSessionState, persistRecentMediaSnapshotEarly } from "./session.js";
+import {
+  claimSessionForInbound,
+  initSessionState,
+  persistRecentMediaSnapshotEarly,
+} from "./session.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 import { createTypingController } from "./typing.js";
 
@@ -100,6 +109,18 @@ export async function getReplyFromConfig(
   opts?: GetReplyOptions,
   configOverride?: OpenClawConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  if (opts?.isHeartbeat && !hasSessionStoreOwnershipContext()) {
+    return await runWithSessionStoreOwnership(() => getReplyFromConfig(ctx, opts, configOverride));
+  }
+  const ownershipAbortSignal = opts?.isHeartbeat
+    ? getSessionStoreOwnershipAbortSignal()
+    : undefined;
+  const abortSignal =
+    ownershipAbortSignal && opts?.abortSignal !== ownershipAbortSignal
+      ? opts?.abortSignal
+        ? AbortSignal.any([opts.abortSignal, ownershipAbortSignal])
+        : ownershipAbortSignal
+      : opts?.abortSignal;
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = configOverride ?? loadConfig();
   const targetSessionKey =
@@ -119,9 +140,12 @@ export async function getReplyFromConfig(
       ? agentCfg?.heartbeat?.thinking
       : opts?.heartbeatThinkingOverride;
   const resolvedOpts =
-    mergedSkillFilter !== undefined || heartbeatThinkingOverride !== undefined
+    mergedSkillFilter !== undefined ||
+    heartbeatThinkingOverride !== undefined ||
+    abortSignal !== opts?.abortSignal
       ? {
           ...opts,
+          ...(abortSignal ? { abortSignal } : {}),
           ...(mergedSkillFilter !== undefined ? { skillFilter: mergedSkillFilter } : {}),
           ...(heartbeatThinkingOverride !== undefined ? { heartbeatThinkingOverride } : {}),
         }
@@ -180,6 +204,12 @@ export async function getReplyFromConfig(
   opts?.onTypingController?.(typing);
 
   const finalized = finalizeInboundContext(ctx);
+  if (resolvedOpts?.isHeartbeat !== true) {
+    await claimSessionForInbound({
+      ctx: finalized,
+      cfg,
+    });
+  }
   await persistRecentMediaSnapshotEarly({
     ctx: finalized,
     cfg,
@@ -210,6 +240,7 @@ export async function getReplyFromConfig(
     ctx: finalized,
     cfg,
     commandAuthorized,
+    isHeartbeat: resolvedOpts?.isHeartbeat === true,
   });
   let {
     sessionCtx,

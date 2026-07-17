@@ -462,31 +462,8 @@ function resolveSessionStoreAgentId(cfg: OpenClawConfig, canonicalKey: string): 
   return resolveDefaultStoreAgentId(cfg);
 }
 
-function isInternalHeartbeatMainSession(
-  cfg: OpenClawConfig,
-  key: string,
-  entry?: SessionEntry,
-): boolean {
-  const parsed = parseAgentSessionKey(key);
-  if (!parsed?.agentId) {
-    return false;
-  }
-
-  const agentId = normalizeAgentId(parsed.agentId);
-  const mainKey = resolveAgentMainSessionKey({ cfg, agentId });
-  if (key !== mainKey) {
-    return false;
-  }
-
-  const deliveryFields = normalizeSessionDeliveryFields(entry);
-  const origin = entry?.origin;
-  return (
-    origin?.provider === "heartbeat" &&
-    origin?.from === "heartbeat" &&
-    origin?.to === "heartbeat" &&
-    deliveryFields.lastTo === "heartbeat" &&
-    deliveryFields.deliveryContext?.to === "heartbeat"
-  );
+function isHeartbeatOnlySession(entry?: SessionEntry): boolean {
+  return Boolean(entry?.heartbeatOnly?.runId);
 }
 
 export function canonicalizeSpawnedByForAgent(
@@ -746,7 +723,7 @@ export function listSessionsFromStore(params: {
       if (isCronRunSessionKey(key)) {
         return false;
       }
-      if (isInternalHeartbeatMainSession(cfg, key, entry)) {
+      if (isHeartbeatOnlySession(entry)) {
         return false;
       }
       if (!includeGlobal && key === "global") {

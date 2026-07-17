@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { withTempHome as withTempHomeBase } from "../../../test/helpers/temp-home.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { loadSessionStore } from "../../config/sessions.js";
 import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { getReplyFromConfig } from "./get-reply.js";
 
@@ -203,6 +204,100 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 }
 
 describe("getReplyFromConfig recent image OCR rehydration", () => {
+  it("revokes a heartbeat that claims the session during media preprocessing", async () => {
+    await withTempHome(async (home) => {
+      let signalHeartbeatAgentStarted!: () => void;
+      const heartbeatAgentStarted = new Promise<void>((resolve) => {
+        signalHeartbeatAgentStarted = resolve;
+      });
+      let heartbeatAbortSignal: AbortSignal | undefined;
+      vi.mocked(runEmbeddedPiAgent).mockImplementation(async (params) => {
+        if (!params.abortSignal) {
+          return makeResult("ok");
+        }
+        heartbeatAbortSignal = params.abortSignal;
+        signalHeartbeatAgentStarted();
+        return await new Promise<never>((_, reject) => {
+          if (params.abortSignal?.aborted) {
+            reject(params.abortSignal.reason);
+            return;
+          }
+          params.abortSignal?.addEventListener("abort", () => reject(params.abortSignal?.reason), {
+            once: true,
+          });
+        });
+      });
+
+      const cfg = makeCfg(home);
+      const storePath = path.join(home, "sessions.json");
+      const sessionKey = "agent:main:whatsapp:direct:user-1";
+      let releaseMediaUnderstanding!: () => void;
+      blockedMediaUnderstandingMessageId = "msg-user-media";
+      blockedMediaUnderstandingPromise = new Promise<void>((resolve) => {
+        releaseMediaUnderstanding = resolve;
+      });
+      const mediaUnderstandingStarted = new Promise<void>((resolve) => {
+        blockedMediaUnderstandingStarted = resolve;
+      });
+
+      const heartbeatReply = getReplyFromConfig(
+        makeCtx({
+          body: "heartbeat",
+          sessionKey,
+          senderId: "heartbeat",
+          messageSid: "msg-heartbeat",
+        }),
+        { isHeartbeat: true },
+        cfg,
+      );
+      await withTimeout(
+        heartbeatAgentStarted,
+        1_500,
+        "timed out waiting for heartbeat agent execution",
+      );
+
+      const userReply = getReplyFromConfig(
+        makeCtx({
+          body: "<media:image>",
+          sessionKey,
+          senderId: "user-1",
+          messageSid: "msg-user-media",
+          mediaPath: "/tmp/inbound-image.jpg",
+          mediaType: "image/jpeg",
+        }),
+        {},
+        cfg,
+      );
+      await withTimeout(
+        mediaUnderstandingStarted,
+        1_500,
+        "timed out waiting for user media preprocessing",
+      );
+      const heartbeatResult = await withTimeout(
+        heartbeatReply,
+        1_500,
+        "heartbeat was not revoked before media preprocessing completed",
+      );
+
+      const heartbeatText = Array.isArray(heartbeatResult)
+        ? heartbeatResult[0]?.text
+        : heartbeatResult?.text;
+      expect(heartbeatText).toContain("heartbeat session ownership changed");
+      expect(heartbeatAbortSignal?.aborted).toBe(true);
+      expect(heartbeatAbortSignal?.reason).toMatchObject({
+        message: "heartbeat session ownership changed",
+      });
+
+      releaseMediaUnderstanding();
+      const userResult = await withTimeout(userReply, 1_500, "user reply did not finish");
+      const userText = Array.isArray(userResult) ? userResult[0]?.text : userResult?.text;
+      expect(userText).toBe("ok");
+      expect(
+        loadSessionStore(storePath, { skipCache: true })[sessionKey]?.heartbeatLease,
+      ).toBeUndefined();
+    });
+  });
+
   it("persists the recent image before OCR so a concurrent follow-up can rehydrate it", async () => {
     await withTempHome(async (home) => {
       const seenPrompts: string[] = [];

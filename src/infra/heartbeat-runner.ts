@@ -25,12 +25,14 @@ import { parseDurationMs } from "../cli/parse-duration.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import {
+  assertSessionStoreOwnership,
   canonicalizeMainSessionAlias,
+  hasSessionStoreOwnershipContext,
   loadSessionStore,
   resolveAgentIdFromSessionKey,
   resolveAgentMainSessionKey,
-  resolveSessionFilePath,
   resolveStorePath,
+  runWithSessionStoreOwnership,
   updateSessionStore,
 } from "../config/sessions.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
@@ -379,58 +381,6 @@ async function restoreHeartbeatUpdatedAt(params: {
   });
 }
 
-/**
- * Prune heartbeat transcript entries by truncating the file back to a previous size.
- * This removes the user+assistant turns that were written during a HEARTBEAT_OK run,
- * preventing context pollution from zero-information exchanges.
- */
-async function pruneHeartbeatTranscript(params: {
-  transcriptPath?: string;
-  preHeartbeatSize?: number;
-}) {
-  const { transcriptPath, preHeartbeatSize } = params;
-  if (!transcriptPath || typeof preHeartbeatSize !== "number" || preHeartbeatSize < 0) {
-    return;
-  }
-  try {
-    const stat = await fs.stat(transcriptPath);
-    // Only truncate if the file has grown during the heartbeat run
-    if (stat.size > preHeartbeatSize) {
-      await fs.truncate(transcriptPath, preHeartbeatSize);
-    }
-  } catch {
-    // File may not exist or may have been removed - ignore errors
-  }
-}
-
-/**
- * Get the transcript file path and its current size before a heartbeat run.
- * Returns undefined values if the session or transcript doesn't exist yet.
- */
-async function captureTranscriptState(params: {
-  storePath: string;
-  sessionKey: string;
-  agentId?: string;
-}): Promise<{ transcriptPath?: string; preHeartbeatSize?: number }> {
-  const { storePath, sessionKey, agentId } = params;
-  try {
-    const store = loadSessionStore(storePath);
-    const entry = store[sessionKey];
-    if (!entry?.sessionId) {
-      return {};
-    }
-    const transcriptPath = resolveSessionFilePath(entry.sessionId, entry, {
-      agentId,
-      sessionsDir: path.dirname(storePath),
-    });
-    const stat = await fs.stat(transcriptPath);
-    return { transcriptPath, preHeartbeatSize: stat.size };
-  } catch {
-    // Session or transcript doesn't exist yet - nothing to prune
-    return {};
-  }
-}
-
 function stripLeadingHeartbeatResponsePrefix(
   text: string,
   responsePrefix: string | undefined,
@@ -568,6 +518,9 @@ export async function runHeartbeatOnce(opts: {
   reason?: string;
   deps?: HeartbeatDeps;
 }): Promise<HeartbeatRunResult> {
+  if (!hasSessionStoreOwnershipContext()) {
+    return await runWithSessionStoreOwnership(() => runHeartbeatOnce(opts));
+  }
   const cfg = opts.cfg ?? loadConfig();
   const agentId = normalizeAgentId(opts.agentId ?? resolveDefaultAgentId(cfg));
   const heartbeat = opts.heartbeat ?? resolveHeartbeatConfig(cfg, agentId);
@@ -697,6 +650,7 @@ export async function runHeartbeatOnce(opts: {
         return false;
       }
     }
+    assertSessionStoreOwnership(storePath);
     await deliverOutboundPayloads({
       cfg,
       channel: delivery.channel,
@@ -711,13 +665,6 @@ export async function runHeartbeatOnce(opts: {
   };
 
   try {
-    // Capture transcript state before the heartbeat run so we can prune if HEARTBEAT_OK
-    const transcriptState = await captureTranscriptState({
-      storePath,
-      sessionKey,
-      agentId,
-    });
-
     const heartbeatModelOverride = heartbeat?.model?.trim() || undefined;
     const heartbeatThinkingOverride = heartbeat?.thinking?.trim() || undefined;
     const suppressToolErrorWarnings = heartbeat?.suppressToolErrorWarnings === true;
@@ -728,6 +675,7 @@ export async function runHeartbeatOnce(opts: {
       suppressToolErrorWarnings,
     };
     const replyResult = await getReplyFromConfig(ctx, replyOpts, cfg);
+    assertSessionStoreOwnership(storePath);
     const replyPayload = resolveHeartbeatReplyPayload(replyResult);
     const includeReasoning = heartbeat?.includeReasoning === true;
     const reasoningPayloads = includeReasoning
@@ -743,8 +691,6 @@ export async function runHeartbeatOnce(opts: {
         sessionKey,
         updatedAt: previousUpdatedAt,
       });
-      // Prune the transcript to remove HEARTBEAT_OK turns
-      await pruneHeartbeatTranscript(transcriptState);
       const okSent = await maybeSendHeartbeatOk();
       emitHeartbeatEvent({
         status: "ok-empty",
@@ -779,8 +725,6 @@ export async function runHeartbeatOnce(opts: {
         sessionKey,
         updatedAt: previousUpdatedAt,
       });
-      // Prune the transcript to remove HEARTBEAT_OK turns
-      await pruneHeartbeatTranscript(transcriptState);
       const okSent = await maybeSendHeartbeatOk();
       emitHeartbeatEvent({
         status: "ok-token",
@@ -817,8 +761,6 @@ export async function runHeartbeatOnce(opts: {
         sessionKey,
         updatedAt: previousUpdatedAt,
       });
-      // Prune the transcript to remove duplicate heartbeat turns
-      await pruneHeartbeatTranscript(transcriptState);
       emitHeartbeatEvent({
         status: "skipped",
         reason: "duplicate",
@@ -896,6 +838,7 @@ export async function runHeartbeatOnce(opts: {
       }
     }
 
+    assertSessionStoreOwnership(storePath);
     await deliverOutboundPayloads({
       cfg,
       channel: delivery.channel,

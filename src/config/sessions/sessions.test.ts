@@ -7,8 +7,11 @@ import { resetControlUiConfigCompatWarningsForTesting } from "../control-ui-conf
 import {
   clearSessionStoreCacheForTest,
   evaluateSessionFreshness,
+  getSessionStoreOwnershipAbortSignal,
   loadSessionStore,
   resolveAndPersistSessionFile,
+  runWithSessionStoreOwnership,
+  setSessionStoreOwnership,
   updateSessionStore,
 } from "../sessions.js";
 import type { SessionConfig } from "../types.base.js";
@@ -305,6 +308,47 @@ describe("session store lock (Promise chain mutex)", () => {
 
     const store = loadSessionStore(storePath);
     expect(store[key]?.modelOverride).toBe("recovered");
+  });
+
+  it("rejects detached writes after the ownership scope closes", async () => {
+    const key = "agent:main:detached-heartbeat";
+    const sessionId = "heartbeat-session";
+    const runId = "heartbeat-run";
+    const { storePath } = await makeTmpStore({
+      [key]: {
+        sessionId,
+        updatedAt: 100,
+        heartbeatLease: { runId },
+      },
+    });
+    let releaseDetached!: () => void;
+    const continueDetached = new Promise<void>((resolve) => {
+      releaseDetached = resolve;
+    });
+    let detachedWrite!: Promise<void>;
+    let ownershipSignal: AbortSignal | undefined;
+
+    await runWithSessionStoreOwnership(async () => {
+      setSessionStoreOwnership({
+        storePath,
+        sessionKey: key,
+        sessionId,
+        runId,
+        heartbeatOnly: false,
+      });
+      ownershipSignal = getSessionStoreOwnershipAbortSignal();
+      detachedWrite = (async () => {
+        await continueDetached;
+        await updateSessionStore(storePath, (store) => {
+          store[key] = { ...store[key], modelOverride: "stale-write" } as SessionEntry;
+        });
+      })();
+    });
+
+    expect(ownershipSignal?.aborted).toBe(true);
+    releaseDetached();
+    await expect(detachedWrite).rejects.toThrow("heartbeat session ownership changed");
+    expect(loadSessionStore(storePath, { skipCache: true })[key]?.modelOverride).toBeUndefined();
   });
 });
 

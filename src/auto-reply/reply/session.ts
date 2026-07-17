@@ -23,6 +23,9 @@ import {
   resolveSessionKey,
   resolveSessionTranscriptPath,
   resolveStorePath,
+  revokeSessionStoreOwnership,
+  SessionStoreOwnershipLostError,
+  setSessionStoreOwnership,
   type SessionEntry,
   type SessionScope,
   updateSessionStore,
@@ -97,6 +100,43 @@ function resolveSessionStoreTarget(params: {
     storePath,
     sessionKey,
   };
+}
+
+async function claimInboundSessionOwnership(params: {
+  storePath: string;
+  sessionKey: string;
+}): Promise<SessionEntry | undefined> {
+  const claim = await updateSessionStore(params.storePath, (store) => {
+    const current = store[params.sessionKey];
+    if (!current) {
+      return { entry: undefined };
+    }
+    if (!current.heartbeatLease && !current.heartbeatOnly) {
+      return { entry: current };
+    }
+    const revokedRunId = current.heartbeatLease?.runId ?? current.heartbeatOnly?.runId;
+    const next = { ...current };
+    delete next.heartbeatLease;
+    delete next.heartbeatOnly;
+    store[params.sessionKey] = next;
+    return { entry: next, revokedRunId };
+  });
+  if (claim.revokedRunId) {
+    revokeSessionStoreOwnership({
+      storePath: params.storePath,
+      sessionKey: params.sessionKey,
+      runId: claim.revokedRunId,
+    });
+  }
+  return claim.entry;
+}
+
+export async function claimSessionForInbound(params: {
+  ctx: MsgContext;
+  cfg: OpenClawConfig;
+}): Promise<void> {
+  const { storePath, sessionKey } = resolveSessionStoreTarget(params);
+  await claimInboundSessionOwnership({ storePath, sessionKey });
 }
 
 function isPendingRecentMediaSnapshotInit(entry?: SessionEntry): boolean {
@@ -297,6 +337,12 @@ export type SessionInitResult = {
   triggerBodyNormalized: string;
 };
 
+type HeartbeatSessionOwnership = {
+  runId: string;
+  sessionId: string;
+  heartbeatOnly: boolean;
+};
+
 function forkSessionFromParent(params: {
   parentEntry: SessionEntry;
   agentId: string;
@@ -359,8 +405,9 @@ export async function initSessionState(params: {
   ctx: MsgContext;
   cfg: OpenClawConfig;
   commandAuthorized: boolean;
+  isHeartbeat?: boolean;
 }): Promise<SessionInitResult> {
-  const { ctx, cfg, commandAuthorized } = params;
+  const { ctx, cfg, commandAuthorized, isHeartbeat = false } = params;
   const sessionCfg = cfg.session;
   const { sessionCtxForState, sessionScope, agentId, groupResolution, storePath, sessionKey } =
     resolveSessionStoreTarget({ ctx, cfg });
@@ -454,7 +501,64 @@ export async function initSessionState(params: {
     }
   }
 
-  const entry = sessionStore[sessionKey];
+  let heartbeatOwnership: HeartbeatSessionOwnership | undefined;
+  let entry: SessionEntry | undefined = sessionStore[sessionKey];
+  if (isHeartbeat) {
+    const runId = crypto.randomUUID();
+    const claim = await updateSessionStore(
+      storePath,
+      (store) => {
+        const current = store[sessionKey];
+        const sessionId = current?.sessionId ?? crypto.randomUUID();
+        const heartbeatOnly = !current || Boolean(current.heartbeatOnly);
+        const revokedRunId = current?.heartbeatLease?.runId ?? current?.heartbeatOnly?.runId;
+        const next: SessionEntry = {
+          ...current,
+          sessionId,
+          sessionFile:
+            current?.sessionFile ??
+            resolveSessionTranscriptPath(sessionId, agentId, ctx.MessageThreadId),
+          updatedAt: current?.updatedAt ?? Date.now(),
+          heartbeatLease: { runId },
+          heartbeatOnly: heartbeatOnly ? { runId } : undefined,
+        };
+        store[sessionKey] = next;
+        return {
+          entry: next,
+          ownership: { runId, sessionId, heartbeatOnly },
+          revokedRunId,
+        };
+      },
+      { activeSessionKey: sessionKey },
+    );
+    entry = claim.entry;
+    heartbeatOwnership = claim.ownership;
+    sessionStore[sessionKey] = entry;
+    if (claim.revokedRunId) {
+      revokeSessionStoreOwnership({
+        storePath,
+        sessionKey,
+        runId: claim.revokedRunId,
+      });
+    }
+  } else {
+    const claimedEntry = await claimInboundSessionOwnership({ storePath, sessionKey });
+    if (claimedEntry) {
+      sessionStore[sessionKey] = claimedEntry;
+    } else {
+      delete sessionStore[sessionKey];
+    }
+    entry = claimedEntry;
+  }
+  if (heartbeatOwnership) {
+    setSessionStoreOwnership({
+      storePath,
+      sessionKey,
+      sessionId: heartbeatOwnership.sessionId,
+      runId: heartbeatOwnership.runId,
+      heartbeatOnly: heartbeatOwnership.heartbeatOnly,
+    });
+  }
   const pendingRecentMediaSnapshotInit = isPendingRecentMediaSnapshotInit(entry);
   const existingSessionEntry = pendingRecentMediaSnapshotInit ? undefined : entry;
   const storedRecentMediaSnapshot = entry?.recentMediaSnapshot;
@@ -658,6 +762,21 @@ export async function initSessionState(params: {
   const fallbackSessionFile = !sessionEntry.sessionFile
     ? resolveSessionTranscriptPath(sessionEntry.sessionId, agentId, ctx.MessageThreadId)
     : undefined;
+  if (isHeartbeat) {
+    sessionEntry = {
+      ...sessionEntry,
+      updatedAt: Date.now(),
+      sessionFile: resolveSessionFilePath(
+        sessionEntry.sessionId,
+        fallbackSessionFile ? { ...sessionEntry, sessionFile: fallbackSessionFile } : sessionEntry,
+        {
+          agentId,
+          sessionsDir: path.dirname(storePath),
+        },
+      ),
+    };
+    sessionStore[sessionKey] = sessionEntry;
+  }
   const resolvedSessionFile = await resolveAndPersistSessionFile({
     sessionId: sessionEntry.sessionId,
     sessionKey,
@@ -701,14 +820,34 @@ export async function initSessionState(params: {
     }
   }
   sessionEntry.pendingRecentMediaSnapshotInit = undefined;
+  if (heartbeatOwnership) {
+    sessionEntry.heartbeatLease = { runId: heartbeatOwnership.runId };
+    sessionEntry.heartbeatOnly = heartbeatOwnership.heartbeatOnly
+      ? { runId: heartbeatOwnership.runId }
+      : undefined;
+  } else {
+    sessionEntry.heartbeatLease = undefined;
+    sessionEntry.heartbeatOnly = undefined;
+  }
 
   // Persist the reset session state while keeping stable routing metadata.
   sessionStore[sessionKey] = { ...sessionStore[sessionKey], ...sessionEntry };
-  await updateSessionStore(
+  const persisted = await updateSessionStore(
     storePath,
     (store) => {
+      const current = store[sessionKey];
+      if (isHeartbeat) {
+        const ownershipMatches =
+          heartbeatOwnership &&
+          current?.sessionId === heartbeatOwnership.sessionId &&
+          current.heartbeatLease?.runId === heartbeatOwnership.runId;
+        if (!ownershipMatches) {
+          return false;
+        }
+      }
       // Persist the reset session state while keeping stable routing metadata.
-      store[sessionKey] = { ...store[sessionKey], ...sessionEntry };
+      store[sessionKey] = { ...current, ...sessionEntry };
+      return true;
     },
     {
       activeSessionKey: sessionKey,
@@ -721,6 +860,18 @@ export async function initSessionState(params: {
         }),
     },
   );
+  if (!persisted) {
+    throw new SessionStoreOwnershipLostError();
+  }
+  if (isHeartbeat) {
+    setSessionStoreOwnership({
+      storePath,
+      sessionKey,
+      sessionId: sessionEntry.sessionId,
+      runId: heartbeatOwnership!.runId,
+      heartbeatOnly: heartbeatOwnership!.heartbeatOnly,
+    });
+  }
   const endedSessionEntry =
     isNewSession && existingSessionEntry ? { ...existingSessionEntry } : undefined;
 

@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,7 +7,14 @@ import { buildModelAliasIndex } from "../../agents/model-selection.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { loadSessionStore, saveSessionStore } from "../../config/sessions.js";
+import {
+  getSessionStoreOwnershipAbortSignal,
+  loadSessionStore,
+  runWithSessionStoreOwnership,
+  saveSessionStore,
+  setSessionStoreOwnership,
+  updateSessionStore,
+} from "../../config/sessions.js";
 import { formatZonedTimestamp } from "../../infra/format-time/format-datetime.ts";
 import { enqueueSystemEvent, resetSystemEventsForTest } from "../../infra/system-events.js";
 import {
@@ -18,6 +26,42 @@ import { applyResetModelOverride } from "./session-reset-model.js";
 import { prependSystemEvents } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
 import { initSessionState, persistRecentMediaSnapshotEarly } from "./session.js";
+
+const sessionFilePersistGate = vi.hoisted(() => ({
+  wait: undefined as
+    | ((params: {
+        sessionEntry?: {
+          heartbeatLease?: { runId: string };
+          heartbeatOnly?: { runId: string };
+        };
+      }) => Promise<void>)
+    | undefined,
+}));
+
+const sessionStoreLoadGate = vi.hoisted(() => ({
+  afterLoad: undefined as
+    | ((params: { storePath: string; store: Record<string, SessionEntry> }) => void)
+    | undefined,
+}));
+
+vi.mock("../../config/sessions.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../config/sessions.js")>();
+  return {
+    ...actual,
+    loadSessionStore: (...args: Parameters<typeof actual.loadSessionStore>) => {
+      const store = actual.loadSessionStore(...args);
+      sessionStoreLoadGate.afterLoad?.({ storePath: args[0], store });
+      return store;
+    },
+    resolveAndPersistSessionFile: async (
+      ...args: Parameters<typeof actual.resolveAndPersistSessionFile>
+    ) => {
+      const result = await actual.resolveAndPersistSessionFile(...args);
+      await sessionFilePersistGate.wait?.(args[0]);
+      return result;
+    },
+  };
+});
 
 // Perf: session-store locks are exercised elsewhere; most session tests don't need FS lock files.
 vi.mock("../../agents/session-write-lock.js", () => ({
@@ -147,6 +191,11 @@ vi.mock("../../agents/pi-embedded.js", () => ({
 let suiteRoot = "";
 let suiteCase = 0;
 
+afterEach(() => {
+  sessionFilePersistGate.wait = undefined;
+  sessionStoreLoadGate.afterLoad = undefined;
+});
+
 beforeAll(async () => {
   suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-suite-"));
 });
@@ -169,6 +218,321 @@ async function makeStorePath(prefix: string): Promise<string> {
 }
 
 const createStorePath = makeStorePath;
+
+describe("initSessionState heartbeat-only visibility", () => {
+  it("marks heartbeat-created sessions until real inbound traffic claims them", async () => {
+    const storePath = await createStorePath("openclaw-session-heartbeat-only-");
+    const sessionKey = "agent:main:main";
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const heartbeat = await initSessionState({
+      ctx: {
+        Body: "heartbeat",
+        SessionKey: sessionKey,
+        OriginatingChannel: "internal",
+        From: "heartbeat",
+        To: "heartbeat",
+      },
+      cfg,
+      commandAuthorized: true,
+      isHeartbeat: true,
+    });
+    expect(heartbeat.sessionEntry.heartbeatOnly?.runId).toBeTruthy();
+    expect(heartbeat.sessionEntry.heartbeatLease?.runId).toBe(
+      heartbeat.sessionEntry.heartbeatOnly?.runId,
+    );
+    expect(loadSessionStore(storePath, { skipCache: true })[sessionKey]?.heartbeatOnly?.runId).toBe(
+      heartbeat.sessionEntry.heartbeatOnly?.runId,
+    );
+
+    const claimed = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: sessionKey,
+        OriginatingChannel: "feishu",
+        From: "ou_user",
+        To: "bot",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+    expect(claimed.sessionEntry.heartbeatOnly).toBeUndefined();
+    expect(claimed.sessionEntry.heartbeatLease).toBeUndefined();
+    expect(
+      loadSessionStore(storePath, { skipCache: true })[sessionKey]?.heartbeatOnly,
+    ).toBeUndefined();
+    expect(
+      loadSessionStore(storePath, { skipCache: true })[sessionKey]?.heartbeatLease,
+    ).toBeUndefined();
+  });
+
+  it("does not restore heartbeat ownership after real inbound traffic claims the session", async () => {
+    const storePath = await createStorePath("openclaw-session-heartbeat-race-");
+    const sessionKey = "agent:main:main";
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    let releaseHeartbeat!: () => void;
+    let signalHeartbeatClaimed!: (entry: SessionEntry) => void;
+    const heartbeatClaimed = new Promise<SessionEntry>((resolve) => {
+      signalHeartbeatClaimed = resolve;
+    });
+    const continueHeartbeat = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    let shouldPauseHeartbeat = true;
+    sessionFilePersistGate.wait = async ({ sessionEntry }) => {
+      if (!shouldPauseHeartbeat || !sessionEntry?.heartbeatOnly) {
+        return;
+      }
+      shouldPauseHeartbeat = false;
+      signalHeartbeatClaimed(sessionEntry as SessionEntry);
+      await continueHeartbeat;
+    };
+
+    const staleHeartbeat = initSessionState({
+      ctx: {
+        Body: "heartbeat",
+        SessionKey: sessionKey,
+        OriginatingChannel: "internal",
+        From: "heartbeat",
+        To: "heartbeat",
+      },
+      cfg,
+      commandAuthorized: true,
+      isHeartbeat: true,
+    });
+    const claimedEntry = await heartbeatClaimed;
+
+    const user = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: sessionKey,
+        OriginatingChannel: "feishu",
+        From: "ou_user",
+        To: "bot",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+    expect(user.sessionId).toBe(claimedEntry.sessionId);
+    expect(user.sessionEntry.heartbeatOnly).toBeUndefined();
+    expect(user.sessionEntry.heartbeatLease).toBeUndefined();
+
+    releaseHeartbeat();
+    await expect(staleHeartbeat).rejects.toThrow("heartbeat session ownership changed");
+
+    const finalEntry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(finalEntry?.sessionId).toBe(user.sessionId);
+    expect(finalEntry?.heartbeatOnly).toBeUndefined();
+    expect(finalEntry?.heartbeatLease).toBeUndefined();
+    expect(finalEntry?.origin?.provider).toBe("feishu");
+  });
+
+  it("does not overwrite an existing real session claimed with the same session id", async () => {
+    const storePath = await createStorePath("openclaw-session-heartbeat-real-race-");
+    const sessionKey = "agent:main:main";
+    const sessionId = "existing-user-session";
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        lastChannel: "telegram",
+        lastTo: "old-user",
+        origin: { provider: "telegram", from: "old-user", to: "bot" },
+      },
+    });
+
+    let releaseHeartbeat!: () => void;
+    let signalHeartbeatLeased!: (entry: SessionEntry) => void;
+    const heartbeatLeased = new Promise<SessionEntry>((resolve) => {
+      signalHeartbeatLeased = resolve;
+    });
+    const continueHeartbeat = new Promise<void>((resolve) => {
+      releaseHeartbeat = resolve;
+    });
+    let shouldPauseHeartbeat = true;
+    let heartbeatAbortSignal: AbortSignal | undefined;
+    sessionFilePersistGate.wait = async ({ sessionEntry }) => {
+      if (!shouldPauseHeartbeat || !sessionEntry?.heartbeatLease || sessionEntry.heartbeatOnly) {
+        return;
+      }
+      shouldPauseHeartbeat = false;
+      signalHeartbeatLeased(sessionEntry as SessionEntry);
+      await continueHeartbeat;
+    };
+
+    const staleHeartbeat = runWithSessionStoreOwnership(async () => {
+      heartbeatAbortSignal = getSessionStoreOwnershipAbortSignal();
+      return await initSessionState({
+        ctx: {
+          Body: "heartbeat",
+          SessionKey: sessionKey,
+          OriginatingChannel: "internal",
+          From: "heartbeat",
+          To: "heartbeat",
+        },
+        cfg,
+        commandAuthorized: true,
+        isHeartbeat: true,
+      });
+    });
+    const leasedEntry = await heartbeatLeased;
+    expect(leasedEntry.sessionId).toBe(sessionId);
+    expect(leasedEntry.heartbeatOnly).toBeUndefined();
+    expect(heartbeatAbortSignal?.aborted).toBe(false);
+
+    const user = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: sessionKey,
+        OriginatingChannel: "feishu",
+        From: "ou_user",
+        To: "bot",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+    expect(user.sessionId).toBe(sessionId);
+    expect(user.sessionEntry.heartbeatLease).toBeUndefined();
+    expect(heartbeatAbortSignal?.aborted).toBe(true);
+    const abortReason = heartbeatAbortSignal?.reason;
+    expect(abortReason).toBeInstanceOf(Error);
+    expect((abortReason as Error).message).toBe("heartbeat session ownership changed");
+
+    releaseHeartbeat();
+    await expect(staleHeartbeat).rejects.toThrow("heartbeat session ownership changed");
+
+    const finalEntry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(finalEntry?.sessionId).toBe(sessionId);
+    expect(finalEntry?.heartbeatLease).toBeUndefined();
+    expect(finalEntry?.heartbeatOnly).toBeUndefined();
+    expect(finalEntry?.lastChannel).toBe("feishu");
+    expect(finalEntry?.lastTo).toBe("bot");
+    expect(finalEntry?.origin?.provider).toBe("feishu");
+  });
+
+  it("revokes a heartbeat lease created after the user reads the session store", async () => {
+    const storePath = await createStorePath("openclaw-session-heartbeat-stale-snapshot-");
+    const sessionKey = "agent:main:main";
+    const sessionId = "existing-user-session";
+    const runId = "late-heartbeat-run";
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        lastChannel: "telegram",
+        lastTo: "old-user",
+        origin: { provider: "telegram", from: "old-user", to: "bot" },
+      },
+    });
+
+    let heartbeatAbortSignal: AbortSignal | undefined;
+    let staleHeartbeat: Promise<void> | undefined;
+    sessionStoreLoadGate.afterLoad = ({ storePath: loadedStorePath, store }) => {
+      if (loadedStorePath !== storePath || store[sessionKey]?.heartbeatLease) {
+        return;
+      }
+      sessionStoreLoadGate.afterLoad = undefined;
+      const currentStore = JSON.parse(fsSync.readFileSync(storePath, "utf-8")) as Record<
+        string,
+        SessionEntry
+      >;
+      currentStore[sessionKey] = {
+        ...currentStore[sessionKey],
+        heartbeatLease: { runId },
+      };
+      fsSync.writeFileSync(storePath, JSON.stringify(currentStore), "utf-8");
+      staleHeartbeat = runWithSessionStoreOwnership(async () => {
+        heartbeatAbortSignal = getSessionStoreOwnershipAbortSignal();
+        setSessionStoreOwnership({
+          storePath,
+          sessionKey,
+          sessionId,
+          runId,
+          heartbeatOnly: false,
+        });
+        await new Promise<void>((resolve) => {
+          if (heartbeatAbortSignal?.aborted) {
+            resolve();
+            return;
+          }
+          heartbeatAbortSignal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      });
+    };
+
+    const user = await initSessionState({
+      ctx: {
+        Body: "hello",
+        SessionKey: sessionKey,
+        OriginatingChannel: "feishu",
+        From: "ou_user",
+        To: "bot",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(staleHeartbeat).toBeDefined();
+    expect(heartbeatAbortSignal?.aborted).toBe(true);
+    await staleHeartbeat;
+    expect(user.sessionEntry.heartbeatLease).toBeUndefined();
+    const finalEntry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(finalEntry?.heartbeatLease).toBeUndefined();
+    expect(finalEntry?.origin?.provider).toBe("feishu");
+  });
+
+  it("rejects later heartbeat store writes after ownership is cleared", async () => {
+    const storePath = await createStorePath("openclaw-session-heartbeat-late-write-");
+    const sessionKey = "agent:main:main";
+    const sessionId = "heartbeat-session";
+    const runId = "heartbeat-run";
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId,
+        updatedAt: Date.now(),
+        heartbeatLease: { runId },
+        heartbeatOnly: { runId },
+      },
+    });
+
+    await expect(
+      runWithSessionStoreOwnership(async () => {
+        setSessionStoreOwnership({
+          storePath,
+          sessionKey,
+          sessionId,
+          runId,
+          heartbeatOnly: true,
+        });
+        await fs.writeFile(
+          storePath,
+          JSON.stringify({
+            [sessionKey]: {
+              sessionId,
+              updatedAt: Date.now(),
+              origin: { provider: "feishu", from: "ou_user", to: "bot" },
+            },
+          }),
+        );
+        await updateSessionStore(storePath, (store) => {
+          store[sessionKey] = {
+            ...store[sessionKey],
+            heartbeatLease: { runId },
+            heartbeatOnly: { runId },
+          };
+        });
+      }),
+    ).rejects.toThrow("heartbeat session ownership changed");
+
+    const finalEntry = loadSessionStore(storePath, { skipCache: true })[sessionKey];
+    expect(finalEntry?.sessionId).toBe(sessionId);
+    expect(finalEntry?.heartbeatLease).toBeUndefined();
+    expect(finalEntry?.heartbeatOnly).toBeUndefined();
+    expect(finalEntry?.origin?.provider).toBe("feishu");
+  });
+});
 
 describe("initSessionState recent image snapshots", () => {
   it("keeps the first full init as a new session after early image snapshot persistence", async () => {
