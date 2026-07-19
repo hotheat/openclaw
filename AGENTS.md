@@ -1,5 +1,10 @@
 # OpenClaw
 
+## Shared Agent Instructions
+
+- `CLAUDE.md` must remain a relative symlink to `AGENTS.md` so Claude and other coding agents use the same repository instructions.
+- Do not replace `CLAUDE.md` with a separate copy; duplicated instruction files drift and can lose operational safeguards.
+
 ## Project Overview
 
 - Purpose: OpenClaw is a local-first AI gateway that connects CLI, Web UI, desktop/mobile nodes, and messaging channels through one control plane. Refs: `README.md:129`, `README.md:146`, `README.md:207`.
@@ -73,8 +78,9 @@
 - Full checks: `pnpm check`
 - Main test suite: `pnpm test`
 - Default test scope: run only targeted tests for files or surfaces changed in the current task.
-- Do not proactively run full-suite test commands such as `make test`, `pnpm test`, or `pnpm test:fast`; they can raise CPU and memory usage. Ask the user first and run them only after explicit approval.
-- Fast unit slice: `pnpm test:fast`
+- Never run full-suite test commands such as `make test`, `pnpm test`, or `pnpm test:fast` without explicit user approval in the current conversation. These commands can exhaust shared-host CPU, memory, and I/O.
+- Approval to modify, commit, or push code does not imply approval to run a full test suite.
+- Fast unit slice: `pnpm test:fast`. Its launcher limits local runs to 2 workers and 1 GiB of V8 old-space per Node process by default. `OPENCLAW_FAST_TEST_WORKERS` and `OPENCLAW_FAST_TEST_MAX_OLD_SPACE_SIZE_MB` may tune the limits within enforced bounds; these guardrails do not remove the approval requirement.
 - Extension tests: `vitest run --config vitest.extensions.config.ts`
 - E2E slice: `pnpm test:e2e`
 - Live slice: `pnpm test:live`
