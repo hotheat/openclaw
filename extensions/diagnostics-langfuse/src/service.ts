@@ -410,7 +410,7 @@ function createLangfuseSink(state: RuntimeState): AgentTraceSink {
                   config.captureMode,
                 ) as Record<string, unknown>,
               );
-              generation.end?.();
+              generation.end?.(dateFromMs(endEvent.endedAt));
             },
           };
         },

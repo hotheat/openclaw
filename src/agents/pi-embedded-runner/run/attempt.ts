@@ -90,9 +90,10 @@ import {
   runWithAgentTraceParent,
   runWithAgentTraceRun,
 } from "../../tracing/context.js";
+import { createAgentTraceGenerationStream } from "../../tracing/generations.js";
 import { createAgentTraceRunEndOnce, createAgentTraceRunner } from "../../tracing/runner.js";
 import { wrapToolsWithAgentTracing } from "../../tracing/tools.js";
-import type { AgentTraceObservationHandle, AgentTraceRunHandle } from "../../tracing/types.js";
+import type { AgentTraceRunHandle } from "../../tracing/types.js";
 import { resolveTranscriptPolicy } from "../../transcript-policy.js";
 import { DEFAULT_BOOTSTRAP_FILENAME } from "../../workspace.js";
 import { isRunnerAbortError } from "../abort.js";
@@ -1120,6 +1121,11 @@ export async function runEmbeddedAttempt(
         });
         activeSession.agent.streamFn = cacheTrace.wrapStreamFn(activeSession.agent.streamFn);
       }
+      const generationTracing = createAgentTraceGenerationStream({
+        streamFn: activeSession.agent.streamFn,
+        traceRun,
+      });
+      activeSession.agent.streamFn = generationTracing.streamFn;
 
       // Copilot/Claude can reject persisted `thinking` blocks (e.g. thinkingSignature:"reasoning_text")
       // on *any* follow-up provider call (including tool continuations). Wrap the stream function
@@ -1428,11 +1434,9 @@ export async function runEmbeddedAttempt(
 
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
-      let generationTrace: AgentTraceObservationHandle | undefined;
-      let promptTraceStartedAt: number | undefined;
+      let generationFinishError: string | undefined;
       try {
         const promptStartedAt = Date.now();
-        promptTraceStartedAt = promptStartedAt;
 
         // Run before_prompt_build hooks to allow plugins to inject prompt context.
         // Legacy compatibility: before_agent_start is also checked for context fields.
@@ -1868,19 +1872,6 @@ export async function runEmbeddedAttempt(
 
           throwIfRunAborted();
           promptStartMessageCount = activeSession.messages.length;
-          const startedGenerationTrace = await traceRun?.startGeneration?.({
-            provider: params.provider,
-            model: params.modelId,
-            systemPrompt: systemPromptText,
-            prompt: effectivePrompt,
-            historyMessages: activeSession.messages,
-            imagesCount: imageResult.images.length,
-            startedAt: promptStartedAt,
-          });
-          if (startedGenerationTrace) {
-            generationTrace = startedGenerationTrace;
-          }
-
           // Only pass images option if there are actually images to pass
           // This avoids potential issues with models that don't expect the images parameter
           await runWithAgentTraceRun(traceRun, async () => {
@@ -1905,6 +1896,10 @@ export async function runEmbeddedAttempt(
                   workspaceDir: params.workspaceDir,
                   messageProvider: params.messageProvider ?? undefined,
                 },
+              });
+              generationTracing.prepareInitialGeneration({
+                prompt: effectivePrompt,
+                baselineMessageCount: activeSession.messages.length,
               });
               if (imageResult.images.length > 0) {
                 const promptPromise = activeSession.prompt(effectivePrompt, {
@@ -2043,6 +2038,9 @@ export async function runEmbeddedAttempt(
               log.warn(`agent_end hook failed: ${err}`);
             });
         }
+      } catch (err) {
+        generationFinishError = describeUnknownError(err);
+        throw err;
       } finally {
         clearTimeout(abortTimer);
         if (abortWarnTimer) {
@@ -2065,6 +2063,17 @@ export async function runEmbeddedAttempt(
         }
         clearActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
         params.abortSignal?.removeEventListener?.("abort", onAbort);
+        try {
+          await generationTracing.finish({
+            error:
+              generationFinishError ??
+              (promptError ? describeUnknownError(promptError) : undefined),
+          });
+        } catch (err) {
+          log.warn(
+            `generation trace teardown failed: runId=${params.runId} sessionId=${params.sessionId} error=${String(err)}`,
+          );
+        }
       }
 
       const lastAssistant = messagesSnapshot
@@ -2106,16 +2115,6 @@ export async function runEmbeddedAttempt(
             log.warn(`llm_output hook failed: ${String(err)}`);
           });
       }
-
-      await generationTrace?.end({
-        assistantTexts,
-        lastAssistant,
-        usage: getUsageTotals(),
-        error: promptError ? describeUnknownError(promptError) : undefined,
-        durationMs:
-          promptTraceStartedAt != null ? Math.max(0, Date.now() - promptTraceStartedAt) : undefined,
-        endedAt: Date.now(),
-      });
 
       await endTraceRunOnce({
         success: !aborted && !promptError,

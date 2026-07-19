@@ -119,7 +119,12 @@ describe("diagnostics-langfuse service", () => {
       historyMessages: [],
       imagesCount: 0,
     });
-    await llm?.end({ assistantTexts: ["world"], usage: { total: 2 } });
+    const generationEndedAt = Date.now();
+    await llm?.end({
+      assistantTexts: ["world"],
+      usage: { total: 2 },
+      endedAt: generationEndedAt,
+    });
     const toolTrace = await run?.startTool?.({
       toolName: "sessions_spawn",
       toolCallId: "tool-1",
@@ -150,6 +155,7 @@ describe("diagnostics-langfuse service", () => {
     expect(generation.update).toHaveBeenCalledWith(
       expect.objectContaining({ output: ["world"], usageDetails: { total: 2 } }),
     );
+    expect(generation.end).toHaveBeenCalledWith(new Date(generationEndedAt));
     expect(tool.update).toHaveBeenCalledWith(
       expect.objectContaining({ output: { runId: "child-run" } }),
     );

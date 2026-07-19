@@ -49,10 +49,181 @@ function buildReplayMessages(
       messages.push({ role: "unknown", content: message });
     }
   }
-  if (event.prompt) {
+  if (event.prompt && !event.historyIncludesPrompt) {
     messages.push({ role: "user", content: event.prompt });
   }
   return messages;
+}
+
+function serializedLength(value: unknown): number | undefined {
+  if (typeof value === "string") {
+    return value.length;
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === "string" ? serialized.length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function summarizeToolCall(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return { type: "toolCall", argumentsType: typeof value };
+  }
+  const record = value as Record<string, unknown>;
+  const fn = record.function as Record<string, unknown> | undefined;
+  const args = fn?.arguments ?? record.arguments;
+  const argsKeys =
+    args && typeof args === "object" && !Array.isArray(args)
+      ? Object.keys(args as Record<string, unknown>).sort()
+      : undefined;
+  return {
+    ...(record.type === "toolCall" ? { type: "toolCall" } : {}),
+    id: record.id,
+    name: fn?.name ?? record.name,
+    argumentsType: typeof args,
+    argumentsLength: serializedLength(args),
+    argumentsKeys: argsKeys,
+  };
+}
+
+function summarizeContentBlocks(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.map((block): Record<string, unknown> => {
+    if (!block || typeof block !== "object") {
+      return { type: typeof block, omitted: true };
+    }
+    const record = block as Record<string, unknown>;
+    if (record.type === "text") {
+      return {
+        type: "text",
+        text: typeof record.text === "string" ? record.text : undefined,
+      };
+    }
+    if (record.type === "toolCall") {
+      return summarizeToolCall(record);
+    }
+    if (record.type === "image") {
+      return {
+        type: "image",
+        mimeType: record.mimeType,
+        dataLength: textLength(record.data),
+      };
+    }
+    if (record.type === "thinking") {
+      return {
+        type: "thinking",
+        thinkingLength: textLength(record.thinking),
+      };
+    }
+    return {
+      type: typeof record.type === "string" ? record.type : "unknown",
+      omitted: true,
+    };
+  });
+}
+
+function summarizeToolResultContent(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    return { contentLength: value.length };
+  }
+  if (!Array.isArray(value)) {
+    return { contentType: typeof value };
+  }
+  let textChars = 0;
+  let imageCount = 0;
+  let imageDataChars = 0;
+  for (const block of value) {
+    if (!block || typeof block !== "object") {
+      continue;
+    }
+    const record = block as Record<string, unknown>;
+    if (record.type === "text") {
+      textChars += textLength(record.text);
+    } else if (record.type === "image") {
+      imageCount += 1;
+      imageDataChars += textLength(record.data);
+    }
+  }
+  return {
+    contentItems: value.length,
+    textChars,
+    imageCount,
+    imageDataChars,
+  };
+}
+
+function summarizeMessageForLlmText(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object") {
+    return { role: "unknown", contentType: typeof value };
+  }
+  const message = value as Record<string, unknown>;
+  const role = typeof message.role === "string" ? message.role : "unknown";
+  if (role === "user") {
+    return {
+      role,
+      content: summarizeContentBlocks(message.content),
+    };
+  }
+  if (role === "assistant") {
+    return {
+      role,
+      content: summarizeContentBlocks(message.content),
+      ...(Array.isArray(message.tool_calls)
+        ? { tool_calls: message.tool_calls.map(summarizeToolCall) }
+        : {}),
+    };
+  }
+  if (role === "toolResult") {
+    return {
+      role,
+      toolCallId: message.toolCallId,
+      toolName: message.toolName,
+      ...summarizeToolResultContent(message.content),
+      status: message.isError ? "error" : "success",
+    };
+  }
+  if (role === "tool") {
+    return {
+      role,
+      tool_call_id: message.tool_call_id,
+      name: message.name,
+      ...summarizeToolResultContent(message.content),
+      status: message.status,
+    };
+  }
+  return {
+    role,
+    content: summarizeContentBlocks(message.content),
+  };
+}
+
+function assistantMessageHasToolCalls(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const message = value as Record<string, unknown>;
+  if (message.role !== "assistant") {
+    return false;
+  }
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+    return true;
+  }
+  return (
+    Array.isArray(message.content) &&
+    message.content.some(
+      (block) =>
+        block &&
+        typeof block === "object" &&
+        (block as Record<string, unknown>).type === "toolCall",
+    )
+  );
 }
 
 function resultSummary(value: unknown): Record<string, unknown> {
@@ -126,20 +297,39 @@ export function captureGenerationStart(
     systemPromptChars: textLength(event.systemPrompt),
     promptChars: textLength(event.prompt),
     historyMessages: event.historyMessages.length,
+    inputMessages: event.inputMessages?.length ?? 0,
     imagesCount: event.imagesCount,
+    roundIndex: event.roundIndex,
   };
   if (mode === "safe") {
     return { metadata, model: event.model };
   }
+  if (mode === "full") {
+    return {
+      input: maskSensitiveData({
+        messages: buildReplayMessages(event),
+        systemPrompt: event.systemPrompt,
+        prompt: event.prompt,
+        historyMessages: event.historyMessages,
+      }),
+      metadata,
+      model: event.model,
+    };
+  }
+  // llm_text: keep user/assistant text intact, but reduce tool_call/tool_result
+  // payloads to a name + id + length + status summary so the privacy contract
+  // (no full tool payload in llm_text) matches captureToolStart/captureToolEnd.
+  const inputMessages = (event.inputMessages ?? []).map(summarizeMessageForLlmText);
   return {
     input: maskSensitiveData({
       messages: buildReplayMessages({
         ...event,
-        historyMessages: mode === "full" ? event.historyMessages : [],
+        prompt: undefined,
+        historyMessages: inputMessages,
       }),
       systemPrompt: event.systemPrompt,
-      prompt: event.prompt,
-      historyMessages: mode === "full" ? event.historyMessages : undefined,
+      prompt: event.inputMessages?.length ? undefined : event.prompt,
+      historyMessages: undefined,
     }),
     metadata,
     model: event.model,
@@ -155,6 +345,10 @@ export function captureGenerationEnd(
     assistantTextChars: (event.assistantTexts ?? []).reduce((sum, text) => sum + text.length, 0),
     durationMs: event.durationMs,
     error: event.error,
+    roundIndex: event.roundIndex,
+    finishReason: event.finishReason,
+    responseKind: event.responseKind,
+    isFinal: event.isFinal,
   };
   const usageDetails = event.usage
     ? Object.fromEntries(
@@ -170,7 +364,13 @@ export function captureGenerationEnd(
     statusMessage: event.error,
   };
   if (mode !== "safe") {
-    attrs.output = maskSensitiveData(event.assistantTexts ?? []);
+    if (assistantMessageHasToolCalls(event.lastAssistant)) {
+      attrs.output = maskSensitiveData(
+        mode === "full" ? event.lastAssistant : summarizeMessageForLlmText(event.lastAssistant),
+      );
+    } else {
+      attrs.output = maskSensitiveData(event.assistantTexts ?? []);
+    }
   }
   return attrs;
 }

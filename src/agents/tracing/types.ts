@@ -40,9 +40,13 @@ export type AgentTraceGenerationStartEvent = {
   provider: string;
   model: string;
   systemPrompt?: string;
-  prompt: string;
+  prompt?: string;
   historyMessages: unknown[];
+  /** True when historyMessages already contains the current prompt. */
+  historyIncludesPrompt?: boolean;
+  inputMessages?: unknown[];
   imagesCount: number;
+  roundIndex?: number;
   startedAt?: number;
 };
 
@@ -53,6 +57,10 @@ export type AgentTraceGenerationEndEvent = {
   error?: string;
   durationMs?: number;
   endedAt?: number;
+  roundIndex?: number;
+  finishReason?: string;
+  responseKind?: "assistant" | "tool_call" | "final" | "error";
+  isFinal?: boolean;
 };
 
 export type AgentTraceToolStartEvent = {

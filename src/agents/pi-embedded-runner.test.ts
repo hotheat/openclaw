@@ -9,6 +9,10 @@ import type { OpenClawConfig } from "../config/config.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 
+const embeddedSubscribeTestState = vi.hoisted(() => ({
+  waitForCompactionRetryError: undefined as Error | undefined,
+}));
+
 function createMockUsage(input: number, output: number) {
   return {
     input,
@@ -105,6 +109,30 @@ vi.mock("@mariozechner/pi-ai", async () => {
         stream.end();
       });
       return stream;
+    },
+  };
+});
+
+vi.mock("./pi-embedded-subscribe.js", async () => {
+  const actual = await vi.importActual<typeof import("./pi-embedded-subscribe.js")>(
+    "./pi-embedded-subscribe.js",
+  );
+
+  return {
+    ...actual,
+    subscribeEmbeddedPiSession: (
+      ...args: Parameters<typeof actual.subscribeEmbeddedPiSession>
+    ): ReturnType<typeof actual.subscribeEmbeddedPiSession> => {
+      const subscription = actual.subscribeEmbeddedPiSession(...args);
+      return {
+        ...subscription,
+        waitForCompactionRetry: async () => {
+          if (embeddedSubscribeTestState.waitForCompactionRetryError) {
+            throw embeddedSubscribeTestState.waitForCompactionRetryError;
+          }
+          return await subscription.waitForCompactionRetry();
+        },
+      };
     },
   };
 });
@@ -574,6 +602,56 @@ describe("runEmbeddedPiAgent", () => {
       expect(endTraceRun).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     } finally {
       dateNow.mockRestore();
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
+  });
+
+  it("ends the current generation when post-prompt compaction waiting fails", async () => {
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const generationEnd = vi.fn();
+    const endTraceRun = vi.fn();
+    registry.agentTraceSinks.push({
+      pluginId: "trace-test",
+      source: "trace-test",
+      sink: {
+        startRun: () => ({
+          startGeneration: () => ({ end: generationEnd }),
+          end: endTraceRun,
+        }),
+      },
+    });
+    setActivePluginRegistry(registry);
+    embeddedSubscribeTestState.waitForCompactionRetryError = new Error("compaction wait failed");
+
+    try {
+      await expect(
+        runEmbeddedPiAgent({
+          sessionId: "session:trace-compaction-wait-fails",
+          sessionKey: nextSessionKey(),
+          sessionFile: nextSessionFile(),
+          workspaceDir,
+          config: makeOpenAiConfig(["mock-1"]),
+          prompt: "hello",
+          provider: "openai",
+          model: "mock-1",
+          timeoutMs: 5_000,
+          agentDir,
+          runId: nextRunId("trace-compaction-wait-fails"),
+          enqueue: immediateEnqueue,
+        }),
+      ).rejects.toThrow("compaction wait failed");
+
+      expect(generationEnd).toHaveBeenCalledTimes(1);
+      expect(endTraceRun).toHaveBeenCalledTimes(1);
+      expect(endTraceRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: "compaction wait failed",
+        }),
+      );
+    } finally {
+      embeddedSubscribeTestState.waitForCompactionRetryError = undefined;
       setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
     }
   });

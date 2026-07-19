@@ -65,6 +65,206 @@ describe("Langfuse capture policy", () => {
     expect(captureToolEnd({ result: { secret: "value" } }, "llm_text").output).toBeUndefined();
   });
 
+  it("llm_text summarizes Pi toolCall/toolResult payloads in generation input", () => {
+    const captured = captureGenerationStart(
+      {
+        provider: "openai",
+        model: "gpt-5.1",
+        historyMessages: [],
+        inputMessages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "checking" },
+              {
+                type: "toolCall",
+                id: "call-1",
+                name: "read_file",
+                arguments: { path: "/etc/secrets", token: "FULL-TOOL-ARGS" },
+              },
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "read_file",
+            content: [
+              { type: "text", text: "FULL-TOOL-RESULT" },
+              { type: "image", data: "BASE64-IMAGE-DATA", mimeType: "image/png" },
+            ],
+            isError: false,
+          },
+        ],
+        imagesCount: 1,
+        roundIndex: 2,
+      },
+      "llm_text",
+    );
+    const messages = (captured.input as { messages: unknown[] }).messages;
+    expect(messages).toEqual([
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "checking" },
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "read_file",
+            argumentsType: "object",
+            argumentsLength: expect.any(Number),
+            argumentsKeys: ["path", "token"],
+          },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-1",
+        toolName: "read_file",
+        contentItems: 2,
+        textChars: "FULL-TOOL-RESULT".length,
+        imageCount: 1,
+        imageDataChars: "BASE64-IMAGE-DATA".length,
+        status: "success",
+      },
+    ]);
+    expect(JSON.stringify(captured.input)).not.toContain("FULL-TOOL-ARGS");
+    expect(JSON.stringify(captured.input)).not.toContain("FULL-TOOL-RESULT");
+    expect(JSON.stringify(captured.input)).not.toContain("BASE64-IMAGE-DATA");
+    expect(captured.metadata).toMatchObject({
+      historyMessages: 0,
+      inputMessages: 2,
+      roundIndex: 2,
+    });
+  });
+
+  it("llm_text preserves user text but summarizes image data", () => {
+    const captured = captureGenerationStart(
+      {
+        provider: "openai",
+        model: "gpt-5.1",
+        historyMessages: [],
+        inputMessages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "compare these" },
+              { type: "image", data: "USER-IMAGE-BASE64", mimeType: "image/png" },
+            ],
+          },
+        ],
+        imagesCount: 1,
+        roundIndex: 1,
+      },
+      "llm_text",
+    );
+    expect(captured).toMatchObject({
+      input: {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "compare these" },
+              {
+                type: "image",
+                mimeType: "image/png",
+                dataLength: "USER-IMAGE-BASE64".length,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(captured.input)).not.toContain("USER-IMAGE-BASE64");
+  });
+
+  it("captures final generation classification", () => {
+    expect(
+      captureGenerationEnd(
+        {
+          assistantTexts: ["answer"],
+          roundIndex: 3,
+          finishReason: "stop",
+          responseKind: "final",
+          isFinal: true,
+        },
+        "llm_text",
+      ),
+    ).toMatchObject({
+      output: ["answer"],
+      metadata: {
+        roundIndex: 3,
+        finishReason: "stop",
+        responseKind: "final",
+        isFinal: true,
+      },
+    });
+  });
+
+  it("captures pure Pi tool-call generation output by capture mode", () => {
+    const lastAssistant = {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "read_file",
+          arguments: {
+            path: "/private/data",
+            token: "FULL-TOOL-ARGS",
+          },
+        },
+      ],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-5.1",
+      stopReason: "toolUse",
+      timestamp: 1,
+    };
+    const event = {
+      assistantTexts: [],
+      lastAssistant,
+      finishReason: "toolUse",
+      responseKind: "tool_call" as const,
+      isFinal: false,
+    };
+
+    const llmText = captureGenerationEnd(event, "llm_text");
+    expect(llmText.output).toEqual({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "read_file",
+          argumentsType: "object",
+          argumentsLength: expect.any(Number),
+          argumentsKeys: ["path", "token"],
+        },
+      ],
+    });
+    expect(JSON.stringify(llmText.output)).not.toContain("FULL-TOOL-ARGS");
+    expect(llmText.metadata).toMatchObject({
+      assistantTextCount: 0,
+      responseKind: "tool_call",
+    });
+
+    expect(captureGenerationEnd(event, "full").output).toMatchObject({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "read_file",
+          arguments: {
+            path: "/private/data",
+            token: "[redacted]",
+          },
+        },
+      ],
+      stopReason: "toolUse",
+    });
+  });
+
   it("full mode formats generation input as replayable messages", () => {
     expect(
       captureGenerationStart(
@@ -87,6 +287,40 @@ describe("Langfuse capture policy", () => {
         { role: "user", content: "previous user" },
         { role: "assistant", content: "previous assistant" },
         { role: "user", content: "current user" },
+      ],
+    });
+  });
+
+  it("full mode does not append a prompt already present in history", () => {
+    const currentUser = {
+      role: "user",
+      content: [{ type: "text", text: "current user" }],
+      timestamp: 2,
+    };
+    expect(
+      captureGenerationStart(
+        {
+          provider: "openai",
+          model: "gpt-5.1",
+          systemPrompt: "system",
+          prompt: "current user",
+          historyMessages: [
+            { role: "user", content: "previous user" },
+            { role: "assistant", content: "previous assistant" },
+            currentUser,
+          ],
+          historyIncludesPrompt: true,
+          inputMessages: [currentUser],
+          imagesCount: 0,
+        },
+        "full",
+      ).input,
+    ).toMatchObject({
+      messages: [
+        { role: "system", content: "system" },
+        { role: "user", content: "previous user" },
+        { role: "assistant", content: "previous assistant" },
+        currentUser,
       ],
     });
   });
