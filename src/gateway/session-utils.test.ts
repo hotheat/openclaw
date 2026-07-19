@@ -529,20 +529,25 @@ describe("listSessionsFromStore search", () => {
     expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:cron:job-1"]);
   });
 
-  test("hides only explicitly marked heartbeat-only sessions", () => {
+  test("hides explicit and legacy internal heartbeat-only sessions", () => {
     const now = Date.now();
     const store: Record<string, SessionEntry> = {
       "agent:main:main": {
         sessionId: "heartbeat-session",
         updatedAt: now,
         chatType: "direct",
-        heartbeatOnly: { runId: "heartbeat-run" },
+        heartbeatLease: { runId: "legacy-heartbeat-run" },
         origin: {
           label: "heartbeat",
-          provider: "heartbeat",
+          provider: "internal",
           from: "heartbeat",
           to: "heartbeat",
         },
+      } as SessionEntry,
+      "agent:main:explicit-heartbeat-only": {
+        sessionId: "explicit-heartbeat-session",
+        updatedAt: now - 500,
+        heartbeatOnly: { runId: "explicit-heartbeat-run" },
       } as SessionEntry,
       "agent:main:regular": {
         sessionId: "regular-session",
@@ -591,14 +596,15 @@ describe("listSessionsFromStore search", () => {
         sessionId: "heartbeat-session",
         updatedAt: now,
         chatType: "direct",
+        heartbeatLease: { runId: "delivered-heartbeat-run" },
         deliveryContext: { channel: "feishu", to: "ou_user" },
         lastChannel: "feishu",
         lastTo: "ou_user",
         origin: {
           label: "heartbeat",
-          provider: "heartbeat",
-          from: "ou_user",
-          to: "ou_user",
+          provider: "internal",
+          from: "heartbeat",
+          to: "heartbeat",
         },
       } as SessionEntry,
     };

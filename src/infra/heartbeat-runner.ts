@@ -455,34 +455,6 @@ async function truncateOwnedHeartbeatTranscript(state: HeartbeatTranscriptState)
   }
 }
 
-async function deleteOwnedHeartbeatOnlySession(state: HeartbeatTranscriptState): Promise<void> {
-  const runId = state.heartbeatOnlyRunId;
-  if (!runId) {
-    return;
-  }
-  const entry = loadOwnedHeartbeatEntry(state);
-  const transcriptPath = resolveSessionFilePath(state.sessionId, entry, {
-    agentId: state.agentId,
-    sessionsDir: path.dirname(state.storePath),
-  });
-  let deleted = false;
-  await updateSessionStore(state.storePath, (store) => {
-    const current = store[state.sessionKey];
-    if (
-      current?.sessionId !== state.sessionId ||
-      current.heartbeatLease?.runId !== state.leaseRunId ||
-      current.heartbeatOnly?.runId !== runId
-    ) {
-      return;
-    }
-    delete store[state.sessionKey];
-    deleted = true;
-  });
-  if (deleted) {
-    await fs.rm(transcriptPath, { force: true });
-  }
-}
-
 function stripLeadingHeartbeatResponsePrefix(
   text: string,
   responsePrefix: string | undefined,
@@ -813,8 +785,6 @@ export async function runHeartbeatOnce(opts: {
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const includeReasoning = heartbeat?.includeReasoning === true;
     let transcriptState: HeartbeatTranscriptState | undefined;
-    let transcriptPruneRequested = false;
-    let transcriptPruneHandled = false;
     const heartbeatModelOverride = heartbeat?.model?.trim() || undefined;
     const heartbeatThinkingOverride = heartbeat?.thinking?.trim() || undefined;
     const suppressToolErrorWarnings = heartbeat?.suppressToolErrorWarnings === true;
@@ -832,7 +802,7 @@ export async function runHeartbeatOnce(opts: {
         });
       },
       onSessionLaneComplete: async (payloads: ReplyPayload[] | undefined) => {
-        transcriptPruneRequested = shouldPruneHeartbeatReply({
+        const shouldPrune = shouldPruneHeartbeatReply({
           replyResult: payloads,
           responsePrefix,
           ackMaxChars,
@@ -844,9 +814,8 @@ export async function runHeartbeatOnce(opts: {
             typeof entry?.lastHeartbeatSentAt === "number" ? entry.lastHeartbeatSentAt : undefined,
           startedAt,
         });
-        if (transcriptPruneRequested && transcriptState && !transcriptState.heartbeatOnlyRunId) {
+        if (shouldPrune && transcriptState) {
           await truncateOwnedHeartbeatTranscript(transcriptState);
-          transcriptPruneHandled = true;
         }
       },
     };
@@ -856,18 +825,6 @@ export async function runHeartbeatOnce(opts: {
     const reasoningPayloads = includeReasoning
       ? resolveHeartbeatReasoningPayloads(replyResult).filter((payload) => payload !== replyPayload)
       : [];
-    const finalizeTranscriptPrune = async () => {
-      if (!transcriptPruneRequested || !transcriptState || transcriptPruneHandled) {
-        return;
-      }
-      if (transcriptState.heartbeatOnlyRunId) {
-        await deleteOwnedHeartbeatOnlySession(transcriptState);
-      } else {
-        await truncateOwnedHeartbeatTranscript(transcriptState);
-      }
-      transcriptPruneHandled = true;
-    };
-
     if (
       !replyPayload ||
       (!replyPayload.text && !replyPayload.mediaUrl && !replyPayload.mediaUrls?.length)
@@ -878,7 +835,6 @@ export async function runHeartbeatOnce(opts: {
         updatedAt: previousUpdatedAt,
       });
       const okSent = await maybeSendHeartbeatOk();
-      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "ok-empty",
         reason: opts.reason,
@@ -912,7 +868,6 @@ export async function runHeartbeatOnce(opts: {
         updatedAt: previousUpdatedAt,
       });
       const okSent = await maybeSendHeartbeatOk();
-      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "ok-token",
         reason: opts.reason,
@@ -948,7 +903,6 @@ export async function runHeartbeatOnce(opts: {
         sessionKey,
         updatedAt: previousUpdatedAt,
       });
-      await finalizeTranscriptPrune();
       emitHeartbeatEvent({
         status: "skipped",
         reason: "duplicate",

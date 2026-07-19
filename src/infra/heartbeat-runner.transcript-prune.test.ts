@@ -26,7 +26,7 @@ beforeEach(() => {
   setupTelegramHeartbeatPluginRuntimeForTests();
 });
 
-describe("heartbeat transcript pruning", () => {
+describe("heartbeat transcript pruning and retention", () => {
   async function createTranscriptWithContent(transcriptPath: string, sessionId: string) {
     const header = {
       type: "session",
@@ -39,6 +39,27 @@ describe("heartbeat transcript pruning", () => {
     await fs.mkdir(path.dirname(transcriptPath), { recursive: true });
     await fs.writeFile(transcriptPath, existingContent);
     return existingContent;
+  }
+
+  async function appendHeartbeatInSessionLane(params: {
+    ctx: MsgContext;
+    opts?: GetReplyOptions;
+    cfg: OpenClawConfig;
+    transcriptPath: string;
+    transcriptContent: string;
+    payloads: Array<{ text: string }>;
+    beforeLaneStart?: () => Promise<void>;
+  }) {
+    const sessionState = await initSessionState({
+      ctx: params.ctx,
+      cfg: params.cfg,
+      commandAuthorized: true,
+      isHeartbeat: true,
+    });
+    await params.beforeLaneStart?.();
+    await params.opts?.onSessionLaneStart?.({ sessionId: sessionState.sessionId });
+    await fs.appendFile(params.transcriptPath, params.transcriptContent);
+    await params.opts?.onSessionLaneComplete?.(params.payloads);
   }
 
   it("prunes acknowledgement turns from an existing transcript", async () => {
@@ -65,25 +86,15 @@ describe("heartbeat transcript pruning", () => {
           }
         });
 
-        const cfg = {
-          version: 1,
-          model: "test-model",
-          agent: { workspace: tmpDir },
-          session: { store: storePath },
-          channels: { telegram: {} },
-        } as unknown as OpenClawConfig;
-
         replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
-          const sessionState = await initSessionState({
+          await appendHeartbeatInSessionLane({
             ctx,
+            opts,
             cfg,
-            commandAuthorized: true,
-            isHeartbeat: true,
+            transcriptPath,
+            transcriptContent: heartbeatContent,
+            payloads: [{ text: "HEARTBEAT_OK" }],
           });
-          expect(sessionState.sessionEntry.heartbeatLease?.runId).toBeTruthy();
-          await opts?.onSessionLaneStart?.({ sessionId: sessionState.sessionId });
-          await fs.appendFile(transcriptPath, heartbeatContent);
-          await opts?.onSessionLaneComplete?.([{ text: "HEARTBEAT_OK" }]);
           return {
             text: "HEARTBEAT_OK",
             usage: {
@@ -95,13 +106,20 @@ describe("heartbeat transcript pruning", () => {
           };
         });
 
-        const result = await runHeartbeatOnce({
+        const cfg = {
+          version: 1,
+          model: "test-model",
+          agent: { workspace: tmpDir },
+          session: { store: storePath },
+          channels: { telegram: {} },
+        } as unknown as OpenClawConfig;
+
+        await runHeartbeatOnce({
           agentId: undefined,
           reason: "test",
           cfg,
           deps: { sendTelegram: vi.fn() },
         });
-        expect(result.status, JSON.stringify(result)).toBe("ran");
 
         await expect(fs.readFile(transcriptPath, "utf-8")).resolves.toBe(originalContent);
       },
@@ -109,11 +127,33 @@ describe("heartbeat transcript pruning", () => {
     );
   });
 
-  it("deletes an acknowledgement-only session after run accounting", async () => {
+  it("preserves user turns completed before the heartbeat acquires the session lane", async () => {
     await withTempTelegramHeartbeatSandbox(
       async ({ tmpDir, storePath, replySpy }) => {
         const sessionKey = resolveMainSessionKey(undefined);
-        let transcriptPath: string | undefined;
+        const sessionId = "test-heartbeat-waits-for-user-session";
+        const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+        const originalContent = await createTranscriptWithContent(transcriptPath, sessionId);
+        const userContent =
+          '{"role":"user","content":"Move launch to Friday at 3 PM"}\n' +
+          '{"role":"assistant","content":"Launch plan updated"}\n';
+        const heartbeatContent =
+          '{"role":"user","content":"Heartbeat prompt"}\n' +
+          '{"role":"assistant","content":"HEARTBEAT_OK"}\n';
+
+        await seedSessionStore(storePath, sessionKey, {
+          sessionId,
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "user123",
+        });
+        await updateSessionStore(storePath, (store) => {
+          const current = store[sessionKey];
+          if (current) {
+            store[sessionKey] = { ...current, sessionFile: transcriptPath };
+          }
+        });
+
         const cfg = {
           version: 1,
           model: "test-model",
@@ -123,29 +163,249 @@ describe("heartbeat transcript pruning", () => {
         } as unknown as OpenClawConfig;
 
         replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
-          const sessionState = await initSessionState({
+          await appendHeartbeatInSessionLane({
             ctx,
+            opts,
             cfg,
-            commandAuthorized: true,
-            isHeartbeat: true,
+            transcriptPath,
+            transcriptContent: heartbeatContent,
+            payloads: [{ text: "HEARTBEAT_OK" }],
+            beforeLaneStart: async () => {
+              await fs.appendFile(transcriptPath, userContent);
+            },
           });
-          expect(sessionState.sessionEntry.heartbeatOnly?.runId).toBeTruthy();
-          const sessionId = sessionState.sessionId;
-          transcriptPath = sessionState.sessionEntry.sessionFile;
-          expect(transcriptPath).toBeTruthy();
-          await opts?.onSessionLaneStart?.({ sessionId });
-          await createTranscriptWithContent(transcriptPath!, sessionId);
-          await opts?.onSessionLaneComplete?.([{ text: "HEARTBEAT_OK" }]);
+          return { text: "HEARTBEAT_OK" };
+        });
 
-          await updateSessionStore(storePath, (store) => {
-            const current = store[sessionKey];
-            if (current) {
-              store[sessionKey] = { ...current, compactionCount: 1 };
-            }
+        await runHeartbeatOnce({
+          agentId: undefined,
+          reason: "test",
+          cfg,
+          deps: { sendTelegram: vi.fn() },
+        });
+
+        await expect(fs.readFile(transcriptPath, "utf-8")).resolves.toBe(
+          originalContent + userContent,
+        );
+      },
+      { prefix: "openclaw-hb-preserve-user-before-lane-" },
+    );
+  });
+
+  it("prunes empty heartbeat turns from an existing transcript", async () => {
+    await withTempTelegramHeartbeatSandbox(
+      async ({ tmpDir, storePath, replySpy }) => {
+        const sessionKey = resolveMainSessionKey(undefined);
+        const sessionId = "test-empty-heartbeat-session";
+        const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+        const originalContent = await createTranscriptWithContent(transcriptPath, sessionId);
+        const heartbeatContent =
+          '{"role":"user","content":"Heartbeat prompt"}\n{"role":"assistant","content":""}\n';
+
+        await seedSessionStore(storePath, sessionKey, {
+          sessionId,
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "user123",
+        });
+        await updateSessionStore(storePath, (store) => {
+          const current = store[sessionKey];
+          if (current) {
+            store[sessionKey] = { ...current, sessionFile: transcriptPath };
+          }
+        });
+        replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
+          await appendHeartbeatInSessionLane({
+            ctx,
+            opts,
+            cfg,
+            transcriptPath,
+            transcriptContent: heartbeatContent,
+            payloads: [{ text: "" }],
           });
-          expect(
-            loadSessionStore(storePath, { skipCache: true })[sessionKey]?.compactionCount,
-          ).toBe(1);
+          return { text: "" };
+        });
+
+        const cfg = {
+          version: 1,
+          model: "test-model",
+          agent: { workspace: tmpDir },
+          session: { store: storePath },
+          channels: { telegram: {} },
+        } as unknown as OpenClawConfig;
+
+        await runHeartbeatOnce({
+          agentId: undefined,
+          reason: "test",
+          cfg,
+          deps: { sendTelegram: vi.fn() },
+        });
+
+        await expect(fs.readFile(transcriptPath, "utf-8")).resolves.toBe(originalContent);
+      },
+      { prefix: "openclaw-hb-prune-empty-" },
+    );
+  });
+
+  it("prunes duplicate heartbeat turns from an existing transcript", async () => {
+    await withTempTelegramHeartbeatSandbox(
+      async ({ tmpDir, storePath, replySpy }) => {
+        const sessionKey = resolveMainSessionKey(undefined);
+        const sessionId = "test-duplicate-heartbeat-session";
+        const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+        const originalContent = await createTranscriptWithContent(transcriptPath, sessionId);
+        const heartbeatContent =
+          '{"role":"user","content":"Heartbeat prompt"}\n' +
+          '{"role":"assistant","content":"Repeated alert"}\n';
+
+        await seedSessionStore(storePath, sessionKey, {
+          sessionId,
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "user123",
+        });
+        await updateSessionStore(storePath, (store) => {
+          const current = store[sessionKey];
+          if (current) {
+            store[sessionKey] = { ...current, sessionFile: transcriptPath };
+          }
+        });
+        await updateSessionStore(storePath, (store) => {
+          const current = store[sessionKey];
+          if (current) {
+            store[sessionKey] = {
+              ...current,
+              lastHeartbeatText: "Repeated alert",
+              lastHeartbeatSentAt: Date.now(),
+            };
+          }
+        });
+        replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
+          await appendHeartbeatInSessionLane({
+            ctx,
+            opts,
+            cfg,
+            transcriptPath,
+            transcriptContent: heartbeatContent,
+            payloads: [{ text: "Repeated alert" }],
+          });
+          return { text: "Repeated alert" };
+        });
+
+        const cfg = {
+          version: 1,
+          model: "test-model",
+          agent: { workspace: tmpDir },
+          session: { store: storePath },
+          channels: { telegram: {} },
+        } as unknown as OpenClawConfig;
+
+        await runHeartbeatOnce({
+          agentId: undefined,
+          reason: "test",
+          cfg,
+          deps: { sendTelegram: vi.fn() },
+        });
+
+        await expect(fs.readFile(transcriptPath, "utf-8")).resolves.toBe(originalContent);
+      },
+      { prefix: "openclaw-hb-prune-duplicate-" },
+    );
+  });
+
+  it("keeps meaningful heartbeat turns in an existing transcript", async () => {
+    await withTempTelegramHeartbeatSandbox(
+      async ({ tmpDir, storePath, replySpy }) => {
+        const sessionKey = resolveMainSessionKey(undefined);
+        const sessionId = "test-meaningful-heartbeat-session";
+        const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+        const originalContent = await createTranscriptWithContent(transcriptPath, sessionId);
+        const heartbeatContent =
+          '{"role":"user","content":"Heartbeat prompt"}\n' +
+          '{"role":"assistant","content":"Alert: attention needed"}\n';
+
+        await seedSessionStore(storePath, sessionKey, {
+          sessionId,
+          lastChannel: "telegram",
+          lastProvider: "telegram",
+          lastTo: "user123",
+        });
+        await updateSessionStore(storePath, (store) => {
+          const current = store[sessionKey];
+          if (current) {
+            store[sessionKey] = { ...current, sessionFile: transcriptPath };
+          }
+        });
+
+        replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
+          await appendHeartbeatInSessionLane({
+            ctx,
+            opts,
+            cfg,
+            transcriptPath,
+            transcriptContent: heartbeatContent,
+            payloads: [{ text: "Alert: attention needed" }],
+          });
+          return {
+            text: "Alert: attention needed",
+            usage: {
+              inputTokens: 10,
+              outputTokens: 20,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            },
+          };
+        });
+
+        const cfg = {
+          version: 1,
+          model: "test-model",
+          agent: { workspace: tmpDir },
+          session: { store: storePath },
+          channels: { telegram: {} },
+        } as unknown as OpenClawConfig;
+
+        await runHeartbeatOnce({
+          agentId: undefined,
+          reason: "test",
+          cfg,
+          deps: { sendTelegram: vi.fn() },
+        });
+
+        await expect(fs.readFile(transcriptPath, "utf-8")).resolves.toBe(
+          originalContent + heartbeatContent,
+        );
+      },
+      { prefix: "openclaw-hb-retain-meaningful-" },
+    );
+  });
+
+  it("keeps a heartbeat-only session created by an acknowledgement run", async () => {
+    await withTempTelegramHeartbeatSandbox(
+      async ({ tmpDir, storePath, replySpy }) => {
+        const sessionKey = resolveMainSessionKey(undefined);
+        const sessionId = "test-new-heartbeat-session";
+        const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+
+        replySpy.mockImplementationOnce(async () => {
+          await fs.writeFile(
+            storePath,
+            JSON.stringify({
+              [sessionKey]: {
+                sessionId,
+                updatedAt: Date.now(),
+                deliveryContext: { to: "heartbeat" },
+                lastTo: "heartbeat",
+                origin: {
+                  label: "heartbeat",
+                  provider: "heartbeat",
+                  from: "heartbeat",
+                  to: "heartbeat",
+                },
+              },
+            }),
+          );
+          await createTranscriptWithContent(transcriptPath, sessionId);
           return {
             text: "HEARTBEAT_OK",
             usage: {
@@ -157,41 +417,6 @@ describe("heartbeat transcript pruning", () => {
           };
         });
 
-        const result = await runHeartbeatOnce({
-          agentId: undefined,
-          reason: "test",
-          cfg,
-          deps: { sendTelegram: vi.fn() },
-        });
-        expect(result.status, JSON.stringify(result)).toBe("ran");
-
-        const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
-        expect(store[sessionKey]).toBeUndefined();
-        expect(transcriptPath).toBeDefined();
-        await expect(fs.stat(transcriptPath!)).rejects.toMatchObject({ code: "ENOENT" });
-      },
-      { prefix: "openclaw-hb-prune-new-" },
-    );
-  });
-
-  it("does not truncate a replacement session acquired before the heartbeat lane", async () => {
-    await withTempTelegramHeartbeatSandbox(
-      async ({ tmpDir, storePath, replySpy }) => {
-        const sessionKey = resolveMainSessionKey(undefined);
-        const heartbeatSessionId = "heartbeat-session-before-lane";
-        const replacementSessionId = "replacement-session-before-lane";
-        const replacementTranscriptPath = path.join(tmpDir, `${replacementSessionId}.jsonl`);
-        const replacementContent = await createTranscriptWithContent(
-          replacementTranscriptPath,
-          replacementSessionId,
-        );
-        await seedSessionStore(storePath, sessionKey, {
-          sessionId: heartbeatSessionId,
-          updatedAt: Date.now() - 1000,
-          lastChannel: "telegram",
-          lastProvider: "telegram",
-          lastTo: "user123",
-        });
         const cfg = {
           version: 1,
           model: "test-model",
@@ -200,44 +425,18 @@ describe("heartbeat transcript pruning", () => {
           channels: { telegram: {} },
         } as unknown as OpenClawConfig;
 
-        replySpy.mockImplementationOnce(async (ctx: MsgContext, opts?: GetReplyOptions) => {
-          const sessionState = await initSessionState({
-            ctx,
-            cfg,
-            commandAuthorized: true,
-            isHeartbeat: true,
-          });
-          await fs.writeFile(
-            storePath,
-            JSON.stringify({
-              [sessionKey]: {
-                sessionId: replacementSessionId,
-                updatedAt: Date.now(),
-                lastChannel: "telegram",
-                lastTo: "replacement-user",
-              },
-            }),
-          );
-          await opts?.onSessionLaneStart?.({ sessionId: sessionState.sessionId });
-          return { text: "HEARTBEAT_OK" };
+        await runHeartbeatOnce({
+          agentId: undefined,
+          reason: "test",
+          cfg,
+          deps: { sendTelegram: vi.fn() },
         });
 
-        await expect(
-          runHeartbeatOnce({
-            agentId: undefined,
-            reason: "test",
-            cfg,
-            deps: { sendTelegram: vi.fn() },
-          }),
-        ).resolves.toMatchObject({
-          status: "failed",
-          reason: "heartbeat session ownership changed",
-        });
-        await expect(fs.readFile(replacementTranscriptPath, "utf-8")).resolves.toBe(
-          replacementContent,
-        );
+        const store = JSON.parse(await fs.readFile(storePath, "utf-8")) as Record<string, unknown>;
+        expect(store[sessionKey]).toBeDefined();
+        await expect(fs.stat(transcriptPath)).resolves.toBeDefined();
       },
-      { prefix: "openclaw-hb-prune-lane-replacement-" },
+      { prefix: "openclaw-hb-retain-new-" },
     );
   });
 
