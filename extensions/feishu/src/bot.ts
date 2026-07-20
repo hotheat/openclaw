@@ -122,12 +122,6 @@ async function settleFeishuReplyDispatcher(params: {
   };
 
   try {
-    params.dispatcher.markComplete();
-  } catch (error) {
-    reportFailure("dispatcher completion", error);
-  }
-
-  try {
     await params.dispatcher.waitForIdle();
   } catch (error) {
     reportFailure("reply drain", error);
@@ -137,6 +131,13 @@ async function settleFeishuReplyDispatcher(params: {
     finalizeResult = await params.finalize();
   } catch (error) {
     reportFailure("streaming finalization", error);
+  }
+
+  try {
+    params.dispatcher.markComplete();
+    await params.dispatcher.waitForIdle();
+  } catch (error) {
+    reportFailure("dispatcher completion", error);
   } finally {
     try {
       params.markDispatchIdle();

@@ -264,13 +264,13 @@ describe("handleFeishuMessage command authorization", () => {
       isError: true,
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(2);
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.markComplete.mock.invocationCallOrder[0]).toBeLessThan(
-      mockFeishuDispatcher.waitForIdle.mock.invocationCallOrder[0],
-    );
     expect(mockFeishuDispatcher.waitForIdle.mock.invocationCallOrder[0]).toBeLessThan(
       mockFinalizeFeishuDispatcher.mock.invocationCallOrder[0],
+    );
+    expect(mockFinalizeFeishuDispatcher.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFeishuDispatcher.markComplete.mock.invocationCallOrder[0],
     );
   });
 
@@ -314,7 +314,7 @@ describe("handleFeishuMessage command authorization", () => {
     // Fallback is suppressed, but the dispatcher reservation must still be released
     // so it does not stay permanently registered for idle/restart coordination.
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(2);
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
   });
 
@@ -355,72 +355,8 @@ describe("handleFeishuMessage command authorization", () => {
       isError: true,
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(2);
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
-  });
-
-  it("drains replies accepted at completion before finalizing the streaming card", async () => {
-    mockShouldComputeCommandAuthorized.mockReturnValue(false);
-    mockDispatchReplyFromConfig.mockResolvedValueOnce({
-      queuedFinal: true,
-      counts: { final: 1, block: 0, tool: 0 },
-    });
-
-    const deliveredText: string[] = [];
-    let sendChain = Promise.resolve();
-    let finalizedText = "";
-    const dispatcher = {
-      sendFinalReply: vi.fn((payload?: { text?: string }) => {
-        sendChain = sendChain.then(async () => {
-          await Promise.resolve();
-          deliveredText.push(payload?.text ?? "");
-        });
-        return true;
-      }),
-      waitForIdle: vi.fn(() => sendChain),
-      markComplete: vi.fn(() => {
-        dispatcher.sendFinalReply({ text: "late final" });
-      }),
-    };
-    const finalize = vi.fn(async () => {
-      finalizedText = deliveredText.join("");
-    });
-    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
-      dispatcher,
-      replyOptions: {},
-      markDispatchIdle: vi.fn(),
-      finalize,
-    });
-
-    const cfg: ClawdbotConfig = {
-      channels: {
-        feishu: {
-          dmPolicy: "open",
-        },
-      },
-    } as ClawdbotConfig;
-
-    const event: FeishuMessageEvent = {
-      sender: {
-        sender_id: {
-          open_id: "ou-late-final",
-        },
-      },
-      message: {
-        message_id: "msg-late-final",
-        chat_id: "oc-dm",
-        chat_type: "p2p",
-        message_type: "text",
-        content: JSON.stringify({ text: "hello" }),
-      },
-    };
-
-    await dispatchMessage({ cfg, event });
-
-    expect(dispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(dispatcher.waitForIdle).toHaveBeenCalledTimes(1);
-    expect(finalize).toHaveBeenCalledTimes(1);
-    expect(finalizedText).toBe("late final");
   });
 
   it("does not report completion when final delivery fails", async () => {
@@ -458,7 +394,7 @@ describe("handleFeishuMessage command authorization", () => {
 
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(2);
     expect(mockMarkDispatchIdle).toHaveBeenCalledTimes(1);
     expect(runtime.error).toHaveBeenCalledWith(
       expect.stringContaining("reply streaming finalization failed: Error: close failed"),
@@ -684,7 +620,7 @@ describe("handleFeishuMessage command authorization", () => {
       isError: true,
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
-    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(2);
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
   });
 

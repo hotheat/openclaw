@@ -536,6 +536,42 @@ describe("listSessionsFromStore search", () => {
     expect(result.hasMore).toBe(false);
   });
 
+  test("filters interleaved key prefixes before applying pagination", () => {
+    const ownPrefix = "agent:shared:webchat:namespace-a:";
+    const otherPrefix = "agent:shared:webchat:namespace-b:";
+    const store: Record<string, SessionEntry> = {
+      [`${ownPrefix}chat_1`]: { sessionId: "own-1", updatedAt: 600 },
+      [`${otherPrefix}chat_1`]: { sessionId: "other-1", updatedAt: 500 },
+      [`${ownPrefix}chat_2`]: { sessionId: "own-2", updatedAt: 400 },
+      [`${otherPrefix}chat_2`]: { sessionId: "other-2", updatedAt: 300 },
+      [`${ownPrefix}chat_3`]: { sessionId: "own-3", updatedAt: 200 },
+    };
+
+    const firstPage = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: { agentId: "shared", keyPrefix: ownPrefix, limit: 2, offset: 0 },
+    });
+    const secondPage = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: { agentId: "shared", keyPrefix: ownPrefix, limit: 2, offset: 2 },
+    });
+
+    expect(firstPage.sessions.map((session) => session.key)).toEqual([
+      `${ownPrefix}chat_1`,
+      `${ownPrefix}chat_2`,
+    ]);
+    expect(firstPage.totalCount).toBe(3);
+    expect(firstPage.nextOffset).toBe(2);
+    expect(firstPage.hasMore).toBe(true);
+    expect(secondPage.sessions.map((session) => session.key)).toEqual([`${ownPrefix}chat_3`]);
+    expect(secondPage.nextOffset).toBeNull();
+    expect(secondPage.hasMore).toBe(false);
+  });
+
   test("hides cron run alias session keys from sessions list", () => {
     const now = Date.now();
     const store: Record<string, SessionEntry> = {

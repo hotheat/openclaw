@@ -1025,6 +1025,7 @@ public struct PushTestResult: Codable, Sendable {
 public struct SessionsListParams: Codable, Sendable {
     public let limit: Int?
     public let offset: Int?
+    public let keyprefix: String?
     public let activeminutes: Int?
     public let includeglobal: Bool?
     public let includeunknown: Bool?
@@ -1038,6 +1039,7 @@ public struct SessionsListParams: Codable, Sendable {
     public init(
         limit: Int?,
         offset: Int?,
+        keyprefix: String?,
         activeminutes: Int?,
         includeglobal: Bool?,
         includeunknown: Bool?,
@@ -1050,6 +1052,7 @@ public struct SessionsListParams: Codable, Sendable {
     {
         self.limit = limit
         self.offset = offset
+        self.keyprefix = keyprefix
         self.activeminutes = activeminutes
         self.includeglobal = includeglobal
         self.includeunknown = includeunknown
@@ -1064,6 +1067,7 @@ public struct SessionsListParams: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case limit
         case offset
+        case keyprefix = "keyPrefix"
         case activeminutes = "activeMinutes"
         case includeglobal = "includeGlobal"
         case includeunknown = "includeUnknown"

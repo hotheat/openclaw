@@ -743,6 +743,7 @@ export function listSessionsFromStore(params: {
   const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
   const label = typeof opts.label === "string" ? opts.label.trim() : "";
   const agentId = typeof opts.agentId === "string" ? normalizeAgentId(opts.agentId) : "";
+  const keyPrefix = typeof opts.keyPrefix === "string" ? opts.keyPrefix : "";
   const search = typeof opts.search === "string" ? opts.search.trim().toLowerCase() : "";
   const activeMinutes =
     typeof opts.activeMinutes === "number" && Number.isFinite(opts.activeMinutes)
@@ -751,6 +752,9 @@ export function listSessionsFromStore(params: {
 
   let sessions = Object.entries(store)
     .filter(([key, entry]) => {
+      if (keyPrefix && !key.startsWith(keyPrefix)) {
+        return false;
+      }
       if (isCronRunSessionKey(key)) {
         return false;
       }
