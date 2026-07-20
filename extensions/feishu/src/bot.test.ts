@@ -1,4 +1,4 @@
-import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk";
+import type { ClawdbotConfig, HistoryEntry, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeishuMessageEvent } from "./bot.js";
 import { handleFeishuMessage } from "./bot.js";
@@ -11,16 +11,23 @@ const {
   mockDownloadMessageResourceFeishu,
   mockTryRecordMessagePersistent,
   mockFeishuDispatcher,
+  mockFinalizeFeishuDispatcher,
+  mockMarkDispatchIdle,
+  mockCreateFeishuClient,
 } = vi.hoisted(() => ({
   mockFeishuDispatcher: {
-    sendFinalReply: vi.fn(() => true),
+    sendFinalReply: vi.fn((_payload?: { text?: string }) => true),
     waitForIdle: vi.fn().mockResolvedValue(undefined),
     markComplete: vi.fn(),
   },
+  mockFinalizeFeishuDispatcher: vi.fn().mockResolvedValue({ status: "not-streaming" }),
+  mockMarkDispatchIdle: vi.fn(),
+  mockCreateFeishuClient: vi.fn(),
   mockCreateFeishuReplyDispatcher: vi.fn(() => ({
     dispatcher: mockFeishuDispatcher,
     replyOptions: {},
-    markDispatchIdle: vi.fn(),
+    markDispatchIdle: mockMarkDispatchIdle,
+    finalize: mockFinalizeFeishuDispatcher,
   })),
   mockSendMessageFeishu: vi.fn().mockResolvedValue({ messageId: "pairing-msg", chatId: "oc-dm" }),
   mockGetMessageFeishu: vi.fn().mockResolvedValue(null),
@@ -34,6 +41,10 @@ const {
 
 vi.mock("./reply-dispatcher.js", () => ({
   createFeishuReplyDispatcher: mockCreateFeishuReplyDispatcher,
+}));
+
+vi.mock("./client.js", () => ({
+  createFeishuClient: mockCreateFeishuClient,
 }));
 
 vi.mock("./send.js", () => ({
@@ -59,12 +70,19 @@ function createRuntimeEnv(): RuntimeEnv {
   } as RuntimeEnv;
 }
 
-async function dispatchMessage(params: { cfg: ClawdbotConfig; event: FeishuMessageEvent }) {
+async function dispatchMessage(params: {
+  cfg: ClawdbotConfig;
+  event: FeishuMessageEvent;
+  chatHistories?: Map<string, HistoryEntry[]>;
+}) {
+  const runtime = createRuntimeEnv();
   await handleFeishuMessage({
     cfg: params.cfg,
     event: params.event,
-    runtime: createRuntimeEnv(),
+    runtime,
+    chatHistories: params.chatHistories,
   });
+  return runtime;
 }
 
 describe("handleFeishuMessage command authorization", () => {
@@ -87,6 +105,14 @@ describe("handleFeishuMessage command authorization", () => {
     mockDispatchReplyFromConfig.mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
     mockFeishuDispatcher.sendFinalReply.mockReturnValue(true);
     mockFeishuDispatcher.waitForIdle.mockResolvedValue(undefined);
+    mockFinalizeFeishuDispatcher.mockResolvedValue({ status: "not-streaming" });
+    mockCreateFeishuClient.mockReturnValue({
+      contact: {
+        user: {
+          get: vi.fn().mockResolvedValue({ data: {} }),
+        },
+      },
+    });
     setFeishuRuntime({
       system: {
         enqueueSystemEvent: vi.fn(),
@@ -239,6 +265,13 @@ describe("handleFeishuMessage command authorization", () => {
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
     expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.markComplete.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFeishuDispatcher.waitForIdle.mock.invocationCallOrder[0],
+    );
+    expect(mockFeishuDispatcher.waitForIdle.mock.invocationCallOrder[0]).toBeLessThan(
+      mockFinalizeFeishuDispatcher.mock.invocationCallOrder[0],
+    );
   });
 
   it("does not queue fallback when Feishu dispatch was handled without queued replies", async () => {
@@ -282,6 +315,7 @@ describe("handleFeishuMessage command authorization", () => {
     // so it does not stay permanently registered for idle/restart coordination.
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
     expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("completes the dispatcher on the happy path with queued replies", async () => {
@@ -322,6 +356,294 @@ describe("handleFeishuMessage command authorization", () => {
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
     expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains replies accepted at completion before finalizing the streaming card", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: true,
+      counts: { final: 1, block: 0, tool: 0 },
+    });
+
+    const deliveredText: string[] = [];
+    let sendChain = Promise.resolve();
+    let finalizedText = "";
+    const dispatcher = {
+      sendFinalReply: vi.fn((payload?: { text?: string }) => {
+        sendChain = sendChain.then(async () => {
+          await Promise.resolve();
+          deliveredText.push(payload?.text ?? "");
+        });
+        return true;
+      }),
+      waitForIdle: vi.fn(() => sendChain),
+      markComplete: vi.fn(() => {
+        dispatcher.sendFinalReply({ text: "late final" });
+      }),
+    };
+    const finalize = vi.fn(async () => {
+      finalizedText = deliveredText.join("");
+    });
+    mockCreateFeishuReplyDispatcher.mockReturnValueOnce({
+      dispatcher,
+      replyOptions: {},
+      markDispatchIdle: vi.fn(),
+      finalize,
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-late-final",
+        },
+      },
+      message: {
+        message_id: "msg-late-final",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(dispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(dispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(finalizedText).toBe("late final");
+  });
+
+  it("does not report completion when final delivery fails", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: true,
+      counts: { final: 1, block: 0, tool: 0 },
+    });
+    mockFinalizeFeishuDispatcher.mockRejectedValueOnce(new Error("close failed"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-finalize-error",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    const runtime = await dispatchMessage({ cfg, event });
+
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
+    expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockMarkDispatchIdle).toHaveBeenCalledTimes(1);
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("reply streaming finalization failed: Error: close failed"),
+    );
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("failed to dispatch message: Error: close failed"),
+    );
+    expect(runtime.log).not.toHaveBeenCalledWith(
+      expect.stringContaining("dispatch complete (queuedFinal=true, replies=1)"),
+    );
+  });
+
+  it("preserves the dispatch error when streaming finalization also fails", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockRejectedValueOnce(new Error("dispatch failed"));
+    mockFinalizeFeishuDispatcher.mockRejectedValueOnce(new Error("close failed"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-dispatch-error",
+        },
+      },
+      message: {
+        message_id: "msg-dispatch-and-finalize-error",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    const runtime = await dispatchMessage({ cfg, event });
+
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("reply streaming finalization failed: Error: close failed"),
+    );
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining("failed to dispatch message: Error: dispatch failed"),
+    );
+  });
+
+  it("preserves group history when final delivery fails", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockFinalizeFeishuDispatcher.mockRejectedValueOnce(new Error("close failed"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          groups: {
+            "oc-finalize-history": {
+              requireMention: false,
+            },
+          },
+        },
+      },
+    } as ClawdbotConfig;
+    const chatHistories = new Map<string, HistoryEntry[]>([
+      [
+        "oc-finalize-history",
+        [{ sender: "ou-previous", body: "previous message", timestamp: Date.now() }],
+      ],
+    ]);
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-group-sender",
+        },
+      },
+      message: {
+        message_id: "msg-finalize-history",
+        chat_id: "oc-finalize-history",
+        chat_type: "group",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event, chatHistories });
+
+    expect(chatHistories.get("oc-finalize-history")).toHaveLength(1);
+  });
+
+  it("reports degraded delivery and completes after a fallback succeeds", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: true,
+      counts: { final: 1, block: 0, tool: 0 },
+    });
+    mockFinalizeFeishuDispatcher.mockResolvedValueOnce({ status: "fallback-card" });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-fallback-delivery",
+        },
+      },
+      message: {
+        message_id: "msg-fallback-delivery",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    const runtime = await dispatchMessage({ cfg, event });
+
+    expect(runtime.log).toHaveBeenCalledWith(
+      expect.stringContaining("reply delivered via fallback-card"),
+    );
+    expect(runtime.log).toHaveBeenCalledWith(
+      expect.stringContaining("dispatch complete (queuedFinal=true, replies=1)"),
+    );
+  });
+
+  it("continues to the user reply when permission-card finalization fails", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockCreateFeishuClient.mockReturnValueOnce({
+      contact: {
+        user: {
+          get: vi.fn().mockRejectedValue({
+            response: {
+              data: {
+                code: 99991672,
+                msg: "permission denied https://open.feishu.cn/app/test",
+              },
+            },
+          }),
+        },
+      },
+    });
+    mockFinalizeFeishuDispatcher.mockRejectedValueOnce(new Error("permission close failed"));
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          appId: "permission-test-app",
+          appSecret: "permission-test-secret",
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-permission-finalize-error",
+        },
+      },
+      message: {
+        message_id: "msg-permission-finalize-error",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "hello" }),
+      },
+    };
+
+    const runtime = await dispatchMessage({ cfg, event });
+
+    expect(mockDispatchReplyFromConfig).toHaveBeenCalledTimes(2);
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(2);
+    expect(runtime.error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "permission reply streaming finalization failed: Error: permission close failed",
+      ),
+    );
   });
 
   it("does not queue fallback when Feishu dispatch completed silently", async () => {
@@ -363,6 +685,7 @@ describe("handleFeishuMessage command authorization", () => {
     });
     expect(mockFeishuDispatcher.markComplete).toHaveBeenCalledTimes(1);
     expect(mockFeishuDispatcher.waitForIdle).toHaveBeenCalledTimes(1);
+    expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
   });
 
   it("creates pairing request and drops unauthorized DMs in pairing mode", async () => {

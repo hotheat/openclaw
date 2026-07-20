@@ -12,13 +12,26 @@ import type { MentionTarget } from "./mention.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
-import { FeishuStreamingSession } from "./streaming-card.js";
+import { FeishuStreamingSession, isRetryableFeishuStreamingError } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
 import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
+
+const STREAMING_CLOSE_RETRY_DELAYS_MS = [100, 300];
 
 /** Detect if text contains markdown elements that benefit from card rendering */
 function shouldUseCard(text: string): boolean {
   return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+}
+
+function appendStreamingText(current: string, next: string): string {
+  if (!current) {
+    return next;
+  }
+  if (!next) {
+    return current;
+  }
+  const separator = current.endsWith("\n") || next.startsWith("\n") ? "" : "\n\n";
+  return `${current}${separator}${next}`;
 }
 
 export type CreateFeishuReplyDispatcherParams = {
@@ -29,6 +42,10 @@ export type CreateFeishuReplyDispatcherParams = {
   replyToMessageId?: string;
   mentionTargets?: MentionTarget[];
   accountId?: string;
+};
+
+export type FeishuReplyFinalizeResult = {
+  status: "not-streaming" | "streamed" | "fallback-card" | "fallback-message";
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -78,10 +95,72 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const blockStreamingEnabled = account.config?.blockStreaming !== false;
 
   let streaming: FeishuStreamingSession | null = null;
-  let streamText = "";
+  let deliveredText = "";
+  let previewText = "";
   let lastPartial = "";
   let partialUpdateQueue: Promise<void> = Promise.resolve();
   let streamingStartPromise: Promise<void> | null = null;
+  let streamingClosePromise: Promise<FeishuReplyFinalizeResult> | null = null;
+
+  const sendCardReply = async (text: string): Promise<void> => {
+    let first = true;
+    for (const chunk of core.channel.text.chunkTextWithMode(text, textChunkLimit, chunkMode)) {
+      await sendMarkdownCardFeishu({
+        cfg,
+        to: chatId,
+        text: chunk,
+        replyToMessageId,
+        mentions: first ? mentionTargets : undefined,
+        accountId,
+      });
+      first = false;
+    }
+  };
+
+  const sendPlainReply = async (text: string): Promise<void> => {
+    const converted = core.channel.text.convertMarkdownTables(text, tableMode);
+    let first = true;
+    for (const chunk of core.channel.text.chunkTextWithMode(converted, textChunkLimit, chunkMode)) {
+      await sendMessageFeishu({
+        cfg,
+        to: chatId,
+        text: chunk,
+        replyToMessageId,
+        mentions: first ? mentionTargets : undefined,
+        accountId,
+      });
+      first = false;
+    }
+  };
+
+  const resetStreamingState = () => {
+    streaming = null;
+    streamingStartPromise = null;
+    deliveredText = "";
+    previewText = "";
+    lastPartial = "";
+  };
+
+  const closeStreamingWithRetry = async (
+    session: FeishuStreamingSession,
+    text: string,
+  ): Promise<void> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await session.close(text);
+        return;
+      } catch (error) {
+        const retryDelay = STREAMING_CLOSE_RETRY_DELAYS_MS[attempt];
+        if (retryDelay === undefined || !isRetryableFeishuStreamingError(error)) {
+          throw error;
+        }
+        params.runtime.error?.(
+          `feishu[${account.accountId}]: streaming finalization attempt ${attempt + 1} failed; retrying in ${retryDelay}ms: ${String(error)}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, retryDelay));
+      }
+    }
+  };
 
   const startStreaming = () => {
     if (!streamingEnabled || streamingStartPromise || streaming) {
@@ -108,22 +187,71 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
     })();
   };
 
-  const closeStreaming = async () => {
-    if (streamingStartPromise) {
-      await streamingStartPromise;
+  const closeStreaming = (): Promise<FeishuReplyFinalizeResult> => {
+    if (streamingClosePromise) {
+      return streamingClosePromise;
     }
-    await partialUpdateQueue;
-    if (streaming?.isActive()) {
-      let text = streamText;
-      if (mentionTargets?.length) {
-        text = buildMentionedCardContent(mentionTargets, text);
+    const closePromise = (async (): Promise<FeishuReplyFinalizeResult> => {
+      if (streamingStartPromise) {
+        await streamingStartPromise;
       }
-      await streaming.close(text);
-    }
-    streaming = null;
-    streamingStartPromise = null;
-    streamText = "";
-    lastPartial = "";
+      await partialUpdateQueue;
+      const activeStreaming = streaming?.isActive() ? streaming : null;
+      if (!activeStreaming) {
+        resetStreamingState();
+        return { status: "not-streaming" };
+      }
+
+      const finalText = deliveredText || previewText;
+      let streamingText = finalText;
+      if (mentionTargets?.length) {
+        streamingText = buildMentionedCardContent(mentionTargets, streamingText);
+      }
+
+      try {
+        await closeStreamingWithRetry(activeStreaming, streamingText);
+        resetStreamingState();
+        return { status: "streamed" };
+      } catch (streamingError) {
+        params.runtime.error?.(
+          `feishu[${account.accountId}]: streaming finalization failed; falling back to a static card: ${String(streamingError)}`,
+        );
+
+        if (!finalText.trim()) {
+          throw new AggregateError(
+            [streamingError],
+            "Feishu streaming reply failed without final text for fallback delivery",
+          );
+        }
+
+        try {
+          await sendCardReply(finalText);
+          resetStreamingState();
+          return { status: "fallback-card" };
+        } catch (cardError) {
+          params.runtime.error?.(
+            `feishu[${account.accountId}]: static card fallback failed; falling back to a plain message: ${String(cardError)}`,
+          );
+          try {
+            await sendPlainReply(finalText);
+            resetStreamingState();
+            return { status: "fallback-message" };
+          } catch (messageError) {
+            params.runtime.error?.(
+              `feishu[${account.accountId}]: plain message fallback failed: ${String(messageError)}`,
+            );
+            throw new AggregateError(
+              [streamingError, cardError, messageError],
+              "Feishu streaming reply and fallback delivery failed",
+            );
+          }
+        }
+      }
+    })().finally(() => {
+      streamingClosePromise = null;
+    });
+    streamingClosePromise = closePromise;
+    return closePromise;
   };
 
   const { dispatcher, replyOptions, markDispatchIdle } =
@@ -153,58 +281,25 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
 
         if (streaming?.isActive()) {
-          if (info?.kind === "final") {
-            streamText = text;
-            await closeStreaming();
+          if (info?.kind === "block" || info?.kind === "final") {
+            deliveredText = appendStreamingText(deliveredText, text);
           }
           return;
         }
 
-        let first = true;
         if (useCard) {
-          for (const chunk of core.channel.text.chunkTextWithMode(
-            text,
-            textChunkLimit,
-            chunkMode,
-          )) {
-            await sendMarkdownCardFeishu({
-              cfg,
-              to: chatId,
-              text: chunk,
-              replyToMessageId,
-              mentions: first ? mentionTargets : undefined,
-              accountId,
-            });
-            first = false;
-          }
+          await sendCardReply(text);
         } else {
-          const converted = core.channel.text.convertMarkdownTables(text, tableMode);
-          for (const chunk of core.channel.text.chunkTextWithMode(
-            converted,
-            textChunkLimit,
-            chunkMode,
-          )) {
-            await sendMessageFeishu({
-              cfg,
-              to: chatId,
-              text: chunk,
-              replyToMessageId,
-              mentions: first ? mentionTargets : undefined,
-              accountId,
-            });
-            first = false;
-          }
+          await sendPlainReply(text);
         }
       },
-      onError: async (error, info) => {
+      onError: (error, info) => {
         params.runtime.error?.(
           `feishu[${account.accountId}] ${info.kind} reply failed: ${String(error)}`,
         );
-        await closeStreaming();
         typingCallbacks.onIdle?.();
       },
-      onIdle: async () => {
-        await closeStreaming();
+      onIdle: () => {
         typingCallbacks.onIdle?.();
       },
       onCleanup: () => {
@@ -223,19 +318,27 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
             if (!payload.text || payload.text === lastPartial) {
               return;
             }
-            lastPartial = payload.text;
-            streamText = payload.text;
-            partialUpdateQueue = partialUpdateQueue.then(async () => {
-              if (streamingStartPromise) {
-                await streamingStartPromise;
-              }
-              if (streaming?.isActive()) {
-                await streaming.update(streamText);
-              }
-            });
+            const text = payload.text;
+            lastPartial = text;
+            previewText = text;
+            partialUpdateQueue = partialUpdateQueue
+              .then(async () => {
+                if (streamingStartPromise) {
+                  await streamingStartPromise;
+                }
+                if (streaming?.isActive()) {
+                  await streaming.update(text);
+                }
+              })
+              .catch((error) => {
+                params.runtime.error?.(
+                  `feishu[${account.accountId}]: streaming update failed: ${String(error)}`,
+                );
+              });
           }
         : undefined,
     },
     markDispatchIdle,
+    finalize: closeStreaming,
   };
 }

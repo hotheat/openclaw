@@ -33,7 +33,7 @@ import {
   resolveFeishuAllowlistMatch,
   isFeishuGroupAllowed,
 } from "./policy.js";
-import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
+import { createFeishuReplyDispatcher, type FeishuReplyFinalizeResult } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 import type { FeishuMessageContext, FeishuMediaInfo, ResolvedFeishuAccount } from "./types.js";
@@ -95,6 +95,64 @@ type FeishuMediaResolveResult = {
   mediaList: FeishuMediaInfo[];
   limitErrors: FeishuMediaLimitError[];
 };
+
+async function settleFeishuReplyDispatcher(params: {
+  dispatcher: {
+    waitForIdle: () => Promise<void>;
+    markComplete: () => void;
+  };
+  finalize: () => Promise<FeishuReplyFinalizeResult>;
+  markDispatchIdle: () => void;
+  accountId: string;
+  context: string;
+  logError: (message: string) => void;
+}): Promise<
+  | { ok: true; finalizeResult: FeishuReplyFinalizeResult }
+  | { ok: false; error: unknown; finalizeResult?: FeishuReplyFinalizeResult }
+> {
+  let deliveryError: unknown;
+  let finalizeResult: FeishuReplyFinalizeResult | undefined;
+  const reportFailure = (stage: string, error: unknown, affectsDelivery = true) => {
+    if (affectsDelivery) {
+      deliveryError ??= error;
+    }
+    params.logError(
+      `feishu[${params.accountId}]: ${params.context} ${stage} failed: ${String(error)}`,
+    );
+  };
+
+  try {
+    params.dispatcher.markComplete();
+  } catch (error) {
+    reportFailure("dispatcher completion", error);
+  }
+
+  try {
+    await params.dispatcher.waitForIdle();
+  } catch (error) {
+    reportFailure("reply drain", error);
+  }
+
+  try {
+    finalizeResult = await params.finalize();
+  } catch (error) {
+    reportFailure("streaming finalization", error);
+  } finally {
+    try {
+      params.markDispatchIdle();
+    } catch (error) {
+      reportFailure("typing cleanup", error, false);
+    }
+  }
+
+  if (deliveryError) {
+    return { ok: false, error: deliveryError, finalizeResult };
+  }
+  return {
+    ok: true,
+    finalizeResult: finalizeResult ?? { status: "not-streaming" },
+  };
+}
 
 async function resolveFeishuSenderName(params: {
   account: ResolvedFeishuAccount;
@@ -935,6 +993,7 @@ export async function handleFeishuMessage(params: {
         dispatcher: permDispatcher,
         replyOptions: permReplyOptions,
         markDispatchIdle: markPermIdle,
+        finalize: finalizePermDispatcher,
       } = createFeishuReplyDispatcher({
         cfg,
         agentId: route.agentId,
@@ -954,10 +1013,14 @@ export async function handleFeishuMessage(params: {
           replyOptions: permReplyOptions,
         });
       } finally {
-        // Release the dispatcher reservation; markPermIdle() only stops typing.
-        permDispatcher.markComplete();
-        await permDispatcher.waitForIdle();
-        markPermIdle();
+        await settleFeishuReplyDispatcher({
+          dispatcher: permDispatcher,
+          finalize: finalizePermDispatcher,
+          markDispatchIdle: markPermIdle,
+          accountId: account.accountId,
+          context: "permission reply",
+          logError: error,
+        });
       }
     }
 
@@ -1025,7 +1088,7 @@ export async function handleFeishuMessage(params: {
       ...mediaPayload,
     });
 
-    const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
+    const { dispatcher, replyOptions, markDispatchIdle, finalize } = createFeishuReplyDispatcher({
       cfg,
       agentId: route.agentId,
       runtime: runtime as RuntimeEnv,
@@ -1039,6 +1102,8 @@ export async function handleFeishuMessage(params: {
 
     let queuedFinal = false;
     let finalReplies = 0;
+    let dispatchFailure: unknown;
+    let settlement: Awaited<ReturnType<typeof settleFeishuReplyDispatcher>>;
     try {
       const dispatchResult = await core.channel.reply.dispatchReplyFromConfig({
         ctx: ctxPayload,
@@ -1067,13 +1132,33 @@ export async function handleFeishuMessage(params: {
       }
 
       finalReplies = counts.final;
+    } catch (err) {
+      dispatchFailure = err;
     } finally {
-      // Always release the dispatcher reservation on every exit path (handled,
-      // happy path, suppressed fallback, or error). markDispatchIdle() only stops
-      // typing; markComplete()/waitForIdle() are what clear the global reservation.
-      dispatcher.markComplete();
-      await dispatcher.waitForIdle();
-      markDispatchIdle();
+      settlement = await settleFeishuReplyDispatcher({
+        dispatcher,
+        finalize,
+        markDispatchIdle,
+        accountId: account.accountId,
+        context: "reply",
+        logError: error,
+      });
+    }
+
+    if (dispatchFailure) {
+      throw dispatchFailure;
+    }
+    if (!settlement.ok) {
+      throw settlement.error;
+    }
+
+    if (
+      settlement.finalizeResult.status === "fallback-card" ||
+      settlement.finalizeResult.status === "fallback-message"
+    ) {
+      log(
+        `feishu[${account.accountId}]: reply delivered via ${settlement.finalizeResult.status} after streaming finalization failed`,
+      );
     }
 
     if (isGroup && historyKey && chatHistories) {
