@@ -1,0 +1,15 @@
+name: PR Description
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate PR description
+    uses: bioinfo-ai-otr/.github/.github/workflows/pr-description.yml@main
+    with:
+      pr_body: ${{ github.event.pull_request.body }}
