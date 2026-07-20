@@ -1,0 +1,29 @@
+{
+  "id": "webui-artifacts",
+  "name": "WebUI Artifacts",
+  "description": "Publish parent WebChat workspace files and staged subagent handoff artifacts through the authenticated BFF artifact service.",
+  "uiHints": {
+    "endpoint": {
+      "label": "Artifact BFF endpoint",
+      "placeholder": "http://127.0.0.1:8303"
+    },
+    "apiKey": {
+      "label": "Artifact service API key",
+      "sensitive": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "BFF origin used for internal artifact init, complete, and abort calls."
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "API key for the openclaw-artifact-extension service identity."
+      }
+    }
+  }
+}

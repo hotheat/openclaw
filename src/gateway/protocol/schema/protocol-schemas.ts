@@ -96,6 +96,7 @@ import {
   TickEventSchema,
 } from "./frames.js";
 import {
+  ChatAttachmentMaterializeParamsSchema,
   ChatAbortParamsSchema,
   ChatEventSchema,
   ChatHistoryParamsSchema,
@@ -130,6 +131,12 @@ import {
   SessionsUsageParamsSchema,
 } from "./sessions.js";
 import { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
+import {
+  SubagentRunSchema,
+  SubagentRunStatusSchema,
+  SubagentsListParamsSchema,
+  SubagentsListResultSchema,
+} from "./subagents.js";
 import {
   WizardCancelParamsSchema,
   WizardNextParamsSchema,
@@ -182,6 +189,10 @@ export const ProtocolSchemas: Record<string, TSchema> = {
   SessionsDeleteParams: SessionsDeleteParamsSchema,
   SessionsCompactParams: SessionsCompactParamsSchema,
   SessionsUsageParams: SessionsUsageParamsSchema,
+  SubagentRunStatus: SubagentRunStatusSchema,
+  SubagentRun: SubagentRunSchema,
+  SubagentsListParams: SubagentsListParamsSchema,
+  SubagentsListResult: SubagentsListResultSchema,
   ConfigGetParams: ConfigGetParamsSchema,
   ConfigSetParams: ConfigSetParamsSchema,
   ConfigApplyParams: ConfigApplyParamsSchema,
@@ -255,6 +266,7 @@ export const ProtocolSchemas: Record<string, TSchema> = {
   DevicePairRequestedEvent: DevicePairRequestedEventSchema,
   DevicePairResolvedEvent: DevicePairResolvedEventSchema,
   ChatHistoryParams: ChatHistoryParamsSchema,
+  ChatAttachmentMaterializeParams: ChatAttachmentMaterializeParamsSchema,
   ChatSendParams: ChatSendParamsSchema,
   ChatAbortParams: ChatAbortParamsSchema,
   ChatInjectParams: ChatInjectParamsSchema,

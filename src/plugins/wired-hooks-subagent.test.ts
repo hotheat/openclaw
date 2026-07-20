@@ -61,6 +61,94 @@ describe("subagent hook runner methods", () => {
     expect(handler).toHaveBeenCalledWith(event, baseSubagentCtx);
   });
 
+  it("runSubagentHandoffStaging merges staged artifacts by relative path", async () => {
+    const high = vi.fn(async () => ({
+      artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+    }));
+    const low = vi.fn(async () => ({
+      artifacts: [
+        {
+          relativePath: "artifacts/imports/researcher/run-1/report.md",
+          title: "duplicate",
+        },
+        { relativePath: "artifacts/imports/researcher/run-1/data.csv" },
+      ],
+    }));
+    const registry = createMockPluginRegistry([
+      { hookName: "subagent_handoff_staging", handler: high, priority: 10 },
+      { hookName: "subagent_handoff_staging", handler: low, priority: 1 },
+    ]);
+    const runner = createHookRunner(registry);
+    const event = {
+      runId: "run-1",
+      childSessionKey: "agent:researcher:subagent:child",
+      requesterSessionKey: "agent:main:main",
+      content: "<SUBAGENT_HANDOFF>{}</SUBAGENT_HANDOFF>",
+      childWorkspaceDir: "/workspace-researcher",
+      requesterWorkspaceDir: "/workspace-main",
+    };
+
+    const result = await runner.runSubagentHandoffStaging(event, baseSubagentCtx);
+
+    expect(high).toHaveBeenCalledWith(event, baseSubagentCtx);
+    expect(low).toHaveBeenCalledWith(event, baseSubagentCtx);
+    expect(result).toEqual({
+      artifacts: [
+        { relativePath: "artifacts/imports/researcher/run-1/report.md" },
+        { relativePath: "artifacts/imports/researcher/run-1/data.csv" },
+      ],
+    });
+  });
+
+  it("runSubagentHandoffDelivery invokes registered delivery hooks", async () => {
+    const handler = vi.fn();
+    const registry = createMockPluginRegistry([{ hookName: "subagent_handoff_delivery", handler }]);
+    const runner = createHookRunner(registry);
+    const event = {
+      runId: "run-1",
+      childSessionKey: "agent:researcher:subagent:child",
+      requesterSessionKey: "agent:main:webchat:client:chat",
+      content: "result",
+      childWorkspaceDir: "/workspace-researcher",
+      requesterWorkspaceDir: "/workspace-main",
+      artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+    };
+
+    await runner.runSubagentHandoffDelivery(event, baseSubagentCtx);
+
+    expect(handler).toHaveBeenCalledWith(event, baseSubagentCtx);
+  });
+
+  it("runSubagentHandoffDelivery returns structured failures from handlers and thrown errors", async () => {
+    const reported = vi.fn(async () => ({
+      failures: [{ relativePath: "report.md", message: "upload failed" }],
+    }));
+    const thrown = vi.fn(async () => {
+      throw new Error("transport hung");
+    });
+    const registry = createMockPluginRegistry([
+      { hookName: "subagent_handoff_delivery", handler: reported, priority: 10 },
+      { hookName: "subagent_handoff_delivery", handler: thrown, priority: 1 },
+    ]);
+    const runner = createHookRunner(registry);
+    const event = {
+      runId: "run-1",
+      childSessionKey: "agent:researcher:subagent:child",
+      requesterSessionKey: "agent:main:webchat:client:chat",
+      content: "result",
+      childWorkspaceDir: "/workspace-researcher",
+      requesterWorkspaceDir: "/workspace-main",
+      artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+    };
+
+    const result = await runner.runSubagentHandoffDelivery(event, baseSubagentCtx);
+
+    expect(result?.failures).toEqual([
+      { relativePath: "report.md", message: "upload failed" },
+      { message: "test-plugin: Error: transport hung" },
+    ]);
+  });
+
   it("runSubagentDeliveryTarget invokes registered subagent_delivery_target hooks", async () => {
     const handler = vi.fn(async () => ({
       origin: {

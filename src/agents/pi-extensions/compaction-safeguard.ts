@@ -11,6 +11,7 @@ import {
   SUMMARIZATION_OVERHEAD_TOKENS,
   SummaryCallBudgetExhaustedError,
   computeAdaptiveChunkRatio,
+  createSummaryCallBudget,
   estimateMessagesTokens,
   isOversizedForSummary,
   pruneHistoryForContextShare,
@@ -225,6 +226,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
     }
 
     try {
+      const summaryBudget = createSummaryCallBudget(2);
       const runtime = getCompactionSafeguardRuntime(ctx.sessionManager);
       const modelContextWindow = resolveContextWindowTokens(model);
       const contextWindowTokens = runtime?.contextWindowTokens ?? modelContextWindow;
@@ -286,6 +288,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
                   contextWindow: contextWindowTokens,
                   customInstructions,
                   previousSummary: preparation.previousSummary,
+                  summaryBudget,
                 });
               } catch (droppedError) {
                 if (droppedError instanceof SummaryCallBudgetExhaustedError) {
@@ -327,6 +330,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         contextWindow: contextWindowTokens,
         customInstructions,
         previousSummary: effectivePreviousSummary,
+        summaryBudget,
       });
 
       let summary = historySummary;
@@ -341,6 +345,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
           contextWindow: contextWindowTokens,
           customInstructions: TURN_PREFIX_INSTRUCTIONS,
           previousSummary: undefined,
+          summaryBudget,
         });
         summary = `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixSummary}`;
       }

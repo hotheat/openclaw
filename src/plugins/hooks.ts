@@ -39,6 +39,10 @@ import type {
   PluginHookSubagentContext,
   PluginHookSubagentDeliveryTargetEvent,
   PluginHookSubagentDeliveryTargetResult,
+  PluginHookSubagentHandoffDeliveryEvent,
+  PluginHookSubagentHandoffDeliveryResult,
+  PluginHookSubagentHandoffStagingEvent,
+  PluginHookSubagentHandoffStagingResult,
   PluginHookSubagentSpawningEvent,
   PluginHookSubagentSpawningResult,
   PluginHookSubagentEndedEvent,
@@ -88,6 +92,10 @@ export type {
   PluginHookSubagentContext,
   PluginHookSubagentDeliveryTargetEvent,
   PluginHookSubagentDeliveryTargetResult,
+  PluginHookSubagentHandoffDeliveryEvent,
+  PluginHookSubagentHandoffDeliveryResult,
+  PluginHookSubagentHandoffStagingEvent,
+  PluginHookSubagentHandoffStagingResult,
   PluginHookSubagentSpawningEvent,
   PluginHookSubagentSpawningResult,
   PluginHookSubagentSpawnedEvent,
@@ -175,6 +183,28 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     }
     return next;
   };
+
+  const mergeSubagentHandoffStagingResult = (
+    acc: PluginHookSubagentHandoffStagingResult | undefined,
+    next: PluginHookSubagentHandoffStagingResult,
+  ): PluginHookSubagentHandoffStagingResult => {
+    const artifacts = new Map(
+      (acc?.artifacts ?? []).map((artifact) => [artifact.relativePath, artifact] as const),
+    );
+    for (const artifact of next.artifacts) {
+      if (!artifacts.has(artifact.relativePath)) {
+        artifacts.set(artifact.relativePath, artifact);
+      }
+    }
+    return { artifacts: [...artifacts.values()] };
+  };
+
+  const mergeSubagentHandoffDeliveryResult = (
+    acc: PluginHookSubagentHandoffDeliveryResult | undefined,
+    next: PluginHookSubagentHandoffDeliveryResult,
+  ): PluginHookSubagentHandoffDeliveryResult => ({
+    failures: [...(acc?.failures ?? []), ...next.failures],
+  });
 
   const handleHookError = (params: {
     hookName: PluginHookName;
@@ -663,6 +693,57 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
   }
 
   /**
+   * Stage subagent handoff files into the requester workspace before delivery.
+   * Runs sequentially so higher-priority staging plugins win duplicate paths.
+   */
+  async function runSubagentHandoffStaging(
+    event: PluginHookSubagentHandoffStagingEvent,
+    ctx: PluginHookSubagentContext,
+  ): Promise<PluginHookSubagentHandoffStagingResult | undefined> {
+    return runModifyingHook<"subagent_handoff_staging", PluginHookSubagentHandoffStagingResult>(
+      "subagent_handoff_staging",
+      event,
+      ctx,
+      mergeSubagentHandoffStagingResult,
+    );
+  }
+
+  /** Run channel-specific delivery after handoff artifacts are staged. */
+  async function runSubagentHandoffDelivery(
+    event: PluginHookSubagentHandoffDeliveryEvent,
+    ctx: PluginHookSubagentContext,
+  ): Promise<PluginHookSubagentHandoffDeliveryResult | undefined> {
+    const hookName = "subagent_handoff_delivery";
+    const hooks = getHooksForName(registry, hookName);
+    if (hooks.length === 0) {
+      return undefined;
+    }
+
+    logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers, sequential)`);
+
+    let result: PluginHookSubagentHandoffDeliveryResult | undefined;
+    for (const hook of hooks) {
+      try {
+        const handlerResult = await (
+          hook.handler as (
+            event: unknown,
+            ctx: unknown,
+          ) => Promise<PluginHookSubagentHandoffDeliveryResult | void>
+        )(event, ctx);
+        if (handlerResult) {
+          result = mergeSubagentHandoffDeliveryResult(result, handlerResult);
+        }
+      } catch (err) {
+        handleHookError({ hookName, pluginId: hook.pluginId, error: err });
+        result = mergeSubagentHandoffDeliveryResult(result, {
+          failures: [{ message: `${hook.pluginId}: ${String(err)}` }],
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
    * Run subagent_ended hook.
    * Runs in parallel (fire-and-forget).
    */
@@ -751,6 +832,8 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     runSubagentSpawning,
     runSubagentDeliveryTarget,
     runSubagentSpawned,
+    runSubagentHandoffStaging,
+    runSubagentHandoffDelivery,
     runSubagentEnded,
     runTaskFlowUpdated,
     // Gateway hooks

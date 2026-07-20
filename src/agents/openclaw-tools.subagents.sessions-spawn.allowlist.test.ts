@@ -256,6 +256,26 @@ describe("openclaw-tools: subagents (sessions_spawn allowlist)", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("allows direct completion delivery to the current WebChat session", async () => {
+    mockAcceptedSpawn(5650);
+    const tool = await getSessionsSpawnTool({
+      agentSessionKey: "agent:feishu-ou_test:webchat:namespace:chat_1",
+    });
+
+    const result = await tool.execute("call-webchat-direct-delivery", {
+      task: "do thing",
+      completionDelivery: "direct",
+    });
+
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-1",
+    });
+    const runs = listSubagentRunsForRequester("agent:feishu-ou_test:webchat:namespace:chat_1");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.completionDelivery).toBe("direct");
+  });
+
   it("allows direct completion delivery from nested requester sessions without an external target", async () => {
     setSessionsSpawnConfigOverride({
       session: {

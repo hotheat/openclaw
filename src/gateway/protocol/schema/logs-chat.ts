@@ -1,4 +1,5 @@
 import { Type } from "@sinclair/typebox";
+import { ChatAttachmentsSchema } from "./attachments.js";
 import { NonEmptyString } from "./primitives.js";
 
 export const LogsTailParamsSchema = Type.Object(
@@ -37,9 +38,22 @@ export const ChatSendParamsSchema = Type.Object(
     message: Type.String(),
     thinking: Type.Optional(Type.String()),
     deliver: Type.Optional(Type.Boolean()),
-    attachments: Type.Optional(Type.Array(Type.Unknown())),
+    attachments: Type.Optional(ChatAttachmentsSchema),
     timeoutMs: Type.Optional(Type.Integer({ minimum: 0 })),
     idempotencyKey: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const ChatAttachmentMaterializeParamsSchema = Type.Object(
+  {
+    sessionKey: NonEmptyString,
+    artifactId: Type.String({ minLength: 1, maxLength: 80, pattern: "^[a-zA-Z0-9_-]+$" }),
+    fileName: Type.String({ minLength: 1, maxLength: 255 }),
+    contentType: Type.String({ minLength: 1, maxLength: 255 }),
+    sizeBytes: Type.Integer({ minimum: 1, maximum: 100 * 1024 * 1024 }),
+    sha256: Type.String({ pattern: "^[0-9a-fA-F]{64}$" }),
+    downloadUrl: Type.String({ minLength: 1, maxLength: 8192 }),
   },
   { additionalProperties: false },
 );
@@ -57,6 +71,7 @@ export const ChatInjectParamsSchema = Type.Object(
     sessionKey: NonEmptyString,
     message: NonEmptyString,
     label: Type.Optional(Type.String({ maxLength: 100 })),
+    idempotencyKey: Type.Optional(NonEmptyString),
   },
   { additionalProperties: false },
 );

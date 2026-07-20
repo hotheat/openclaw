@@ -1,6 +1,6 @@
 # OpenClaw × agent-frontend：多 Chat WebUI 技术调研报告
 
-- 日期：2026-07-06（外部项目已于 2026-07-06 联网核实；Codex app/cli 章节于 2026-07-07 联网核实增补；WorkBuddy/CodeBuddy 章节于 2026-07-07 本机 bundle 实测增补）
+- 日期：2026-07-06（2026-07-15 增补：§5.3 子 agent 协议边界、§5.5 exec 直接执行现状与 M2 范围；M2 以 [最新执行计划](../../plans/2026-07-15-openclaw-m2-multi-session-subagent-skills.md) 为准）
 - 范围：以 `openclaw-integration`（本仓库）为后端，在 `../agent-frontend`（已有 React SPA）中实现类似 OpenWork / AionUi 的多 chat 交互，覆盖本地文件操作、代码执行、产物上传下载、子代理展示、会话管理、定时任务管理。
 - 结论先行：**不需要自研协议，也不建议引入第三方开源协议作为主通道。OpenClaw Gateway 的原生 WebSocket 协议本身就是一份"已经写好的自研协议"——强类型（TypeBox）、带文档、带浏览器参考实现，且是唯一覆盖全部需求原语（会话/流式/工具事件/审批/cron）的通道。前端工作量的本质是"移植一个 ~600 行的 WS 客户端 + 搭 React 状态层"，而不是协议开发。**
 
@@ -23,8 +23,8 @@
 关键事实（决定可行性的三条）：
 
 1. **多 chat 天然成立**。`chat.send` 的 `sessionKey` 会被规范化后按需建会话：任意非 `agent:` 前缀的 key 会补全为 `agent:<agentId>:<key>`（`src/routing/session-key.ts:46` `toAgentStoreSessionKey`），会话存储"删了会按需重建"（`docs/concepts/session.md`）。前端每开一个新 chat 就铸造一个 key（如 `agent:main:webchat-<uuid>`）即可，与 WhatsApp/Telegram 等渠道会话同存同管。
-2. **工具调用全程可见**。agent 事件按 `runId+seq` 严格有序，`tool` 流带 `phase/name/toolCallId/args`（`src/agents/pi-embedded-subscribe.handlers.tools.ts:338`），事件在发射时自动补 `sessionKey`（`src/infra/agent-events.ts:57`）——单条 WS 连接就能驱动多会话并行渲染。客户端需在握手时声明 `caps: ["tool-events"]`（`src/gateway/protocol/client-info.ts:45`），网关按 run 定向推送，页面刷新中途加入也会补注册同会话的进行中 run（`src/gateway/server-methods/chat.ts:894`）。
-3. **子代理是"带血缘的会话"**。`sessions_spawn` 工具产出独立子会话，返回 `childSessionKey + runId`（`src/agents/subagent-spawn.ts:67`），会话记录携带 `spawnedBy/spawnDepth`（`src/gateway/protocol/schema/sessions.ts`），完成后自动回报父会话。UI 端 `sessions.list({ spawnedBy })` 即可织出子代理树。
+2. **工具事件是按 run 定向推送**。agent 事件带 `runId/seq/sessionKey`，客户端需声明 `caps:["tool-events"]`；Gateway 只向 `toolEventRecipients` 中已登记的连接发送工具流。`chat.history` 不会登记进行中 run，刷新恢复必须重新注册或通过 history 对账，不能假定工具事件天然全局可见。
+3. **子 agent 是带血缘的独立会话，但现有会话列表不足以直接下钻**。`sessions_spawn` 产出 `childSessionKey + runId`，subagent registry 持久化 requester/child/status；child 可能属于另一个 agent。`sessions.list` 虽可按 `spawnedBy` 过滤，但返回行不包含稳定的血缘/深度 DTO，BFF 的父 agentId/namespace 过滤也会排除跨 agent child。M2 需新增窄 `subagents.list`。
 
 ---
 
@@ -51,13 +51,13 @@
 
 ### 2.3 事件面（前端渲染的原料）
 
-| 事件                               | 载荷要点                                                              | UI 用途                                          |
-| ---------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------ |
-| `chat`                             | `runId/sessionKey/seq/state(delta,final,aborted,error)/message/usage` | 消息气泡流式渲染、终态落定                       |
-| `agent`                            | `runId/seq/stream(lifecycle,assistant,tool,error)/sessionKey/data`    | 工具卡片、思考态、模型 fallback 提示、子代理活动 |
-| `exec.approval.requested/resolved` | 命令、来源会话                                                        | 审批弹窗/队列                                    |
-| `cron`                             | job 状态变化                                                          | 定时任务页实时刷新                               |
-| `presence` / `health` / `tick`     | 设备在线、网关健康                                                    | 顶栏状态、心跳                                   |
+| 事件                               | 载荷要点                                                           | UI 用途                                          |
+| ---------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------ |
+| `chat`                             | `runId/sessionKey/seq/state(delta,final,aborted,error)/message`    | 消息气泡流式渲染、终态落定；usage 非稳定展示合同 |
+| `agent`                            | `runId/seq/stream(lifecycle,assistant,tool,error)/sessionKey/data` | 工具卡片、思考态、模型 fallback 提示、子代理活动 |
+| `exec.approval.requested/resolved` | 命令、来源会话                                                     | 审批弹窗/队列                                    |
+| `cron`                             | job 状态变化                                                       | 定时任务页实时刷新                               |
+| `presence` / `health` / `tick`     | 设备在线、网关健康                                                 | 顶栏状态、心跳                                   |
 
 Control UI 的工具流聚合器 `ui/src/ui/app-tool-stream.ts`（按 `toolCallId` 聚合、50 条上限、80ms 节流、120K 字符截断）与 `src/agents/tool-display.json`（每个工具的 emoji/标题/摘要字段映射）可直接移植——工具卡片的"显示语义"官方已经整理好了。
 
@@ -71,7 +71,7 @@ Control UI 的工具流聚合器 `ui/src/ui/app-tool-stream.ts`（按 `toolCallI
 ### 2.5 本地文件与代码执行
 
 - 文件读写、命令执行是 **agent 侧工具**（read/write/edit/exec），工作区 `~/.openclaw/workspace` 是默认 cwd（非硬沙箱；可选 `agents.defaults.sandbox`）。前端"操作本地文件/执行代码"= 通过对话驱动 agent 工具 + 在 UI 上渲染工具事件，而非前端直接碰文件系统——这与 OpenWork/AionUi 的模式一致。
-- 危险命令走审批流：网关广播 `exec.approval.requested`，任一 approvals-scope 客户端 `exec.approval.resolve`。UI 只需一个全局审批队列组件。
+- Gateway 具备 exec 审批协议，但当前 `openclaw-workspace` 部署为 `security="full"`、`ask="off"`。M2 保持直接执行，不接 approvals scope；未来启用 ask 时需另做 pending 恢复和归属隔离设计。
 
 ### 2.6 产物通道现状（唯一的真缺口）
 
@@ -306,19 +306,21 @@ WorkBuddy/CodeBuddy 是迄今**与 OpenClaw 形态最接近的商业参照**，�
 - 切换：切换即换 `sessionKey`，拉 `chat.history`（注意其净化策略：单条 >12K 字符截断、图片 data 置 `omitted`、超大条目占位——**长产物必须走 P5 文件通道，不能依赖 history**）。
 - 每会话独立模型/思考级别：`sessions.patch({ model, thinkingLevel })`；`models.list` 供选择器。
 - 与 TanStack Query 的融合：req/res 方法天然映射 query/mutation；`chat`/`agent`/`cron` 事件进 Zustand store（或 query cache 失效触发器）。agent-frontend 已有这两个库，无新依赖。
+- **[2026-07-17 BFF 修订]** 本节 sessionKey 铸造是直连视角。现行 BFF 架构下前端只铸短 `clientSessionId`（Phase 1 固定 `main`），内部 namespace（`agent:<id>:webchat:<clientInstanceId>:<clientSessionId>`）由 BFF 拼接，浏览器永不见原始 sessionKey；多会话 = 铸新的合法短 id。另：Phase 1 实际落地用纯 `useReducer` 管聊天态（historyBase + liveRuns 两层），未用 Zustand——事件驱动的瞬时态进 store 的建议仅当 M2 出现真正的跨路由共享需求时再评估。
 
 ### 5.2 流式渲染与工具卡片（P2/P3）
 
 - 双流合并：`chat` 事件驱动气泡文本（delta 累积 → final 落定），`agent` 事件驱动过程条目（工具卡片/思考/生命周期），按 `runId` 对齐、`seq` 排序、`sessionKey` 分桶。
 - 直接移植 `app-tool-stream.ts` 的聚合策略与 `tool-display.json` 的展示映射（exec 显示命令、read/write 显示路径、browser 显示 URL……官方已维护 30+ 工具的摘要规则）。
-- Markdown：沿用 agent-frontend 的 shadcn 风格，流式部分建议 `streamdown`（DeerFlow 实测在用）或 react-markdown + 增量缓冲。
-- 中断：`chat.abort({ sessionKey })`；aborted 分支保留部分输出（网关已持久化 partial 并标记 abort 元数据）。
+- Markdown：~~建议 streamdown 或 react-markdown + 增量缓冲~~ **[2026-07-14 已定并落地（Phase 1）]** `streamdown@2.5` + `@streamdown/cjk`（中文流式断词）+ `@streamdown/code`（高亮插件）；策略：>12K 字符折叠并**停止解析**（非 CSS 隐藏）、代码围栏闭合/终态才启用高亮、raw HTML 禁用、链接 scheme 白名单 `http/https/mailto`。M2 迁 assistant-ui 时以自定义 Text part 原样保留（见 §5.8）。
+- 中断：Gateway 原生支持 `chat.abort({ sessionKey })`（session 作用域）与 runId 作用域；aborted 分支保留部分输出（网关已持久化 partial 并标记 abort 元数据）。**[2026-07-14 BFF 修订]** 浏览器侧只允许 runId 作用域：BFF 强制 `runId` 必填并校验归属本 binding、拒绝 session 作用域形式，防止同 session 多 Tab 互相中止（[phase-1 计划](../../plans/2026-07-13-openclaw-phase-1-single-chat.md) S3）。M2 设计勿沿用本行原文的 sessionKey 形式。
 
 ### 5.3 子代理展示（P3 延伸）
 
-- 父会话里，`sessions_spawn` 的工具卡片从 result 中取 `childSessionKey`，渲染"子任务"徽章 → 点击打开子会话面板（复用同一套消息组件，只读模式）。
-- 子代理活动实时性：全局 `agent` 事件流按 `sessionKey` 分桶后，子会话桶天然有数据；列表侧用 `sessions.list({ spawnedBy: parentKey })` + `spawnDepth` 画树。
-- 交互对标 deep-agents-ui 的 SubAgent 下钻面板；OpenClaw 的数据源更强（子代理是真会话，可继续对话，`mode: "session"`）。
+- **[2026-07-15 M2 修订]** 子 agent 展示提前进入 M2，但只做一级、只读活动面板。前端不得依赖 `sessions_spawn` result 中的原始 `childSessionKey`，该 key 可能属于 `researcher` 等其他 agent，且不在父 webui namespace。
+- Gateway 新增 `operator.read` 方法 `subagents.list({ requesterSessionKey })`：从持久 subagent registry 返回当前父会话的窄记录；调用方声明 `tool-events` cap 时，同时为 active child run 注册该连接的工具事件接收者。
+- BFF 把 `subagents.list` 结果变成 connection-local capability map，只下发 opaque child session/run id；child `chat.history` 和 live `chat/agent` 事件只有命中该 map 才放行。
+- 前端在父 `sessions_spawn` 工具卡片出现后轮询发现 child，先拉 history 补早期事件，再接 live event；刷新后重新发现和建权。面板不提供 send/abort/steer/kill。
 
 ### 5.4 产物上传/下载（P5）
 
@@ -329,9 +331,9 @@ WorkBuddy/CodeBuddy 是迄今**与 OpenClaw 形态最接近的商业参照**，�
 
 ### 5.5 本地文件操作与代码执行（P4）
 
-- 操作本身由 agent 工具完成；前端职责是**可视化 + 审批**。
-- 审批组件：监听 `exec.approval.requested` → 全局队列弹窗（命令、cwd、来源会话）→ `exec.approval.resolve(allow/deny)`；token 需带 `operator.approvals` scope。
-- 沙箱提示：workspace 默认非硬沙箱，UI 应在设置页透出 `exec.approvals.get` 的策略现状，避免"网页点一下就在宿主机跑命令"的心智落差。
+- 操作本身由 agent 工具完成；M2 前端只负责过程可视化和结果展示。
+- **[2026-07-15 当前部署]** `~/github/openclaw-workspace/openclaw.json` 的 exec 配置为 `security="full"`、`ask="off"`。M2 不申请 `operator.approvals`、不放行 `exec.approval.*`、不实现审批 UI。
+- 如果部署策略改为 ask 模式，审批必须作为独立里程碑重新设计，不能只加一个弹窗；需要同时解决 pending 恢复、namespace 归属和多副本一致性。
 
 ### 5.6 定时任务管理（P6）
 
@@ -345,6 +347,83 @@ WorkBuddy/CodeBuddy 是迄今**与 OpenClaw 形态最接近的商业参照**，�
 - 推荐拓扑：网关与前端同机/同内网，前端直连 WS（`ws://host:18789`）；生产可用 `gateway.auth.mode: "trusted-proxy"` 由反代注入身份（`docs/web/webchat.md`）。
 - 首次连接：token（或 password）+ 浏览器生成的 ed25519 设备身份 → 换 `deviceToken` 存 localStorage；新设备默认需配对审批（本机回环可自动批准）。
 - Token 分级发放：聊天页 read+write；管理页 admin；审批 approvals——同一前端可按路由懒升级（要求重新 connect）。
+- **[2026-07-14 BFF 修订]** 本节为直连拓扑存档。现行架构浏览器不持任何 Gateway 凭据/设备身份/deviceToken，认证 = 同源 Cookie → agent-server BFF（[ADR 0002-webui-bff-bridge](../../adr/0002-webui-bff-bridge-over-direct-gateway-connection.md)）；scope 分级由 BFF allowlist 承担，前端无 scope 概念。
+
+### 5.8 Chat UI 组件层选型：assistant-ui ExternalStoreRuntime（2026-07-14 增补）
+
+> 背景：Phase 1 单会话聊天页已用自研组件交付并运行良好（[phase-1 计划](../../plans/2026-07-13-openclaw-phase-1-single-chat.md)）。本节裁决"M2 起 Chat UI 用什么组件基座"，结论供 M2 方案设计直接引用；里程碑侧实施要点见 [webui_integration_milestones.md](./webui_integration_milestones.md) M2 节。
+
+**现状盘点（自研已交付）**：
+
+- 状态层：纯 `useReducer` 两层状态（`historyBase` + `liveRuns[runId]`，historyFence 防乐观消息重复）+ `useOpenClawChat`（连接生命周期、重连退避、post-ack 看门狗 + 幂等 `chat.send` 探测、delta 250ms 合并、history 对账、Page Visibility 收敛）——`agent-frontend/src/features/openclaw-bff/{state,hooks}`。
+- 渲染层：`ChatMessageList`（自动滚动/跳到最新/欢迎态）、`ChatMessageItem`（Streamdown）、`ToolCallGroup`（连续工具调用分组折叠卡，按 `runId+toolCallId` 聚合）、`ChatComposer`（卡片式、单飞行）、`ChatConnectionNotice`、`IsolationNotice`。
+- 栈事实（package.json 核实）：React 19.2 + Vite 7 + Tailwind 4.1 + Radix（`@radix-ui/react-popover`、`@radix-ui/react-dropdown-menu`）+ Lucide + `streamdown@2.5`/`@streamdown/cjk`/`@streamdown/code` + cva/clsx/tailwind-merge——与 assistant-ui 的 React/shadcn 生态同源。`@assistant-ui/react` **尚未安装**。
+
+**结论**：M2 开工先验证把"会话表面"（Thread / Message / Composer、自动滚动、a11y）迁到 `@assistant-ui/react` 的 **ExternalStoreRuntime**；现有 reducer/hook 保持**唯一状态真相**。chat 协议不改，M2 另为子 agent 活动新增窄 `subagents.list` 协议。**Phase 1 页面不 retrofit**。adapter spike 不干净即回退继续自研。
+
+**为什么是 ExternalStoreRuntime**：它是 assistant-ui 为"已有状态仓库、自定义消息格式、自定义后端"设计的接入点——通过 adapter 投影外部状态，不要求换 chat 协议、不接管状态所有权；同时提供 Thread/Message/Composer/Action/Tool 无头组件与视口贴底行为。收益兑现点是 M2 的多 thread、流式贴底滚动和消息级无障碍。
+
+**推荐链路**：
+
+```text
+OpenClaw WebSocket frames
+  → OpenClawBffClient（utils/openclawBff）
+  → useOpenClawChat + chat-reducer        ← 唯一状态真相（不变）
+  → OpenClawAssistantAdapter              ← 新增：historyBase/liveRuns → ThreadMessageLike
+  → assistant-ui ExternalStoreRuntime
+  → Thread / Message / Composer primitives
+  → 自定义 parts：Streamdown Text part + ToolCallGroup(tool-call part) + OTR Tailwind token
+```
+
+**状态映射（adapter 合同）**：
+
+| assistant-ui 合同                                | 映射到现有实现                                          | 备注                                                                                   |
+| ------------------------------------------------ | ------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `onNew`                                          | `sendMessage`                                           | 单飞行约束不变                                                                         |
+| `onCancel`                                       | `abortActiveRun`                                        | 仅 own run；BFF 强制 runId 归属                                                        |
+| `isRunning`                                      | own run 处于 `sending/streaming`                        | **thread 级布尔，foreign run 不计入**；foreign 的"运行中"表现需自定义 message 组件区分 |
+| composer disabled                                | 连接非 `ready` ∨ 存在 active own run                    | 禁用原因文案沿用现有 placeholder 逻辑                                                  |
+| `messages`                                       | `historyBase` + `liveRuns` 投影为 `ThreadMessageLike[]` | 纯函数投影；工具调用作为 tool-call parts 按 `runId` 归属嵌入 assistant 消息            |
+| tool-call part 聚合键                            | `runId + toolCallId`                                    | 与 reducer 现有聚合键一致，跨 run 复用 toolCallId 不得合并                             |
+| seq gap / foreign run / historyFence / reconcile | 继续由 reducer 管理                                     | assistant-ui 不感知这些概念                                                            |
+| `onEdit` / `onReload` / `setMessages`            | **不提供**                                              | 后端无编辑/重生成/分支能力，前端不制造虚假 affordance                                  |
+
+**三处结构性阻抗（M2 方案设计必须显式处理，这是重构不是改名）**：
+
+1. **工具模型重嵌套（最硬）**：现状是"工具调用 = 独立扁平 item，渲染层按连续项分组"；assistant-ui 要求"工具调用 = assistant 消息内部的 tool-call part"。需把 `user → tools → assistant text` 的分离序列按 `runId` 重新嵌套为单条 assistant 消息的 parts 序列；history mapper（history 无稳定 messageId、无 runId，只有合成 `history-<n>`）的投影逻辑要重写。
+2. **foreign run 与 thread 级 `isRunning` 失配**：assistant-ui 假设"单一活跃 run 绑定 composer"。foreign run 内容可作为消息渲染，但挂在末条消息上的运行态 affordance 认 thread 级 isRunning，区分 own/foreign 需自定义 message 组件。
+3. **合成条目**：oversized 占位（system notice）、"本轮无文本回复"占位、aborted 保留 partial——需映射为 system 消息或自定义 part。连接态 UI（`ChatConnectionNotice`/`IsolationNotice`）在 Thread 之外，不受影响、不迁。
+
+**保留项（迁移后不变的东西）**：
+
+- **Streamdown 全套渲染策略以自定义 Text part 保留**（不用 assistant-ui 内置 markdown——否则其 react-markdown 机制成为死重量，而 12K 折叠停止解析、围栏闭合才高亮、raw HTML 禁用、scheme 白名单这些策略会丢失）。
+- **`ToolCallGroup` 与 tool-display 聚合是领域组件**：`app-tool-stream.ts` 聚合策略（50 条上限、80ms 节流、120K 截断）与 `tool-display.json` 展示映射的移植工作量与 UI 基座选型无关，tool-call part 只是挂载点。
+- 已知缺陷顺带修复：现 `ChatMessageList` 自动滚动只依赖 `items.length`，单条消息流式增长时不贴底；assistant-ui 视口原语天然覆盖（若不迁，也应单独修，~10 行）。
+
+**方案对比（判断记录）**：
+
+| 方案                              | 判断       | 原因                                                                                                         |
+| --------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------ |
+| assistant-ui ExternalStoreRuntime | **采用**   | 专为外部状态/自定义协议设计；Vite/React 兼容；覆盖滚动、composer、a11y、多 thread、附件等通用行为            |
+| 继续完全自研                      | 回退路径   | 当前功能完整、迁移风险最低；长期持续自担 ChatUI 通用行为维护成本；spike 失败时的无损退路                     |
+| Vercel AI Elements                | 选择性借用 | 视觉栈同源（radix+shadcn，DeerFlow 实测在用），但官方路径绑 Next.js + AI SDK + UIMessage，不解决外部状态接入 |
+| Ant Design X                      | 不采用     | 引入 antd/XProvider/CSS-in-JS 第二套主题系统，与 Tailwind-first + OTR token 冲突                             |
+| assistant-ui AI SDK Runtime       | 不采用     | 把前端绑到 Vercel AI SDK 协议，与 OpenClaw BFF 通道重叠                                                      |
+
+**实施边界**：
+
+- **手动集成 `@assistant-ui/react`，不跑初始化 CLI**：项目已有 `@/utils/cn`、OTR token、自有 UI primitives；CLI 模板会引入 `@/lib/utils`、完整 shadcn 主题与多余依赖。
+- 新依赖原则上只加 `@assistant-ui/react`；attachment 等子包按 M2 实际需要逐个评估。
+- 不暴露 `onEdit`/`onReload`/`setMessages`（同上表）。
+
+**前置 spike（M2 开工第一件事，丢弃式、挂 flag）**：只写 `OpenClawAssistantAdapter`，验收四个硬案例——
+
+1. foreign run 流式 + 工具卡片正确渲染，且不占用本 Tab composer；
+2. 工具调用按 `runId` 正确回挂到所属 assistant 消息，跨 run 复用 toolCallId 不串；
+3. oversized 占位 / "本轮无文本回复" / aborted 保留 partial 三类合成条目正确映射。
+4. child 只读面板中的 streaming、tool 和 skill 摘要不占用父 thread 的 composer/isRunning。
+
+adapter 干净 → 其余 primitive 迁移低风险；adapter 拧巴 → 回退"继续自研"，Phase 1 UI 完整可用，无沉没成本。
 
 ---
 
@@ -361,15 +440,17 @@ WorkBuddy/CodeBuddy 是迄今**与 OpenClaw 形态最接近的商业参照**，�
 
 ### 6.2 分阶段路线（1 名熟悉 React 的工程师）
 
-| 阶段 | 内容                                                                                                                                            | 依赖后端改动                     | 预估     |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- | -------- |
-| P0   | `openclaw-gateway-client` TS 包（移植 gateway.ts/device-identity.ts/类型）；`/agent/chats` 路由 + 单会话聊天（send/history/abort + delta 渲染） | 无                               | 1~1.5 周 |
-| P1   | 多会话列表/切换/改名/删除；工具事件卡片（caps=tool-events + tool-display 映射）；审批弹窗；图片附件；usage 显示                                 | 无                               | 1~2 周   |
-| P2   | cron 管理页（CRUD + 运行日志 + 手动触发 + 实时事件）                                                                                            | 无                               | 1 周     |
-| P3   | Files 产物面板 + 上传/下载；"本会话产物"视图                                                                                                    | `workspace-files` 插件（2~3 天） | 1~1.5 周 |
-| P4   | 子代理树与下钻面板；多 agent 切换；HTML 产物 iframe 预览                                                                                        | 无                               | 1~1.5 周 |
+> **[2026-07-15 状态]** 本表为直连时代估算，仅存档。排期与交付状态以 [webui_integration_milestones.md](./webui_integration_milestones.md) 为准：M0、M1 已交付；M2 已重排为私聊/private group 多会话、子 agent 只读活动、工具摘要与技能名称回显，详见 [M2 执行计划](../../plans/2026-07-15-openclaw-m2-multi-session-subagent-skills.md)。
 
-P0+P1 结束即达到"能用的多 chat agent 工作台"；P2 满足定时任务诉求；P3/P4 补齐产物与子代理体验。
+| 阶段 | 内容                                                                                                                                            | 依赖后端改动                                        | 预估         |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ------------ |
+| P0   | `openclaw-gateway-client` TS 包（移植 gateway.ts/device-identity.ts/类型）；`/agent/chats` 路由 + 单会话聊天（send/history/abort + delta 渲染） | 无                                                  | 1~1.5 周     |
+| P1   | 私聊/private group 多会话；工具事件卡片与 skill 名称；子 agent 只读活动面板；assistant-ui adapter spike                                         | Gateway `subagents.list` + BFF child capability map | 10.5~13.5 天 |
+| P2   | cron 管理页（CRUD + 运行日志 + 手动触发 + 实时事件）                                                                                            | 无                                                  | 1 周         |
+| P3   | Files 产物面板 + 上传/下载；"本会话产物"视图                                                                                                    | `workspace-files` 插件（2~3 天）                    | 1~1.5 周     |
+| P4   | 多 agent 切换；每会话模型/思考等级；HTML 产物 iframe 预览                                                                                       | BFF target→agent 视图                               | 1~1.5 周     |
+
+P0+P1 结束即达到"能用的多 chat agent 工作台"；P2 满足定时任务诉求；P3/P4 补齐产物与多 agent 体验。
 
 ### 6.3 风险与开放问题
 
@@ -377,29 +458,29 @@ P0+P1 结束即达到"能用的多 chat agent 工作台"；P2 满足定时任务
 2. **chat.history 截断**（单条 12K 字符、图片 data 剥离）：长代码/报告必须引导用户走 Files 面板看全文；SDK 层对 `__openclaw.truncated` 做显式"查看完整内容"入口。
 3. **非图片附件上传缺口**：P3 插件补齐前，只有图片体验完整。
 4. **上游协议演进**：pin PROTOCOL_VERSION + `hello-ok.features` 探测 + schema 快照测试；本仓库是受控 fork，风险可控。
-5. **浏览器设备配对 UX**：非回环访问首连需网关侧批准（CLI 或已配对客户端），需要在 onboarding 文档里写清楚。
+5. ~~**浏览器设备配对 UX**：非回环访问首连需网关侧批准（CLI 或已配对客户端），需要在 onboarding 文档里写清楚。~~ **[已随 BFF 架构失效]** 设备身份服务端化，浏览器不再配对（[ADR 0002-webui-bff-bridge](../../adr/0002-webui-bff-bridge-over-direct-gateway-connection.md)）。
 6. ~~外部项目细节未联网复核~~：已于 2026-07-06 联网核实（OpenWork=Tauri+opencode SDK/SSE；AionUi=Electron+ACP，含 cron 定时任务与远程 WebUI；deep-agents-ui=LangGraph API，已存档）。核实结果与原结论一致，AionUi 的 ACP 直连路径成立。
 
 ---
 
 ## 7. 附录：关键索引
 
-| 主题                                         | 位置                                                                                                                                                        |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 协议文档 / 帧与握手                          | `docs/gateway/protocol.md`；`src/gateway/protocol/schema/frames.ts`                                                                                         |
-| 方法与事件全集                               | `src/gateway/server-methods-list.ts`                                                                                                                        |
-| Scope 映射                                   | `src/gateway/method-scopes.ts`                                                                                                                              |
-| chat 方法实现（附件/幂等/截断/工具事件注册） | `src/gateway/server-methods/chat.ts`                                                                                                                        |
-| agent 事件总线（sessionKey 注入）            | `src/infra/agent-events.ts`                                                                                                                                 |
-| 工具事件发射                                 | `src/agents/pi-embedded-subscribe.handlers.tools.ts`                                                                                                        |
-| 会话 key 规则                                | `src/routing/session-key.ts`；`docs/concepts/session.md`                                                                                                    |
-| 子代理                                       | `src/agents/tools/sessions-spawn-tool.ts`；`src/agents/subagent-spawn.ts`；`docs/concepts/multi-agent.md`                                                   |
-| cron                                         | `src/gateway/protocol/schema/cron.ts`；`docs/automation/cron-jobs.md`                                                                                       |
-| 媒体/文件安全                                | `src/media/server.ts`；`src/infra/fs-safe.ts`；`docs/concepts/agent-workspace.md`                                                                           |
-| 浏览器 WS 客户端蓝本                         | `ui/src/ui/gateway.ts`、`ui/src/ui/device-identity.ts`、`ui/src/ui/app-tool-stream.ts`、`src/agents/tool-display.json`                                      |
-| ACP 桥                                       | `docs/cli/acp.md`；`src/acp/server.ts`                                                                                                                      |
-| OpenAI 兼容出口                              | `src/gateway/openai-http.ts`；`src/gateway/openresponses-http.ts`                                                                                           |
-| 插件扩展缝（新增网关方法/HTTP 路由）         | `src/plugins/types.ts`；`.codex/docs/plugin_system.md`                                                                                                      |
-| 参考项目                                     | github.com/different-ai/openwork；github.com/iOfficeAI/AionUi；github.com/langchain-ai/deep-agents-ui（已存档）；`/Users/jiaoguo/github/deer-flow/frontend` |
-| Codex（app/cli/app-server）                  | github.com/openai/codex；developers.openai.com/codex/app-server；github.com/agentclientprotocol/codex-acp                                                   |
-| WorkBuddy / CodeBuddy（腾讯）                | 本机 `/Applications/WorkBuddy.app`；`cli/package.json`=`@tencent-ai/codebuddy-code`；cnb.cool/codebuddy/codebuddy-code                                      |
+| 主题                                         | 位置                                                                                                                                           |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 协议文档 / 帧与握手                          | `docs/gateway/protocol.md`；`src/gateway/protocol/schema/frames.ts`                                                                            |
+| 方法与事件全集                               | `src/gateway/server-methods-list.ts`                                                                                                           |
+| Scope 映射                                   | `src/gateway/method-scopes.ts`                                                                                                                 |
+| chat 方法实现（附件/幂等/截断/工具事件注册） | `src/gateway/server-methods/chat.ts`                                                                                                           |
+| agent 事件总线（sessionKey 注入）            | `src/infra/agent-events.ts`                                                                                                                    |
+| 工具事件发射                                 | `src/agents/pi-embedded-subscribe.handlers.tools.ts`                                                                                           |
+| 会话 key 规则                                | `src/routing/session-key.ts`；`docs/concepts/session.md`                                                                                       |
+| 子代理                                       | `src/agents/tools/sessions-spawn-tool.ts`；`src/agents/subagent-spawn.ts`；`docs/concepts/multi-agent.md`                                      |
+| cron                                         | `src/gateway/protocol/schema/cron.ts`；`docs/automation/cron-jobs.md`                                                                          |
+| 媒体/文件安全                                | `src/media/server.ts`；`src/infra/fs-safe.ts`；`docs/concepts/agent-workspace.md`                                                              |
+| 浏览器 WS 客户端蓝本                         | `ui/src/ui/gateway.ts`、`ui/src/ui/device-identity.ts`、`ui/src/ui/app-tool-stream.ts`、`src/agents/tool-display.json`                         |
+| ACP 桥                                       | `docs/cli/acp.md`；`src/acp/server.ts`                                                                                                         |
+| OpenAI 兼容出口                              | `src/gateway/openai-http.ts`；`src/gateway/openresponses-http.ts`                                                                              |
+| 插件扩展缝（新增网关方法/HTTP 路由）         | `src/plugins/types.ts`；`.codex/docs/plugin_system.md`                                                                                         |
+| 参考项目                                     | github.com/different-ai/openwork；github.com/iOfficeAI/AionUi；github.com/langchain-ai/deep-agents-ui（已存档）；`~/github/deer-flow/frontend` |
+| Codex（app/cli/app-server）                  | github.com/openai/codex；developers.openai.com/codex/app-server；github.com/agentclientprotocol/codex-acp                                      |
+| WorkBuddy / CodeBuddy（腾讯）                | 本机 `/Applications/WorkBuddy.app`；`cli/package.json`=`@tencent-ai/codebuddy-code`；cnb.cool/codebuddy/codebuddy-code                         |

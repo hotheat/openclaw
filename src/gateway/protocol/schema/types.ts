@@ -92,6 +92,7 @@ import type {
   TickEventSchema,
 } from "./frames.js";
 import type {
+  ChatAttachmentMaterializeParamsSchema,
   ChatAbortParamsSchema,
   ChatEventSchema,
   ChatInjectParamsSchema,
@@ -123,6 +124,12 @@ import type {
   SessionsUsageParamsSchema,
 } from "./sessions.js";
 import type { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
+import type {
+  SubagentRunSchema,
+  SubagentRunStatusSchema,
+  SubagentsListParamsSchema,
+  SubagentsListResultSchema,
+} from "./subagents.js";
 import type {
   WizardCancelParamsSchema,
   WizardNextParamsSchema,
@@ -171,6 +178,10 @@ export type SessionsResetParams = Static<typeof SessionsResetParamsSchema>;
 export type SessionsDeleteParams = Static<typeof SessionsDeleteParamsSchema>;
 export type SessionsCompactParams = Static<typeof SessionsCompactParamsSchema>;
 export type SessionsUsageParams = Static<typeof SessionsUsageParamsSchema>;
+export type SubagentRunStatus = Static<typeof SubagentRunStatusSchema>;
+export type SubagentRun = Static<typeof SubagentRunSchema>;
+export type SubagentsListParams = Static<typeof SubagentsListParamsSchema>;
+export type SubagentsListResult = Static<typeof SubagentsListResultSchema>;
 export type ConfigGetParams = Static<typeof ConfigGetParamsSchema>;
 export type ConfigSetParams = Static<typeof ConfigSetParamsSchema>;
 export type ConfigApplyParams = Static<typeof ConfigApplyParamsSchema>;
@@ -241,6 +252,7 @@ export type DevicePairRejectParams = Static<typeof DevicePairRejectParamsSchema>
 export type DevicePairRemoveParams = Static<typeof DevicePairRemoveParamsSchema>;
 export type DeviceTokenRotateParams = Static<typeof DeviceTokenRotateParamsSchema>;
 export type DeviceTokenRevokeParams = Static<typeof DeviceTokenRevokeParamsSchema>;
+export type ChatAttachmentMaterializeParams = Static<typeof ChatAttachmentMaterializeParamsSchema>;
 export type ChatAbortParams = Static<typeof ChatAbortParamsSchema>;
 export type ChatInjectParams = Static<typeof ChatInjectParamsSchema>;
 export type ChatEvent = Static<typeof ChatEventSchema>;

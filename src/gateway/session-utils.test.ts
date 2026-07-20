@@ -504,6 +504,38 @@ describe("listSessionsFromStore search", () => {
     }
   });
 
+  test("pages sessions by offset after filtering and sorting", () => {
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store: makeStore(),
+      opts: { limit: 1, offset: 1 },
+    });
+
+    expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:personal-chat"]);
+    expect(result.count).toBe(1);
+    expect(result.totalCount).toBe(3);
+    expect(result.limitApplied).toBe(1);
+    expect(result.offset).toBe(1);
+    expect(result.nextOffset).toBe(2);
+    expect(result.hasMore).toBe(true);
+  });
+
+  test("marks the final offset page without another cursor", () => {
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store: makeStore(),
+      opts: { limit: 2, offset: 2 },
+    });
+
+    expect(result.sessions.map((session) => session.key)).toEqual([
+      "agent:main:discord:group:dev-team",
+    ]);
+    expect(result.nextOffset).toBeNull();
+    expect(result.hasMore).toBe(false);
+  });
+
   test("hides cron run alias session keys from sessions list", () => {
     const now = Date.now();
     const store: Record<string, SessionEntry> = {

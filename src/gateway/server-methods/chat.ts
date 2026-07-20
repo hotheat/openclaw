@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
-import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
@@ -25,6 +25,7 @@ import {
   isChatStopCommandText,
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
+import { materializeChatAttachment } from "../chat-attachment-materialize.js";
 import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
@@ -34,6 +35,7 @@ import {
   formatValidationErrors,
   validateChatAbortParams,
   validateChatHistoryParams,
+  validateChatAttachmentMaterializeParams,
   validateChatInjectParams,
   validateChatSendParams,
 } from "../protocol/index.js";
@@ -54,6 +56,7 @@ type TranscriptAppendResult = {
   ok: boolean;
   messageId?: string;
   message?: Record<string, unknown>;
+  deduplicated?: boolean;
   error?: string;
 };
 
@@ -65,6 +68,21 @@ type AbortedPartialSnapshot = {
   text: string;
   abortOrigin: AbortOrigin;
 };
+
+function resolveWebchatClientSessionId(sessionKey: string): string | undefined {
+  const parts = sessionKey.split(":");
+  if (
+    parts.length === 5 &&
+    parts[0] === "agent" &&
+    parts[1] &&
+    parts[2] === "webchat" &&
+    parts[3] &&
+    /^[a-z0-9][a-z0-9_-]{0,47}$/i.test(parts[4] ?? "")
+  ) {
+    return parts[4];
+  }
+  return undefined;
+}
 
 const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
 const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
@@ -375,7 +393,7 @@ function appendAssistantTranscriptMessage(params: {
   }
 
   if (params.idempotencyKey && transcriptHasIdempotencyKey(transcriptPath, params.idempotencyKey)) {
-    return { ok: true };
+    return { ok: true, deduplicated: true };
   }
 
   return appendInjectedAssistantMessageToTranscript({
@@ -667,6 +685,44 @@ export const chatHandlers: GatewayRequestHandlers = {
       runIds: res.aborted ? [runId] : [],
     });
   },
+  "chat.attachment.materialize": async ({ params, respond }) => {
+    if (!validateChatAttachmentMaterializeParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid chat.attachment.materialize params: ${formatValidationErrors(
+            validateChatAttachmentMaterializeParams.errors,
+          )}`,
+        ),
+      );
+      return;
+    }
+    const input = params as {
+      sessionKey: string;
+      artifactId: string;
+      fileName: string;
+      contentType: string;
+      sizeBytes: number;
+      sha256: string;
+      downloadUrl: string;
+    };
+    try {
+      const { cfg } = loadSessionEntry(input.sessionKey);
+      const attachment = await materializeChatAttachment({ cfg, input });
+      respond(true, { attachment });
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          error instanceof Error ? error.message : "attachment materialization failed",
+        ),
+      );
+    }
+  },
   "chat.send": async ({ params, respond, context, client }) => {
     if (!validateChatSendParams(params)) {
       respond(
@@ -689,6 +745,9 @@ export const chatHandlers: GatewayRequestHandlers = {
         mimeType?: string;
         fileName?: string;
         content?: unknown;
+        workspacePath?: string;
+        sizeBytes?: number;
+        sha256?: string;
       }>;
       timeoutMs?: number;
       idempotencyKey: string;
@@ -704,6 +763,10 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     const inboundMessage = sanitizedMessageResult.message;
     const stopCommand = isChatStopCommandText(inboundMessage);
+    const rawSessionKey = p.sessionKey;
+    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+    const workspaceDir = resolveAgentWorkspaceDir(cfg, sessionAgentId);
     const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(p.attachments);
     const rawMessage = inboundMessage.trim();
     if (!rawMessage && normalizedAttachments.length === 0) {
@@ -716,23 +779,27 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     let parsedMessage = inboundMessage;
     let parsedImages: ChatImageContent[] = [];
+    let parsedMediaPaths: string[] = [];
+    let parsedMediaTypes: string[] = [];
     if (normalizedAttachments.length > 0) {
       try {
         const parsed = await parseMessageWithAttachments(inboundMessage, normalizedAttachments, {
           maxBytes: 5_000_000,
           log: context.logGateway,
+          workspaceDir,
+          webchatClientSessionId: resolveWebchatClientSessionId(sessionKey),
         });
         parsedMessage = parsed.message;
         parsedImages = parsed.images;
+        parsedMediaPaths = parsed.mediaPaths;
+        parsedMediaTypes = parsed.mediaTypes;
       } catch (err) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, String(err)));
         return;
       }
     }
-    const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
     const sessionDelivery = deliveryContextFromSession(entry);
-    const timeoutAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+    const timeoutAgentId = sessionAgentId;
     const { provider: timeoutProvider } = resolveSessionModelRef(cfg, entry, timeoutAgentId);
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
@@ -831,6 +898,14 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
+        ...(parsedMediaPaths.length > 0
+          ? {
+              MediaPath: parsedMediaPaths[0],
+              MediaType: parsedMediaTypes[0],
+              MediaPaths: parsedMediaPaths,
+              MediaTypes: parsedMediaTypes,
+            }
+          : {}),
       };
 
       const agentId = resolveSessionAgentId({
@@ -1022,6 +1097,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       message: string;
       label?: string;
+      idempotencyKey?: string;
     };
 
     // Load session to find transcript file
@@ -1041,7 +1117,12 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionFile: entry?.sessionFile,
       agentId: resolveSessionAgentId({ sessionKey: rawSessionKey, config: cfg }),
       createIfMissing: false,
+      idempotencyKey: p.idempotencyKey,
     });
+    if (appended.ok && appended.deduplicated) {
+      respond(true, { ok: true, deduplicated: true });
+      return;
+    }
     if (!appended.ok || !appended.messageId || !appended.message) {
       respond(
         false,

@@ -213,6 +213,118 @@ describe("message tool channel context", () => {
     const call = mocks.runMessageAction.mock.calls[0]?.[0];
     expect(call?.params?.channel).toBeUndefined();
   });
+
+  it("rejects webchat as a deliverable message channel", async () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        channel: "webchat",
+        target: "user:ou_123",
+        message: "hi",
+      }),
+    ).rejects.toThrow(/webchat is not deliverable/);
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("rejects gateway-client as a WebChat message target", async () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        channel: "feishu",
+        target: "gateway-client",
+        message: "hi",
+      }),
+    ).rejects.toThrow(/Gateway client identity/);
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("rejects WebChat file delivery through message without an explicit Feishu target", async () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        filePath: "report.pdf",
+        message: "",
+      }),
+    ).rejects.toThrow(/must use webui_artifact_publish/);
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("rejects WebChat file delivery through a MEDIA directive", async () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        channel: "discord",
+        target: "channel:123",
+        message: "Report\nMEDIA: ./report.pdf",
+      }),
+    ).rejects.toThrow(/must use webui_artifact_publish/);
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit Feishu file delivery available from a WebChat session", async () => {
+    mockSendResult({ channel: "feishu", to: "feishu:ou_123" });
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await tool.execute("1", {
+      action: "send",
+      channel: "feishu",
+      target: "user:ou_123",
+      filePath: "report.pdf",
+      message: "",
+    });
+
+    const call = mocks.runMessageAction.mock.calls[0]?.[0];
+    expect(call?.params?.channel).toBe("feishu");
+    expect(call?.params?.target).toBe("user:ou_123");
+    expect(call?.params?.filePath).toBe("report.pdf");
+  });
+
+  it("accepts an explicit Feishu chat target containing underscores", async () => {
+    mockSendResult({ channel: "feishu", to: "feishu:oc_group_123" });
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await tool.execute("1", {
+      action: "send",
+      channel: "feishu",
+      target: "chat:oc_group_123",
+      filePath: "report.pdf",
+      message: "",
+    });
+
+    expect(mocks.runMessageAction.mock.calls[0]?.[0].params?.target).toBe("chat:oc_group_123");
+  });
 });
 
 describe("message tool schema scoping", () => {
@@ -364,6 +476,16 @@ describe("message tool description", () => {
     expect(tool.description).not.toContain("leaveGroup");
 
     setActivePluginRegistry(createTestRegistry([]));
+  });
+
+  it("explains the WebChat artifact and external channel boundary", () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "webchat",
+    });
+
+    expect(tool.description).toContain("webui_artifact_publish");
+    expect(tool.description).toContain("explicit deliverable external channel");
   });
 });
 

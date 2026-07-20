@@ -189,6 +189,7 @@ vi.mock("../context-window-guard.js", () => ({
     tokens: 200000,
     source: "model",
   })),
+  shouldRequireExplicitContextWindow: vi.fn(() => false),
 }));
 
 vi.mock("../../process/command-queue.js", () => ({

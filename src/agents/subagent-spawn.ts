@@ -268,9 +268,13 @@ export async function spawnSubagentDirect(
   });
 
   const callerDepth = getSubagentDepthFromSessionStore(requesterInternalKey, { cfg });
+  const requesterIsWebChatSession =
+    requesterInternalKey.includes(":webchat:") ||
+    requesterOrigin?.channel?.trim().toLowerCase() === "webchat";
   if (
     completionDelivery === "direct" &&
     callerDepth < 1 &&
+    !requesterIsWebChatSession &&
     (!requesterOrigin?.channel ||
       !isDeliverableMessageChannel(requesterOrigin.channel) ||
       !requesterOrigin.to)

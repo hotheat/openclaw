@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
+import { INBOUND_MEDIA_REPLY_HINT } from "../auto-reply/media-note.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
 import {
   archiveSessionTranscripts,
@@ -115,6 +116,27 @@ describe("readFirstUserMessageFromTranscript", () => {
 
     const result = readFirstUserMessageFromTranscript(sessionId, storePath);
     expect(result).toBe("First user question");
+  });
+
+  test("removes an injected media prompt from session title and user preview text", () => {
+    const sessionId = "test-session-media-title";
+    const injected = `[media attached: /home/xiaolu/.openclaw/workspace-main/uploads/webchat/chat-1/report.md (text/markdown) | /home/xiaolu/.openclaw/workspace-main/uploads/webchat/chat-1/report.md]\n${INBOUND_MEDIA_REPLY_HINT}\n[Fri 2026-07-17 09:44 GMT+8] 整理这些文字，使其更通顺`;
+    const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
+    fs.writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({ type: "session", version: 1, id: sessionId }),
+        JSON.stringify({ message: { role: "user", content: injected } }),
+      ].join("\n"),
+      "utf-8",
+    );
+
+    expect(readFirstUserMessageFromTranscript(sessionId, storePath)).toBe(
+      "整理这些文字，使其更通顺",
+    );
+    expect(readLastMessagePreviewFromTranscript(sessionId, storePath)).toBe(
+      "整理这些文字，使其更通顺",
+    );
   });
 
   test("skips inter-session user messages by default", () => {

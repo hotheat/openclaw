@@ -54,6 +54,8 @@ import {
   ChannelsStatusResultSchema,
   type ChatAbortParams,
   ChatAbortParamsSchema,
+  type ChatAttachmentMaterializeParams,
+  ChatAttachmentMaterializeParamsSchema,
   type ChatEvent,
   ChatEventSchema,
   ChatHistoryParamsSchema,
@@ -184,6 +186,14 @@ import {
   SessionsResolveParamsSchema,
   type SessionsUsageParams,
   SessionsUsageParamsSchema,
+  type SubagentRun,
+  SubagentRunSchema,
+  type SubagentRunStatus,
+  SubagentRunStatusSchema,
+  type SubagentsListParams,
+  SubagentsListParamsSchema,
+  type SubagentsListResult,
+  SubagentsListResultSchema,
   type ShutdownEvent,
   ShutdownEventSchema,
   type SkillsBinsParams,
@@ -300,6 +310,10 @@ export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
 );
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
+export const validateSubagentsListParams =
+  ajv.compile<SubagentsListParams>(SubagentsListParamsSchema);
+export const validateSubagentsListResult =
+  ajv.compile<SubagentsListResult>(SubagentsListResultSchema);
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
 export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
 export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);
@@ -368,6 +382,9 @@ export const validateExecApprovalsNodeSetParams = ajv.compile<ExecApprovalsNodeS
 );
 export const validateLogsTailParams = ajv.compile<LogsTailParams>(LogsTailParamsSchema);
 export const validateChatHistoryParams = ajv.compile(ChatHistoryParamsSchema);
+export const validateChatAttachmentMaterializeParams = ajv.compile<ChatAttachmentMaterializeParams>(
+  ChatAttachmentMaterializeParamsSchema,
+);
 export const validateChatSendParams = ajv.compile(ChatSendParamsSchema);
 export const validateChatAbortParams = ajv.compile<ChatAbortParams>(ChatAbortParamsSchema);
 export const validateChatInjectParams = ajv.compile<ChatInjectParams>(ChatInjectParamsSchema);
@@ -448,6 +465,10 @@ export {
   SessionsDeleteParamsSchema,
   SessionsCompactParamsSchema,
   SessionsUsageParamsSchema,
+  SubagentRunStatusSchema,
+  SubagentRunSchema,
+  SubagentsListParamsSchema,
+  SubagentsListResultSchema,
   ConfigGetParamsSchema,
   ConfigSetParamsSchema,
   ConfigApplyParamsSchema,
@@ -500,6 +521,7 @@ export {
   LogsTailParamsSchema,
   LogsTailResultSchema,
   ChatHistoryParamsSchema,
+  ChatAttachmentMaterializeParamsSchema,
   ChatSendParamsSchema,
   ChatInjectParamsSchema,
   UpdateRunParamsSchema,
@@ -594,6 +616,10 @@ export type {
   SessionsDeleteParams,
   SessionsCompactParams,
   SessionsUsageParams,
+  SubagentRunStatus,
+  SubagentRun,
+  SubagentsListParams,
+  SubagentsListResult,
   CronJob,
   CronListParams,
   CronStatusParams,

@@ -1,7 +1,42 @@
+import { INBOUND_MEDIA_REPLY_HINT } from "../auto-reply/media-note.js";
 import { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 import { stripEnvelope, stripMessageIdHints } from "../shared/chat-envelope.js";
 
 export { stripEnvelope };
+
+const MEDIA_ATTACHED_LINE_RE = /^\[media attached(?::| \d+\/\d+:) .*\]$/;
+
+function stripLeadingInboundMediaPrompt(text: string): string {
+  const lines = text.split(/\r?\n/);
+  if (!MEDIA_ATTACHED_LINE_RE.test(lines[0] ?? "")) {
+    return text;
+  }
+
+  let index = 0;
+  while (index < lines.length && MEDIA_ATTACHED_LINE_RE.test(lines[index] ?? "")) {
+    index += 1;
+  }
+  if (lines[index] === INBOUND_MEDIA_REPLY_HINT) {
+    index += 1;
+  }
+  while (lines[index] === "") {
+    index += 1;
+  }
+  return lines.slice(index).join("\n");
+}
+
+function stripTextForDisplay(text: string, stripUserEnvelope: boolean): string {
+  const inboundStripped = stripInboundMetadata(text);
+  if (!stripUserEnvelope) {
+    return inboundStripped;
+  }
+  const mediaStripped = stripLeadingInboundMediaPrompt(inboundStripped);
+  return stripMessageIdHints(stripEnvelope(mediaStripped));
+}
+
+export function stripUserTextForDisplay(text: string): string {
+  return stripTextForDisplay(text, true);
+}
 
 function stripEnvelopeFromContentWithRole(
   content: unknown[],
@@ -16,10 +51,7 @@ function stripEnvelopeFromContentWithRole(
     if (entry.type !== "text" || typeof entry.text !== "string") {
       return item;
     }
-    const inboundStripped = stripInboundMetadata(entry.text);
-    const stripped = stripUserEnvelope
-      ? stripMessageIdHints(stripEnvelope(inboundStripped))
-      : inboundStripped;
+    const stripped = stripTextForDisplay(entry.text, stripUserEnvelope);
     if (stripped === entry.text) {
       return item;
     }
@@ -44,10 +76,7 @@ export function stripEnvelopeFromMessage(message: unknown): unknown {
   const next: Record<string, unknown> = { ...entry };
 
   if (typeof entry.content === "string") {
-    const inboundStripped = stripInboundMetadata(entry.content);
-    const stripped = stripUserEnvelope
-      ? stripMessageIdHints(stripEnvelope(inboundStripped))
-      : inboundStripped;
+    const stripped = stripTextForDisplay(entry.content, stripUserEnvelope);
     if (stripped !== entry.content) {
       next.content = stripped;
       changed = true;
@@ -59,10 +88,7 @@ export function stripEnvelopeFromMessage(message: unknown): unknown {
       changed = true;
     }
   } else if (typeof entry.text === "string") {
-    const inboundStripped = stripInboundMetadata(entry.text);
-    const stripped = stripUserEnvelope
-      ? stripMessageIdHints(stripEnvelope(inboundStripped))
-      : inboundStripped;
+    const stripped = stripTextForDisplay(entry.text, stripUserEnvelope);
     if (stripped !== entry.text) {
       next.text = stripped;
       changed = true;

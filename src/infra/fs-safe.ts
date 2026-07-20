@@ -36,7 +36,11 @@ export type SafeLocalReadResult = {
 };
 
 const SUPPORTS_NOFOLLOW = process.platform !== "win32" && "O_NOFOLLOW" in fsConstants;
-const OPEN_READ_FLAGS = fsConstants.O_RDONLY | (SUPPORTS_NOFOLLOW ? fsConstants.O_NOFOLLOW : 0);
+const SUPPORTS_NONBLOCK = process.platform !== "win32" && "O_NONBLOCK" in fsConstants;
+const OPEN_READ_FLAGS =
+  fsConstants.O_RDONLY |
+  (SUPPORTS_NOFOLLOW ? fsConstants.O_NOFOLLOW : 0) |
+  (SUPPORTS_NONBLOCK ? fsConstants.O_NONBLOCK : 0);
 
 const ensureTrailingSep = (value: string) => (value.endsWith(path.sep) ? value : value + path.sep);
 

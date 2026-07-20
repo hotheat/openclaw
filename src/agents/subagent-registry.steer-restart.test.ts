@@ -1035,6 +1035,66 @@ describe("subagent registry steer restarts", () => {
     }
   });
 
+  it("accepts an overlapping terminal snapshot when the transcript has current-generation activity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+    const callGateway = vi.mocked((await import("../gateway/call.js")).callGateway);
+
+    callGateway.mockImplementation(async (request: unknown) => {
+      const typed = request as { method?: string };
+      if (typed.method === "agent.wait") {
+        return {
+          status: "ok",
+          startedAt: 1_900,
+          endedAt: 2_200,
+        };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "current generation result" }],
+              timestamp: 2_100,
+            },
+          ],
+        };
+      }
+      return {};
+    });
+
+    try {
+      mod.registerSubagentRun({
+        runId: "run-overlapping-current-old",
+        childSessionKey: "agent:main:subagent:overlapping-current",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "overlapping current",
+        cleanup: "keep",
+      });
+
+      const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(
+        mod.replaceSubagentRunAfterSteer({
+          previousRunId: "run-overlapping-current-old",
+          nextRunId: "run-overlapping-current-new",
+          fallback: previous,
+          acceptedAt: 2_000,
+        }),
+      ).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.outcome).toEqual({ status: "ok" });
+      expect(run?.endedAt).toBe(2_200);
+      expect(announceSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("limits agent.wait calls when the same stale cached snapshot persists", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);

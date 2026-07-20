@@ -76,6 +76,11 @@ export type SessionsListResult = {
   ts: number;
   path: string;
   count: number;
+  totalCount?: number;
+  limitApplied?: number;
+  offset?: number;
+  nextOffset?: number | null;
+  hasMore?: boolean;
   defaults: GatewaySessionsDefaults;
   sessions: GatewaySessionRow[];
 };

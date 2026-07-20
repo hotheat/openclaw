@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
+import { INBOUND_MEDIA_REPLY_HINT } from "../auto-reply/media-note.js";
 import type { GetReplyOptions } from "../auto-reply/types.js";
 import { __setMaxChatHistoryMessagesBytesForTest } from "./server-constants.js";
 import {
@@ -331,6 +332,35 @@ describe("gateway server chat", () => {
       expect(second.content?.replace(/\s+/g, " ").trim()).toBe("A B");
       expect(third.text?.replace(/\s+/g, " ").trim()).toBe("C");
       expect(fourth.content?.[0]?.text).toBe("  keep padded  ");
+    });
+  });
+
+  test("chat.history hides the injected workspace media prompt and preserves user text", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `[media attached: /home/xiaolu/.openclaw/workspace-main/uploads/webchat/chat-1/report.md (text/markdown) | /home/xiaolu/.openclaw/workspace-main/uploads/webchat/chat-1/report.md]\n${INBOUND_MEDIA_REPLY_HINT}\n[Fri 2026-07-17 09:44 GMT+8] 请读取附件并只回复附件中的测试标识。`,
+              },
+            ],
+            timestamp: Date.now(),
+          },
+        }),
+      ]);
+
+      const messages = await fetchHistoryMessages(ws);
+
+      expect(messages).toHaveLength(1);
+      const message = messages[0] as { content?: Array<{ text?: string }> };
+      expect(message.content?.[0]?.text).toBe("请读取附件并只回复附件中的测试标识。");
     });
   });
 

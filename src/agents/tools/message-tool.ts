@@ -16,6 +16,7 @@ import { loadConfig } from "../../config/config.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "../../gateway/protocol/client-info.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
 import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
+import { splitMediaFromOutput } from "../../media/parse.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
 import { normalizeAccountId } from "../../routing/session-key.js";
 import { stripReasoningTagsFromText } from "../../shared/text/reasoning-tags.js";
@@ -31,6 +32,9 @@ import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import { resolveGatewayOptions } from "./gateway.js";
 
 const AllMessageActions = CHANNEL_MESSAGE_ACTION_NAMES;
+const WEBCHAT_FILE_DELIVERY_ERROR =
+  "WebChat file delivery must use webui_artifact_publish; message is only for explicit external channel targets.";
+const MESSAGE_MEDIA_KEYS = ["media", "path", "filePath", "mediaUrls"] as const;
 const EXPLICIT_TARGET_ACTIONS = new Set<ChannelMessageActionName>([
   "send",
   "sendWithEffect",
@@ -565,6 +569,9 @@ function buildMessageToolDescription(options?: {
   currentChannelId?: string;
 }): string {
   const baseDescription = "Send, delete, and manage messages via channel plugins.";
+  if (normalizeMessageChannel(options?.currentChannel) === "webchat") {
+    return `${baseDescription} In WebUI, publish files to the current browser with webui_artifact_publish. Use message only with an explicit deliverable external channel and real target.`;
+  }
 
   // If we have a current channel, show only its supported actions
   if (options?.currentChannel) {
@@ -593,6 +600,58 @@ function buildMessageToolDescription(options?: {
   }
 
   return `${baseDescription} Supports actions: send, delete, react, poll, pin, threads, and more.`;
+}
+
+function hasMessageMedia(params: Record<string, unknown>): boolean {
+  const hasExplicitMedia = MESSAGE_MEDIA_KEYS.some((key) => {
+    const value = params[key];
+    return typeof value === "string"
+      ? value.trim().length > 0
+      : Array.isArray(value) && value.some((item) => typeof item === "string" && item.trim());
+  });
+  if (hasExplicitMedia) {
+    return true;
+  }
+  const message = readStringParam(params, "message", { trim: false });
+  return Boolean(message && splitMediaFromOutput(message).mediaUrls?.length);
+}
+
+function isParentWebchatMessageContext(options?: MessageToolOptions): boolean {
+  return (
+    normalizeMessageChannel(options?.currentChannelProvider) === "webchat" ||
+    options?.agentSessionKey?.includes(":webchat:") === true
+  );
+}
+
+function isExplicitFeishuTarget(params: Record<string, unknown>): boolean {
+  if (normalizeMessageChannel(readStringParam(params, "channel")) !== "feishu") {
+    return false;
+  }
+  const target = readStringParam(params, "target") ?? readStringParam(params, "to");
+  return /^(?:user:ou_[A-Za-z0-9_-]+|chat:oc_[A-Za-z0-9_-]+)$/.test(target ?? "");
+}
+
+function assertWebchatMessageBoundary(
+  params: Record<string, unknown>,
+  options: MessageToolOptions | undefined,
+  action: ChannelMessageActionName,
+): void {
+  if (!isParentWebchatMessageContext(options)) {
+    return;
+  }
+  const channel = normalizeMessageChannel(readStringParam(params, "channel"));
+  if (channel === "webchat") {
+    throw new Error(
+      "message channel webchat is not deliverable; reply in the current session or use webui_artifact_publish for files.",
+    );
+  }
+  const target = readStringParam(params, "target") ?? readStringParam(params, "to");
+  if (target?.trim().toLowerCase() === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT) {
+    throw new Error("gateway-client is a Gateway client identity, not a message target.");
+  }
+  if (action === "send" && hasMessageMedia(params) && !isExplicitFeishuTarget(params)) {
+    throw new Error(WEBCHAT_FILE_DELIVERY_ERROR);
+  }
 }
 
 export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
@@ -651,6 +710,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       const action = readStringParam(params, "action", {
         required: true,
       }) as ChannelMessageActionName;
+      assertWebchatMessageBoundary(params, options, action);
       const requireExplicitTarget = options?.requireExplicitTarget === true;
       if (requireExplicitTarget && actionNeedsExplicitTarget(action)) {
         const explicitTarget =

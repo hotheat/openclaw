@@ -54,6 +54,7 @@ const BASE_METHODS = [
   "sessions.reset",
   "sessions.delete",
   "sessions.compact",
+  "subagents.list",
   "last-heartbeat",
   "set-heartbeats",
   "wake",
@@ -92,6 +93,7 @@ const BASE_METHODS = [
   "chat.history",
   "chat.abort",
   "chat.send",
+  "chat.attachment.materialize",
 ];
 
 export function listGatewayMethods(): string[] {

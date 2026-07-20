@@ -517,7 +517,7 @@ public struct AgentParams: Codable, Sendable {
     public let sessionkey: String?
     public let thinking: String?
     public let deliver: Bool?
-    public let attachments: [AnyCodable]?
+    public let attachments: [[String: AnyCodable]]?
     public let channel: String?
     public let replychannel: String?
     public let accountid: String?
@@ -530,6 +530,7 @@ public struct AgentParams: Codable, Sendable {
     public let lane: String?
     public let extrasystemprompt: String?
     public let inputprovenance: [String: AnyCodable]?
+    public let traceparent: [String: AnyCodable]?
     public let idempotencykey: String
     public let label: String?
     public let spawnedby: String?
@@ -543,7 +544,7 @@ public struct AgentParams: Codable, Sendable {
         sessionkey: String?,
         thinking: String?,
         deliver: Bool?,
-        attachments: [AnyCodable]?,
+        attachments: [[String: AnyCodable]]?,
         channel: String?,
         replychannel: String?,
         accountid: String?,
@@ -556,6 +557,7 @@ public struct AgentParams: Codable, Sendable {
         lane: String?,
         extrasystemprompt: String?,
         inputprovenance: [String: AnyCodable]?,
+        traceparent: [String: AnyCodable]?,
         idempotencykey: String,
         label: String?,
         spawnedby: String?)
@@ -581,6 +583,7 @@ public struct AgentParams: Codable, Sendable {
         self.lane = lane
         self.extrasystemprompt = extrasystemprompt
         self.inputprovenance = inputprovenance
+        self.traceparent = traceparent
         self.idempotencykey = idempotencykey
         self.label = label
         self.spawnedby = spawnedby
@@ -608,6 +611,7 @@ public struct AgentParams: Codable, Sendable {
         case lane
         case extrasystemprompt = "extraSystemPrompt"
         case inputprovenance = "inputProvenance"
+        case traceparent = "traceParent"
         case idempotencykey = "idempotencyKey"
         case label
         case spawnedby = "spawnedBy"
@@ -1020,6 +1024,7 @@ public struct PushTestResult: Codable, Sendable {
 
 public struct SessionsListParams: Codable, Sendable {
     public let limit: Int?
+    public let offset: Int?
     public let activeminutes: Int?
     public let includeglobal: Bool?
     public let includeunknown: Bool?
@@ -1032,6 +1037,7 @@ public struct SessionsListParams: Codable, Sendable {
 
     public init(
         limit: Int?,
+        offset: Int?,
         activeminutes: Int?,
         includeglobal: Bool?,
         includeunknown: Bool?,
@@ -1043,6 +1049,7 @@ public struct SessionsListParams: Codable, Sendable {
         search: String?)
     {
         self.limit = limit
+        self.offset = offset
         self.activeminutes = activeminutes
         self.includeglobal = includeglobal
         self.includeunknown = includeunknown
@@ -1056,6 +1063,7 @@ public struct SessionsListParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case limit
+        case offset
         case activeminutes = "activeMinutes"
         case includeglobal = "includeGlobal"
         case includeunknown = "includeUnknown"
@@ -1295,6 +1303,93 @@ public struct SessionsUsageParams: Codable, Sendable {
         case utcoffset = "utcOffset"
         case limit
         case includecontextweight = "includeContextWeight"
+    }
+}
+
+public enum SubagentRunStatus: String, Codable, Sendable {
+    case pending = "pending"
+    case running = "running"
+    case ok = "ok"
+    case error = "error"
+    case timeout = "timeout"
+    case unknown = "unknown"
+}
+
+public struct SubagentRun: Codable, Sendable {
+    public let runid: String
+    public let childsessionkey: String
+    public let label: String?
+    public let sessionlabel: String?
+    public let model: String?
+    public let spawnmode: AnyCodable?
+    public let createdat: Int
+    public let startedat: Int?
+    public let endedat: Int?
+    public let status: SubagentRunStatus
+
+    public init(
+        runid: String,
+        childsessionkey: String,
+        label: String?,
+        sessionlabel: String?,
+        model: String?,
+        spawnmode: AnyCodable?,
+        createdat: Int,
+        startedat: Int?,
+        endedat: Int?,
+        status: SubagentRunStatus)
+    {
+        self.runid = runid
+        self.childsessionkey = childsessionkey
+        self.label = label
+        self.sessionlabel = sessionlabel
+        self.model = model
+        self.spawnmode = spawnmode
+        self.createdat = createdat
+        self.startedat = startedat
+        self.endedat = endedat
+        self.status = status
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case childsessionkey = "childSessionKey"
+        case label
+        case sessionlabel = "sessionLabel"
+        case model
+        case spawnmode = "spawnMode"
+        case createdat = "createdAt"
+        case startedat = "startedAt"
+        case endedat = "endedAt"
+        case status
+    }
+}
+
+public struct SubagentsListParams: Codable, Sendable {
+    public let requestersessionkey: String
+
+    public init(
+        requestersessionkey: String)
+    {
+        self.requestersessionkey = requestersessionkey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestersessionkey = "requesterSessionKey"
+    }
+}
+
+public struct SubagentsListResult: Codable, Sendable {
+    public let runs: [SubagentRun]
+
+    public init(
+        runs: [SubagentRun])
+    {
+        self.runs = runs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runs
     }
 }
 
@@ -2844,6 +2939,44 @@ public struct ChatHistoryParams: Codable, Sendable {
     }
 }
 
+public struct ChatAttachmentMaterializeParams: Codable, Sendable {
+    public let sessionkey: String
+    public let artifactid: String
+    public let filename: String
+    public let contenttype: String
+    public let sizebytes: Int
+    public let sha256: String
+    public let downloadurl: String
+
+    public init(
+        sessionkey: String,
+        artifactid: String,
+        filename: String,
+        contenttype: String,
+        sizebytes: Int,
+        sha256: String,
+        downloadurl: String)
+    {
+        self.sessionkey = sessionkey
+        self.artifactid = artifactid
+        self.filename = filename
+        self.contenttype = contenttype
+        self.sizebytes = sizebytes
+        self.sha256 = sha256
+        self.downloadurl = downloadurl
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case artifactid = "artifactId"
+        case filename = "fileName"
+        case contenttype = "contentType"
+        case sizebytes = "sizeBytes"
+        case sha256
+        case downloadurl = "downloadUrl"
+    }
+}
+
 public struct ChatSendParams: Codable, Sendable {
     public let sessionkey: String
     public let message: String
@@ -2904,21 +3037,25 @@ public struct ChatInjectParams: Codable, Sendable {
     public let sessionkey: String
     public let message: String
     public let label: String?
+    public let idempotencykey: String?
 
     public init(
         sessionkey: String,
         message: String,
-        label: String?)
+        label: String?,
+        idempotencykey: String?)
     {
         self.sessionkey = sessionkey
         self.message = message
         self.label = label
+        self.idempotencykey = idempotencykey
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
         case message
         case label
+        case idempotencykey = "idempotencyKey"
     }
 }
 

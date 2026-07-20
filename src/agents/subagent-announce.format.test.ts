@@ -26,6 +26,7 @@ type SubagentDeliveryTargetResult = {
 
 const agentSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "run-main", status: "ok" }));
 const sendSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "send-main", status: "ok" }));
+const chatInjectSpy = vi.fn(async (_req: AgentCallRequest) => ({ ok: true }));
 const appendAssistantMessageToSessionTranscriptMock = vi.fn(async () => ({
   ok: true as const,
   sessionFile: "/tmp/requester-session.jsonl",
@@ -51,12 +52,35 @@ const subagentDeliveryTargetHookMock = vi.fn(
     undefined,
 );
 let hasSubagentDeliveryTargetHook = false;
+let hasSubagentHandoffStagingHook = false;
+let hasSubagentHandoffDeliveryHook = false;
+const subagentHandoffStagingHookMock = vi.fn(async (_event: unknown, _ctx: unknown) => ({
+  artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+}));
+const subagentHandoffDeliveryHookMock = vi.fn(
+  async (_event: unknown, _ctx: unknown): Promise<unknown> => undefined,
+);
 const hookRunnerMock = {
-  hasHooks: vi.fn(
-    (hookName: string) => hookName === "subagent_delivery_target" && hasSubagentDeliveryTargetHook,
-  ),
+  hasHooks: vi.fn((hookName: string) => {
+    if (hookName === "subagent_delivery_target") {
+      return hasSubagentDeliveryTargetHook;
+    }
+    if (hookName === "subagent_handoff_staging") {
+      return hasSubagentHandoffStagingHook;
+    }
+    if (hookName === "subagent_handoff_delivery") {
+      return hasSubagentHandoffDeliveryHook;
+    }
+    return false;
+  }),
   runSubagentDeliveryTarget: vi.fn((event: unknown, ctx: unknown) =>
     subagentDeliveryTargetHookMock(event, ctx),
+  ),
+  runSubagentHandoffStaging: vi.fn((event: unknown, ctx: unknown) =>
+    subagentHandoffStagingHookMock(event, ctx),
+  ),
+  runSubagentHandoffDelivery: vi.fn((event: unknown, ctx: unknown) =>
+    subagentHandoffDeliveryHookMock(event, ctx),
   ),
 };
 const chatHistoryMock = vi.fn(async (_sessionKey?: string) => ({
@@ -108,6 +132,9 @@ vi.mock("../gateway/call.js", () => ({
     if (typed.method === "send") {
       return await sendSpy(typed);
     }
+    if (typed.method === "chat.inject") {
+      return await chatInjectSpy(typed);
+    }
     if (typed.method === "agent.wait") {
       return { status: "error", startedAt: 10, endedAt: 20, error: "boom" };
     }
@@ -141,6 +168,10 @@ vi.mock("../config/sessions.js", () => ({
   resolveMainSessionKey: () => "agent:main:main",
   readSessionUpdatedAt: vi.fn(() => undefined),
   recordSessionMetaFromInbound: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("./agent-scope.js", () => ({
+  resolveAgentWorkspaceDir: (_cfg: unknown, agentId: string) => `/workspace-${agentId}`,
 }));
 
 vi.mock("./pi-embedded.js", () => embeddedRunMock);
@@ -183,6 +214,7 @@ describe("subagent announce formatting", () => {
     sendSpy
       .mockClear()
       .mockImplementation(async (_req: AgentCallRequest) => ({ runId: "send-main", status: "ok" }));
+    chatInjectSpy.mockClear().mockResolvedValue({ ok: true });
     appendAssistantMessageToSessionTranscriptMock
       .mockClear()
       .mockResolvedValue({ ok: true, sessionFile: "/tmp/requester-session.jsonl" });
@@ -195,9 +227,17 @@ describe("subagent announce formatting", () => {
     subagentRegistryMock.countActiveDescendantRuns.mockClear().mockReturnValue(0);
     subagentRegistryMock.resolveRequesterForChildSession.mockClear().mockReturnValue(null);
     hasSubagentDeliveryTargetHook = false;
+    hasSubagentHandoffStagingHook = false;
+    hasSubagentHandoffDeliveryHook = false;
     hookRunnerMock.hasHooks.mockClear();
     hookRunnerMock.runSubagentDeliveryTarget.mockClear();
+    hookRunnerMock.runSubagentHandoffStaging.mockClear();
+    hookRunnerMock.runSubagentHandoffDelivery.mockClear();
     subagentDeliveryTargetHookMock.mockReset().mockResolvedValue(undefined);
+    subagentHandoffStagingHookMock.mockReset().mockResolvedValue({
+      artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+    });
+    subagentHandoffDeliveryHookMock.mockReset().mockResolvedValue(undefined);
     readLatestAssistantReplyMock.mockClear().mockResolvedValue("raw subagent reply");
     chatHistoryMock.mockReset().mockResolvedValue({ messages: [] });
     sessionStore = {};
@@ -791,6 +831,77 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.to).toBe("channel:12345");
     expect(msg).toContain("researcher final");
     expect(msg).not.toContain("Convert the result above into your normal assistant voice");
+  });
+
+  it("injects direct completion into the requester WebChat session without running the parent agent", async () => {
+    const requesterSessionKey = "agent:feishu-ou_test:webchat:namespace:chat_1";
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-webchat-direct",
+      },
+      [requesterSessionKey]: {
+        sessionId: "requester-session-webchat-direct",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "researcher final",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/exports/researcher/run-1/report.md",
+            title: "Report",
+            mime: "text/markdown",
+          },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+    hasSubagentHandoffStagingHook = true;
+    hasSubagentHandoffDeliveryHook = true;
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-webchat-direct",
+      requesterSessionKey,
+      requesterDisplayKey: requesterSessionKey,
+      requesterOrigin: { channel: "internal" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "direct",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(chatInjectSpy).toHaveBeenCalledTimes(1);
+    expect(chatInjectSpy.mock.calls[0]?.[0]).toMatchObject({
+      method: "chat.inject",
+      params: {
+        sessionKey: requesterSessionKey,
+        message: expect.stringContaining("researcher final"),
+        idempotencyKey: expect.any(String),
+      },
+    });
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(agentSpy).not.toHaveBeenCalled();
+    expect(subagentHandoffStagingHookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-webchat-direct",
+        requesterSessionKey,
+        content: expect.stringContaining("<SUBAGENT_HANDOFF>"),
+      }),
+      expect.objectContaining({ requesterSessionKey }),
+    );
+    expect(subagentHandoffDeliveryHookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requesterSessionKey,
+        artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+      }),
+      expect.objectContaining({ requesterSessionKey }),
+    );
+    expect(subagentHandoffDeliveryHookMock.mock.invocationCallOrder[0]).toBeLessThan(
+      chatInjectSpy.mock.invocationCallOrder[0],
+    );
   });
 
   it("direct completion delivery does not fall back to requester agent without a direct target", async () => {
@@ -1494,7 +1605,7 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("old tool output");
   });
 
-  it("does not attach export-file handoff paths to direct completion delivery", async () => {
+  it("strips export-file handoff metadata from direct completion delivery", async () => {
     chatHistoryMock.mockResolvedValueOnce({
       messages: [
         {
@@ -1545,12 +1656,68 @@ describe("subagent announce formatting", () => {
       }),
     );
     expect(call?.params?.mediaUrls).toBeUndefined();
-    expect(call?.params?.message).toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
+    expect(call?.params?.message).toEqual(expect.stringContaining("已完成一版可交付的内部扫描。"));
+    expect(call?.params?.message).not.toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
+    expect(call?.params?.message).not.toEqual(
+      expect.stringContaining("artifacts/exports/feishu/glp1-route-scan-20260518"),
+    );
     expect(call?.params).not.toMatchObject({
       channel: "discord",
       to: "channel:12345",
       mediaUrls: ["artifacts/exports/feishu/glp1-route-scan-20260518/glp1-route-scan.md"],
     });
+  });
+
+  it("reports handoff artifact delivery failures in direct completion delivery", async () => {
+    hasSubagentHandoffStagingHook = true;
+    hasSubagentHandoffDeliveryHook = true;
+    subagentHandoffDeliveryHookMock.mockResolvedValueOnce({
+      failures: [{ relativePath: "artifacts/report.md", message: "upload failed" }],
+    });
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: [
+                "已完成一版可交付的内部扫描。",
+                "",
+                "<SUBAGENT_HANDOFF>",
+                JSON.stringify({
+                  mode: "export-file",
+                  export: {
+                    path: "artifacts/exports/feishu/glp1-route-scan.md",
+                    title: "GLP-1 路线扫描",
+                    mime: "text/markdown",
+                  },
+                }),
+                "</SUBAGENT_HANDOFF>",
+              ].join("\n"),
+            },
+          ],
+        },
+      ],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:worker",
+      childRunId: "run-completion-export-file-failed",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      expectsCompletionMessage: true,
+      ...defaultOutcomeAnnounce,
+    });
+
+    expect(didAnnounce).toBe(true);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
+    expect(call?.params?.message).toEqual(expect.stringContaining("Artifact delivery incomplete"));
+    expect(call?.params?.message).toEqual(expect.stringContaining("artifacts/report.md"));
+    expect(call?.params?.message).toEqual(expect.stringContaining("upload failed"));
+    expect(call?.params?.message).not.toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
   });
 
   it("falls back to latest tool output for completion-mode when assistant output is empty", async () => {

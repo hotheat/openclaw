@@ -872,10 +872,20 @@ export function listSessionsFromStore(params: {
     sessions = sessions.filter((s) => (s.updatedAt ?? 0) >= cutoff);
   }
 
+  const totalCount = sessions.length;
+  const offset =
+    typeof opts.offset === "number" && Number.isFinite(opts.offset)
+      ? Math.max(0, Math.floor(opts.offset))
+      : 0;
+  let limitApplied: number | undefined;
   if (typeof opts.limit === "number" && Number.isFinite(opts.limit)) {
-    const limit = Math.max(1, Math.floor(opts.limit));
-    sessions = sessions.slice(0, limit);
+    limitApplied = Math.max(1, Math.floor(opts.limit));
+    sessions = sessions.slice(offset, offset + limitApplied);
+  } else if (offset > 0) {
+    sessions = sessions.slice(offset);
   }
+  const nextOffset = offset + sessions.length;
+  const hasMore = nextOffset < totalCount;
 
   const finalSessions: GatewaySessionRow[] = sessions.map((s) => {
     const { entry, ...rest } = s;
@@ -907,6 +917,11 @@ export function listSessionsFromStore(params: {
     ts: now,
     path: storePath,
     count: finalSessions.length,
+    totalCount,
+    limitApplied,
+    offset: offset > 0 ? offset : undefined,
+    nextOffset: hasMore ? nextOffset : null,
+    hasMore,
     defaults: getSessionDefaults(cfg),
     sessions: finalSessions,
   };

@@ -23,6 +23,7 @@ import {
   normalizeDeliveryContext,
 } from "../utils/delivery-context.js";
 import { isDeliverableMessageChannel } from "../utils/message-channel.js";
+import { resolveAgentWorkspaceDir } from "./agent-scope.js";
 import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
@@ -49,6 +50,7 @@ const FAST_TEST_MODE = process.env.OPENCLAW_TEST_FAST === "1";
 const FAST_TEST_RETRY_INTERVAL_MS = 8;
 const FAST_TEST_REPLY_CHANGE_WAIT_MS = 20;
 const DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS = 60_000;
+const DEFAULT_SUBAGENT_HANDOFF_TIMEOUT_MS = 120_000;
 const PARENT_COMPLETION_DEBOUNCE_MS = 2_000;
 const MAX_TIMER_SAFE_TIMEOUT_MS = 2_147_000_000;
 
@@ -65,6 +67,134 @@ type SubagentAnnounceDeliveryResult = {
   contentComplete?: boolean;
   error?: string;
 };
+
+type SubagentHandoffDeliveryFailure = {
+  relativePath?: string;
+  message: string;
+};
+
+type SubagentHandoffDeliveryResult = {
+  failures: SubagentHandoffDeliveryFailure[];
+};
+
+function appendVisibleHandoffWarning(text: string, warning: string): string {
+  const base = text.trim();
+  return base ? `${base}\n\n${warning}` : warning;
+}
+
+function formatHandoffDeliveryWarning(failures: SubagentHandoffDeliveryFailure[]): string {
+  if (failures.length === 0) {
+    return "";
+  }
+  const listed = failures
+    .slice(0, 5)
+    .map((failure) => {
+      const target = failure.relativePath?.trim() || "artifact";
+      return `- ${target}: ${failure.message}`;
+    })
+    .join("\n");
+  const suffix = failures.length > 5 ? `\n- ...and ${failures.length - 5} more` : "";
+  return `Artifact delivery incomplete. The subagent finished, but ${failures.length} file(s) were not delivered.\n${listed}${suffix}`;
+}
+
+function createHandoffTimeoutSignal(): { signal: AbortSignal; dispose: () => void } {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error("Subagent handoff delivery timed out"));
+  }, DEFAULT_SUBAGENT_HANDOFF_TIMEOUT_MS);
+  return {
+    signal: controller.signal,
+    dispose: () => clearTimeout(timeout),
+  };
+}
+
+async function stageAndDeliverSubagentHandoff(params: {
+  runId: string;
+  childSessionKey: string;
+  requesterSessionKey: string;
+  content: string;
+  requesterOrigin?: DeliveryContext;
+  outcome?: SubagentRunOutcome;
+  completionDelivery?: SubagentCompletionDelivery;
+}): Promise<SubagentHandoffDeliveryResult> {
+  const emptyResult = { failures: [] };
+  if (!params.content.includes("<SUBAGENT_HANDOFF>")) {
+    return emptyResult;
+  }
+
+  const hookRunner = getGlobalHookRunner();
+  if (!hookRunner?.hasHooks("subagent_handoff_staging")) {
+    return emptyResult;
+  }
+
+  const cfg = loadConfig();
+  const childAgentId = resolveAgentIdFromSessionKey(params.childSessionKey);
+  const requesterAgentId = resolveAgentIdFromSessionKey(params.requesterSessionKey);
+  if (!childAgentId || !requesterAgentId) {
+    return emptyResult;
+  }
+
+  const childWorkspaceDir = resolveAgentWorkspaceDir(cfg, childAgentId);
+  const requesterWorkspaceDir = resolveAgentWorkspaceDir(cfg, requesterAgentId);
+  if (!childWorkspaceDir || !requesterWorkspaceDir) {
+    return emptyResult;
+  }
+
+  const timeoutSignal = createHandoffTimeoutSignal();
+  const timedOut = new Promise<SubagentHandoffDeliveryResult>((resolve) => {
+    timeoutSignal.signal.addEventListener(
+      "abort",
+      () =>
+        resolve({
+          failures: [{ message: "handoff delivery timed out" }],
+        }),
+      { once: true },
+    );
+  });
+  const run = (async (): Promise<SubagentHandoffDeliveryResult> => {
+    const event = {
+      runId: params.runId,
+      childSessionKey: params.childSessionKey,
+      requesterSessionKey: params.requesterSessionKey,
+      content: params.content,
+      childWorkspaceDir,
+      requesterWorkspaceDir,
+      requesterOrigin: params.requesterOrigin,
+      outcome: params.outcome?.status,
+      completionDelivery: params.completionDelivery,
+      signal: timeoutSignal.signal,
+    };
+    const ctx = {
+      runId: params.runId,
+      childSessionKey: params.childSessionKey,
+      requesterSessionKey: params.requesterSessionKey,
+    };
+    const staged = await hookRunner.runSubagentHandoffStaging(event, ctx);
+    if (!staged?.artifacts.length || !hookRunner.hasHooks("subagent_handoff_delivery")) {
+      return emptyResult;
+    }
+
+    return (
+      (await hookRunner.runSubagentHandoffDelivery(
+        {
+          ...event,
+          artifacts: staged.artifacts,
+        },
+        ctx,
+      )) ?? emptyResult
+    );
+  })().catch(
+    (error): SubagentHandoffDeliveryResult => ({
+      failures: [{ message: summarizeDeliveryError(error) }],
+    }),
+  );
+
+  try {
+    return await Promise.race([run, timedOut]);
+  } finally {
+    timeoutSignal.dispose();
+  }
+}
 
 async function mirrorCompletionDirectSendToTranscript(params: {
   sessionKey: string;
@@ -110,7 +240,9 @@ function buildCompletionDeliveryMessage(params: {
   spawnMode?: SpawnSubagentMode;
   outcome?: SubagentRunOutcome;
 }): string {
-  const findingsText = params.findings.trim();
+  const findingsText = params.findings
+    .replace(/\s*<SUBAGENT_HANDOFF>[\s\S]*?<\/SUBAGENT_HANDOFF>\s*/gi, "\n")
+    .trim();
   const hasFindings = findingsText.length > 0 && findingsText !== "(no output)";
   const header = (() => {
     if (params.outcome?.status === "error") {
@@ -882,6 +1014,10 @@ async function sendSubagentAnnounceDirectly(params: {
       typeof completionDirectOrigin?.channel === "string"
         ? completionDirectOrigin.channel.trim()
         : "";
+    const hasWebChatDirectTarget =
+      !params.requesterIsSubagent &&
+      (canonicalRequesterSessionKey.includes(":webchat:") ||
+        completionChannelRaw.toLowerCase() === "webchat");
     const completionChannel =
       completionChannelRaw && isDeliverableMessageChannel(completionChannelRaw)
         ? completionChannelRaw
@@ -890,6 +1026,26 @@ async function sendSubagentAnnounceDirectly(params: {
       typeof completionDirectOrigin?.to === "string" ? completionDirectOrigin.to.trim() : "";
     const hasCompletionDirectTarget =
       !params.requesterIsSubagent && Boolean(completionChannel) && Boolean(completionTo);
+    if (
+      params.expectsCompletionMessage &&
+      params.completionDelivery === "direct" &&
+      hasWebChatDirectTarget &&
+      params.completionMessage?.trim()
+    ) {
+      await callGateway({
+        method: "chat.inject",
+        params: {
+          sessionKey: canonicalRequesterSessionKey,
+          message: params.completionMessage,
+          idempotencyKey: params.directIdempotencyKey,
+        },
+        timeoutMs: announceTimeoutMs,
+      });
+      return {
+        delivered: true,
+        path: "direct",
+      };
+    }
     if (
       params.expectsCompletionMessage &&
       params.completionDelivery === "direct" &&
@@ -1403,6 +1559,7 @@ export async function runSubagentAnnounceFlow(params: {
     const subagentName = resolveAgentIdFromSessionKey(params.childSessionKey);
     const announceSessionId = childSessionId || "unknown";
     const findings = reply || "(no output)";
+    let deliveryFindings = findings;
     let completionMessage = "";
     let triggerMessage = "";
 
@@ -1513,6 +1670,23 @@ export async function runSubagentAnnounceFlow(params: {
             routeMode: "fallback" as const,
           };
     const completionDirectOrigin = completionResolution.origin;
+    if (!requesterIsSubagent) {
+      const handoffDelivery = await stageAndDeliverSubagentHandoff({
+        runId: params.childRunId,
+        childSessionKey: params.childSessionKey,
+        requesterSessionKey: targetRequesterSessionKey,
+        content: findings,
+        requesterOrigin: completionDirectOrigin ?? directOrigin,
+        outcome,
+        completionDelivery: params.completionDelivery,
+      });
+      const handoffWarning = formatHandoffDeliveryWarning(handoffDelivery.failures);
+      if (handoffWarning) {
+        deliveryFindings = appendVisibleHandoffWarning(deliveryFindings, handoffWarning);
+        completionMessage = appendVisibleHandoffWarning(completionMessage, handoffWarning);
+        triggerMessage = appendVisibleHandoffWarning(triggerMessage, handoffWarning);
+      }
+    }
     // Use a deterministic idempotency key so the gateway dedup cache
     // catches duplicates if this announce is also queued by the gateway-
     // level message queue while the main session is busy (#17122).
@@ -1523,7 +1697,7 @@ export async function runSubagentAnnounceFlow(params: {
           requesterSessionKey: targetRequesterSessionKey,
           announceId,
           taskLabel,
-          findings,
+          findings: deliveryFindings,
           outcome,
           remainingActiveSubagentRuns,
           requesterIsSubagent,

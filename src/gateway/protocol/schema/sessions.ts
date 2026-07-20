@@ -4,6 +4,7 @@ import { NonEmptyString, SessionLabelString } from "./primitives.js";
 export const SessionsListParamsSchema = Type.Object(
   {
     limit: Type.Optional(Type.Integer({ minimum: 1 })),
+    offset: Type.Optional(Type.Integer({ minimum: 0 })),
     activeMinutes: Type.Optional(Type.Integer({ minimum: 1 })),
     includeGlobal: Type.Optional(Type.Boolean()),
     includeUnknown: Type.Optional(Type.Boolean()),

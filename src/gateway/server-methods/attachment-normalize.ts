@@ -5,6 +5,9 @@ export type RpcAttachmentInput = {
   mimeType?: unknown;
   fileName?: unknown;
   content?: unknown;
+  workspacePath?: unknown;
+  sizeBytes?: unknown;
+  sha256?: unknown;
 };
 
 export function normalizeRpcAttachmentsToChatAttachments(
@@ -26,7 +29,10 @@ export function normalizeRpcAttachmentsToChatAttachments(
               : a?.content instanceof ArrayBuffer
                 ? Buffer.from(a.content).toString("base64")
                 : undefined,
+        workspacePath: typeof a?.workspacePath === "string" ? a.workspacePath : undefined,
+        sizeBytes: typeof a?.sizeBytes === "number" ? a.sizeBytes : undefined,
+        sha256: typeof a?.sha256 === "string" ? a.sha256 : undefined,
       }))
-      .filter((a) => a.content) ?? []
+      .filter((a) => a.content || (a.type === "workspace_file" && a.workspacePath)) ?? []
   );
 }

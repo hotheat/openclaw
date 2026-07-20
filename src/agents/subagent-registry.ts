@@ -286,6 +286,22 @@ function isTerminalSnapshotBeforeRunStart(
   );
 }
 
+function isTerminalSnapshotOverlappingRunStart(
+  entry: SubagentRunRecord,
+  snapshot: { startedAt?: number; endedAt?: number },
+) {
+  const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
+  const snapshotStartedAt = asFiniteTimestampMs(snapshot.startedAt);
+  const snapshotEndedAt = asFiniteTimestampMs(snapshot.endedAt);
+  return (
+    typeof generationStartedAt === "number" &&
+    typeof snapshotStartedAt === "number" &&
+    typeof snapshotEndedAt === "number" &&
+    snapshotStartedAt < generationStartedAt &&
+    snapshotEndedAt >= generationStartedAt
+  );
+}
+
 function advanceRunGenerationStart(entry: SubagentRunRecord, startedAt: number) {
   const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
   if (typeof generationStartedAt === "number" && startedAt < generationStartedAt) {
@@ -779,6 +795,38 @@ async function findTranscriptContinuationAfterTerminal(params: {
   return undefined;
 }
 
+async function hasTranscriptActivityAfterRunStart(entry: SubagentRunRecord): Promise<boolean> {
+  const generationStartedAt = asFiniteTimestampMs(entry.generationStartedAt);
+  if (typeof generationStartedAt !== "number") {
+    return false;
+  }
+  const history = await callGateway<{ messages?: Array<unknown> }>({
+    method: "chat.history",
+    params: {
+      sessionKey: entry.childSessionKey,
+      limit: 50,
+    },
+    timeoutMs: 10_000,
+  }).catch(() => undefined);
+  const messages = Array.isArray(history?.messages) ? history.messages : [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const timestampMs = parseTranscriptTimestampMs(
+      (message as { timestamp?: unknown } | undefined)?.timestamp,
+    );
+    if (typeof timestampMs !== "number") {
+      continue;
+    }
+    if (timestampMs <= generationStartedAt) {
+      break;
+    }
+    if (hasContinuationActivity(message)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function detectTerminalOutcomeFromTranscript(params: {
   childSessionKey: string;
   nowMs?: number;
@@ -982,8 +1030,13 @@ function ensureListener() {
       const endedAt = typeof evt.data?.endedAt === "number" ? evt.data.endedAt : Date.now();
       const snapshotTiming = { startedAt, endedAt };
       if (isTerminalSnapshotBeforeRunStart(entry, snapshotTiming)) {
-        logIgnoredStaleTerminal(entry, snapshotTiming);
-        return;
+        const belongsToCurrentRun =
+          isTerminalSnapshotOverlappingRunStart(entry, snapshotTiming) &&
+          (await hasTranscriptActivityAfterRunStart(entry));
+        if (!belongsToCurrentRun) {
+          logIgnoredStaleTerminal(entry, snapshotTiming);
+          return;
+        }
       }
       const error = typeof evt.data?.error === "string" ? evt.data.error : undefined;
       const outcome: SubagentRunOutcome =
@@ -1421,31 +1474,36 @@ async function waitForSubagentCompletion(params: {
           : undefined;
       const waitSnapshotTiming = { startedAt: waitStartedAt, endedAt: waitEndedAt };
       if (isTerminalSnapshotBeforeRunStart(entry, waitSnapshotTiming)) {
-        const waitSnapshotKey = `${wait.status}:${String(waitStartedAt)}:${String(waitEndedAt)}`;
-        if (waitSnapshotKey !== lastIgnoredWaitSnapshotKey) {
-          logIgnoredStaleTerminal(entry, waitSnapshotTiming);
-          lastIgnoredWaitSnapshotKey = waitSnapshotKey;
-        }
-        if (effectiveNowMs < deadlineMs) {
-          const retryDelayMs = resolveStaleTerminalRetryDelayMs(runId, staleWaitRetryAttempt);
-          staleWaitRetryAttempt += 1;
-          await sleepMs(Math.min(retryDelayMs, deadlineMs - effectiveNowMs));
-          if (!isActiveSubagentWaiter(runId, token)) {
-            return;
+        const belongsToCurrentRun =
+          isTerminalSnapshotOverlappingRunStart(entry, waitSnapshotTiming) &&
+          (await hasTranscriptActivityAfterRunStart(entry));
+        if (!belongsToCurrentRun) {
+          const waitSnapshotKey = `${wait.status}:${String(waitStartedAt)}:${String(waitEndedAt)}`;
+          if (waitSnapshotKey !== lastIgnoredWaitSnapshotKey) {
+            logIgnoredStaleTerminal(entry, waitSnapshotTiming);
+            lastIgnoredWaitSnapshotKey = waitSnapshotKey;
           }
-          effectiveNowMs = Date.now();
-          continue;
+          if (effectiveNowMs < deadlineMs) {
+            const retryDelayMs = resolveStaleTerminalRetryDelayMs(runId, staleWaitRetryAttempt);
+            staleWaitRetryAttempt += 1;
+            await sleepMs(Math.min(retryDelayMs, deadlineMs - effectiveNowMs));
+            if (!isActiveSubagentWaiter(runId, token)) {
+              return;
+            }
+            effectiveNowMs = Date.now();
+            continue;
+          }
+          scheduleSubagentRunCompletion({
+            runId,
+            endedAt: effectiveNowMs,
+            outcome: { status: "timeout" },
+            reason: SUBAGENT_ENDED_REASON_COMPLETE,
+            sendFarewell: true,
+            accountId: entry.requesterOrigin?.accountId,
+            triggerCleanup: true,
+          });
+          return;
         }
-        scheduleSubagentRunCompletion({
-          runId,
-          endedAt: effectiveNowMs,
-          outcome: { status: "timeout" },
-          reason: SUBAGENT_ENDED_REASON_COMPLETE,
-          sendFarewell: true,
-          accountId: entry.requesterOrigin?.accountId,
-          triggerCleanup: true,
-        });
-        return;
       }
 
       lastIgnoredWaitSnapshotKey = undefined;

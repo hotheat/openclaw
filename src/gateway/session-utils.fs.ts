@@ -10,7 +10,7 @@ import { resolveRequiredHomeDir } from "../infra/home-dir.js";
 import { hasInterSessionUserProvenance } from "../sessions/input-provenance.js";
 import { stripInlineDirectiveTagsForDisplay } from "../utils/directive-tags.js";
 import { extractToolCallNames, hasToolCall } from "../utils/transcript-tools.js";
-import { stripEnvelope } from "./chat-sanitize.js";
+import { stripEnvelope, stripUserTextForDisplay } from "./chat-sanitize.js";
 import type { SessionPreviewItem } from "./session-utils.types.js";
 
 type SessionTitleFields = {
@@ -365,9 +365,16 @@ export function readSessionTitleFieldsFromTranscript(
   }
 }
 
-function extractTextFromContent(content: TranscriptMessage["content"]): string | null {
+function extractTextFromContent(
+  content: TranscriptMessage["content"],
+  role?: string,
+): string | null {
+  const normalize = (text: string) => {
+    const displayText = role === "user" ? stripUserTextForDisplay(text) : text;
+    return stripInlineDirectiveTagsForDisplay(displayText).text.trim();
+  };
   if (typeof content === "string") {
-    const normalized = stripInlineDirectiveTagsForDisplay(content).text.trim();
+    const normalized = normalize(content);
     return normalized || null;
   }
   if (!Array.isArray(content)) {
@@ -378,7 +385,7 @@ function extractTextFromContent(content: TranscriptMessage["content"]): string |
       continue;
     }
     if (part.type === "text" || part.type === "output_text" || part.type === "input_text") {
-      const normalized = stripInlineDirectiveTagsForDisplay(part.text).text.trim();
+      const normalized = normalize(part.text);
       if (normalized) {
         return normalized;
       }
@@ -414,7 +421,7 @@ function extractFirstUserMessageFromTranscriptChunk(
       if (opts?.includeInterSession !== true && hasInterSessionUserProvenance(msg)) {
         continue;
       }
-      const text = extractTextFromContent(msg.content);
+      const text = extractTextFromContent(msg.content, msg.role);
       if (text) {
         return text;
       }
@@ -495,7 +502,7 @@ function readLastMessagePreviewFromOpenTranscript(params: {
       if (msg?.role !== "user" && msg?.role !== "assistant") {
         continue;
       }
-      const text = extractTextFromContent(msg.content);
+      const text = extractTextFromContent(msg.content, msg.role);
       if (text) {
         return text;
       }

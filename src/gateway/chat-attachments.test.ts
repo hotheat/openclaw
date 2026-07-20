@@ -1,4 +1,12 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+  MAX_CHAT_ATTACHMENTS,
+  MAX_CHAT_WORKSPACE_ATTACHMENTS_TOTAL_BYTES,
+} from "./chat-attachment-limits.js";
 import {
   buildMessageWithAttachments,
   type ChatAttachment,
@@ -43,6 +51,184 @@ describe("buildMessageWithAttachments", () => {
 });
 
 describe("parseMessageWithAttachments", () => {
+  it("resolves a workspace file without embedding base64", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachment-"));
+    const payload = "%PDF-1.4\n";
+    const relativePath = path.join("uploads", "webchat", "chat_test", "artifact-report.pdf");
+    const filePath = path.join(workspaceDir, relativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, payload);
+
+    try {
+      const parsed = await parseMessageWithAttachments(
+        "summarize",
+        [
+          {
+            type: "workspace_file",
+            mimeType: "application/pdf",
+            fileName: "report.pdf",
+            workspacePath: relativePath,
+            sizeBytes: 9,
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ],
+        { workspaceDir, webchatClientSessionId: "chat_test" },
+      );
+
+      expect(parsed.images).toEqual([]);
+      expect(parsed.mediaPaths).toEqual([await fs.realpath(filePath)]);
+      expect(parsed.mediaTypes).toEqual(["application/pdf"]);
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reuses workspace file validation for repeated paths", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachment-"));
+    const payload = "shared attachment";
+    const relativePath = path.join("uploads", "webchat", "chat_test", "artifact-shared.txt");
+    const filePath = path.join(workspaceDir, relativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, payload);
+    const attachment: ChatAttachment = {
+      type: "workspace_file",
+      workspacePath: relativePath,
+      sizeBytes: Buffer.byteLength(payload),
+      sha256: createHash("sha256").update(payload).digest("hex"),
+    };
+    const statSpy = vi.spyOn(fs, "stat");
+
+    try {
+      const parsed = await parseMessageWithAttachments("read", [attachment, attachment], {
+        workspaceDir,
+        webchatClientSessionId: "chat_test",
+      });
+
+      expect(parsed.mediaPaths).toEqual([await fs.realpath(filePath), await fs.realpath(filePath)]);
+      expect(statSpy).toHaveBeenCalledOnce();
+    } finally {
+      statSpy.mockRestore();
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects attachment count and workspace byte budgets before file access", async () => {
+    const tooMany = Array.from({ length: MAX_CHAT_ATTACHMENTS + 1 }, () => ({
+      type: "image",
+      content: PNG_1x1,
+    }));
+    await expect(parseMessageWithAttachments("read", tooMany)).rejects.toThrow(/count limit/i);
+
+    const sha256 = "a".repeat(64);
+    const firstSize = Math.floor(MAX_CHAT_WORKSPACE_ATTACHMENTS_TOTAL_BYTES / 2) + 1;
+    await expect(
+      parseMessageWithAttachments(
+        "read",
+        [
+          {
+            type: "workspace_file",
+            workspacePath: "missing-a",
+            sizeBytes: firstSize,
+            sha256,
+          },
+          {
+            type: "workspace_file",
+            workspacePath: "missing-b",
+            sizeBytes: firstSize,
+            sha256,
+          },
+        ],
+        { workspaceDir: "/missing", webchatClientSessionId: "chat_test" },
+      ),
+    ).rejects.toThrow(/total size limit/i);
+  });
+
+  it("rejects workspace files from another WebChat session upload directory", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachment-"));
+    const payload = "secret";
+    const relativePath = path.join("uploads", "webchat", "chat_b", "secret.txt");
+    const filePath = path.join(workspaceDir, relativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, payload);
+
+    try {
+      await expect(
+        parseMessageWithAttachments(
+          "read",
+          [
+            {
+              type: "workspace_file",
+              workspacePath: relativePath,
+              sizeBytes: payload.length,
+              sha256: createHash("sha256").update(payload).digest("hex"),
+            },
+          ],
+          { workspaceDir, webchatClientSessionId: "chat_a" },
+        ),
+      ).rejects.toThrow(/not allowed/i);
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace files with a mismatched SHA-256", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachment-"));
+    const payload = "actual";
+    const relativePath = path.join("uploads", "webchat", "chat_test", "artifact-report.txt");
+    const filePath = path.join(workspaceDir, relativePath);
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, payload);
+
+    try {
+      await expect(
+        parseMessageWithAttachments(
+          "read",
+          [
+            {
+              type: "workspace_file",
+              workspacePath: relativePath,
+              sizeBytes: payload.length,
+              sha256: createHash("sha256").update("expected").digest("hex"),
+            },
+          ],
+          { workspaceDir, webchatClientSessionId: "chat_test" },
+        ),
+      ).rejects.toThrow(/metadata mismatch/i);
+    } finally {
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects workspace files that resolve outside the Agent workspace", async () => {
+    const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-chat-attachment-"));
+    const workspaceDir = path.join(rootDir, "workspace");
+    const outsideDir = path.join(rootDir, "outside");
+    const uploadDir = path.join(workspaceDir, "uploads", "webchat");
+    await fs.mkdir(uploadDir, { recursive: true });
+    await fs.mkdir(outsideDir, { recursive: true });
+    await fs.writeFile(path.join(outsideDir, "secret.txt"), "secret");
+    await fs.symlink(outsideDir, path.join(uploadDir, "chat_test"));
+
+    try {
+      await expect(
+        parseMessageWithAttachments(
+          "read",
+          [
+            {
+              type: "workspace_file",
+              workspacePath: path.join("uploads", "webchat", "chat_test", "secret.txt"),
+              sizeBytes: 6,
+              sha256: createHash("sha256").update("secret").digest("hex"),
+            },
+          ],
+          { workspaceDir, webchatClientSessionId: "chat_test" },
+        ),
+      ).rejects.toThrow(/unavailable/i);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   it("strips data URL prefix", async () => {
     const parsed = await parseMessageWithAttachments(
       "see this",

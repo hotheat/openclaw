@@ -79,6 +79,22 @@ export function resolveContextWindowInfo(params: {
   return baseInfo;
 }
 
+export function shouldRequireExplicitContextWindow(params: {
+  cfg: OpenClawConfig | undefined;
+  provider: string;
+  modelId: string;
+  resolvedContextWindowTokens: number;
+  defaultTokens: number;
+}): boolean {
+  const providerEntry = findConfiguredProvider(params.cfg, params.provider);
+  if (!providerEntry) {
+    return false;
+  }
+  const models = Array.isArray(providerEntry.models) ? providerEntry.models : [];
+  const exactModel = models.find((model) => model?.id === params.modelId);
+  return !exactModel || normalizePositiveInt(exactModel.contextWindow) === null;
+}
+
 export type ContextWindowGuardResult = ContextWindowInfo & {
   shouldWarn: boolean;
   shouldBlock: boolean;

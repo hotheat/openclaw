@@ -9,6 +9,8 @@ type JsonSchema = {
   required?: string[];
   items?: JsonSchema;
   enum?: string[];
+  anyOf?: JsonSchema[];
+  const?: string;
   patternProperties?: Record<string, JsonSchema>;
 };
 
@@ -155,6 +157,30 @@ function emitStruct(name: string, schema: JsonSchema): string {
   return lines.join("\n");
 }
 
+function stringLiteralValues(schema: JsonSchema): string[] | null {
+  if (schema.enum?.length && schema.enum.every((value) => typeof value === "string")) {
+    return schema.enum;
+  }
+  if (!schema.anyOf?.length) {
+    return null;
+  }
+  const values = schema.anyOf.map((item) => item.const);
+  return values.every((value): value is string => typeof value === "string") ? values : null;
+}
+
+function emitStringEnum(name: string, schema: JsonSchema): string | null {
+  const values = stringLiteralValues(schema);
+  if (!values) {
+    return null;
+  }
+  return [
+    `public enum ${name}: String, Codable, Sendable {`,
+    ...values.map((value) => `    case ${safeName(value)} = "${value}"`),
+    "}",
+    "",
+  ].join("\n");
+}
+
 function emitGatewayFrame(): string {
   const cases = ["req", "res", "event"];
   const associated: Record<string, string> = {
@@ -227,6 +253,11 @@ async function generate() {
     }
     if (schema.type === "object") {
       parts.push(emitStruct(name, schema));
+      continue;
+    }
+    const stringEnum = emitStringEnum(name, schema);
+    if (stringEnum) {
+      parts.push(stringEnum);
     }
   }
 

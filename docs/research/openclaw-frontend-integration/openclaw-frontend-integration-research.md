@@ -772,7 +772,7 @@ OpenClaw 支持 `execApprovals` 网关方法。当 agent 需要执行危险操�
 │  │ $ npm install --save react@19                 │ │
 │  └───────────────────────────────────────────────┘ │
 │                                                     │
-│  工作目录: /Users/jiaoguo/project                    │
+│  工作目录: ~/project                                 │
 │                                                     │
 │  [允许一次] [始终允许] [拒绝]                        │
 └─────────────────────────────────────────────────────┘
@@ -1164,10 +1164,10 @@ update.available — 更新可用
 
 ## 附录 C: 参考项目信息
 
-| 项目           | 地址                                     | 技术栈             | 关键参考价值                                        |
-| -------------- | ---------------------------------------- | ------------------ | --------------------------------------------------- |
-| OpenWork       | github.com/different-ai/openwork         | Tauri + SolidJS    | 权限系统、执行计划时间线                            |
-| AIonUI         | github.com/iOfficeAI/AionUi              | Electron + UnoCSS  | 多引擎支持(含OpenClaw)、cron UI                     |
-| DeerFlow       | /Users/jiaoguo/github/deer-flow/frontend | Next.js + React 19 | 消息分组、SubtaskCard、产物面板、ai-elements 组件库 |
-| OpenClaw UI    | ui/ (内置)                               | Lit 3 + Vite 7     | GatewayBrowserClient、WebSocket 协议实现            |
-| agent-frontend | /Users/jiaoguo/github/agent-frontend     | React 19 + Vite 7  | 现有项目基础                                        |
+| 项目           | 地址                             | 技术栈             | 关键参考价值                                        |
+| -------------- | -------------------------------- | ------------------ | --------------------------------------------------- |
+| OpenWork       | github.com/different-ai/openwork | Tauri + SolidJS    | 权限系统、执行计划时间线                            |
+| AIonUI         | github.com/iOfficeAI/AionUi      | Electron + UnoCSS  | 多引擎支持(含OpenClaw)、cron UI                     |
+| DeerFlow       | ~/github/deer-flow/frontend      | Next.js + React 19 | 消息分组、SubtaskCard、产物面板、ai-elements 组件库 |
+| OpenClaw UI    | ui/ (内置)                       | Lit 3 + Vite 7     | GatewayBrowserClient、WebSocket 协议实现            |
+| agent-frontend | ~/github/agent-frontend          | React 19 + Vite 7  | 现有项目基础                                        |

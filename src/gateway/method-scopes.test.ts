@@ -4,6 +4,7 @@ import {
   isGatewayMethodClassified,
   resolveLeastPrivilegeOperatorScopesForMethod,
 } from "./method-scopes.js";
+import { listGatewayMethods } from "./server-methods-list.js";
 import { coreGatewayHandlers } from "./server-methods.js";
 
 describe("method scope resolution", () => {
@@ -12,6 +13,22 @@ describe("method scope resolution", () => {
       "operator.read",
     ]);
     expect(resolveLeastPrivilegeOperatorScopesForMethod("poll")).toEqual(["operator.write"]);
+  });
+
+  it("exposes subagents.list as an operator.read method", () => {
+    expect(listGatewayMethods()).toContain("subagents.list");
+    expect(coreGatewayHandlers["subagents.list"]).toBeDefined();
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("subagents.list")).toEqual([
+      "operator.read",
+    ]);
+  });
+
+  it("requires operator.write to materialize a chat attachment", () => {
+    expect(listGatewayMethods()).toContain("chat.attachment.materialize");
+    expect(coreGatewayHandlers["chat.attachment.materialize"]).toBeDefined();
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("chat.attachment.materialize")).toEqual([
+      "operator.write",
+    ]);
   });
 
   it("returns empty scopes for unknown methods", () => {

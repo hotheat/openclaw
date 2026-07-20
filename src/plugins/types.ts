@@ -337,6 +337,8 @@ export type PluginHookName =
   | "subagent_spawning"
   | "subagent_delivery_target"
   | "subagent_spawned"
+  | "subagent_handoff_staging"
+  | "subagent_handoff_delivery"
   | "subagent_ended"
   | "taskflow_updated"
   | "gateway_start"
@@ -668,6 +670,48 @@ export type PluginHookSubagentSpawnedEvent = {
   threadRequested: boolean;
 };
 
+export type PluginHookStagedArtifact = {
+  relativePath: string;
+  fileName?: string;
+  title?: string;
+  mimeType?: string;
+};
+
+export type PluginHookSubagentHandoffStagingEvent = {
+  runId: string;
+  childSessionKey: string;
+  requesterSessionKey: string;
+  content: string;
+  childWorkspaceDir: string;
+  requesterWorkspaceDir: string;
+  requesterOrigin?: {
+    channel?: string;
+    accountId?: string;
+    to?: string;
+    threadId?: string | number;
+  };
+  outcome?: "ok" | "error" | "timeout" | "unknown";
+  completionDelivery?: "auto" | "parent" | "direct";
+  signal?: AbortSignal;
+};
+
+export type PluginHookSubagentHandoffStagingResult = {
+  artifacts: PluginHookStagedArtifact[];
+};
+
+export type PluginHookSubagentHandoffDeliveryEvent = PluginHookSubagentHandoffStagingEvent & {
+  artifacts: PluginHookStagedArtifact[];
+};
+
+export type PluginHookSubagentHandoffDeliveryFailure = {
+  relativePath?: string;
+  message: string;
+};
+
+export type PluginHookSubagentHandoffDeliveryResult = {
+  failures: PluginHookSubagentHandoffDeliveryFailure[];
+};
+
 // subagent_ended hook
 export type PluginHookSubagentEndedEvent = {
   targetSessionKey: string;
@@ -799,6 +843,20 @@ export type PluginHookHandlerMap = {
     event: PluginHookSubagentSpawnedEvent,
     ctx: PluginHookSubagentContext,
   ) => Promise<void> | void;
+  subagent_handoff_staging: (
+    event: PluginHookSubagentHandoffStagingEvent,
+    ctx: PluginHookSubagentContext,
+  ) =>
+    | Promise<PluginHookSubagentHandoffStagingResult | void>
+    | PluginHookSubagentHandoffStagingResult
+    | void;
+  subagent_handoff_delivery: (
+    event: PluginHookSubagentHandoffDeliveryEvent,
+    ctx: PluginHookSubagentContext,
+  ) =>
+    | Promise<PluginHookSubagentHandoffDeliveryResult | void>
+    | PluginHookSubagentHandoffDeliveryResult
+    | void;
   subagent_ended: (
     event: PluginHookSubagentEndedEvent,
     ctx: PluginHookSubagentContext,

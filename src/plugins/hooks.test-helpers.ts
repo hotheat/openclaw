@@ -1,7 +1,7 @@
 import type { PluginRegistry } from "./registry.js";
 
 export function createMockPluginRegistry(
-  hooks: Array<{ hookName: string; handler: (...args: unknown[]) => unknown }>,
+  hooks: Array<{ hookName: string; handler: (...args: unknown[]) => unknown; priority?: number }>,
 ): PluginRegistry {
   return {
     hooks: hooks as never[],
@@ -9,7 +9,7 @@ export function createMockPluginRegistry(
       pluginId: "test-plugin",
       hookName: h.hookName,
       handler: h.handler,
-      priority: 0,
+      priority: h.priority ?? 0,
       source: "test",
     })),
     tools: [],

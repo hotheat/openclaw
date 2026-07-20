@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -9,14 +10,22 @@ import type { GatewayRequestContext } from "./types.js";
 const mockState = vi.hoisted(() => ({
   transcriptPath: "",
   sessionId: "sess-1",
+  canonicalKey: "main",
   finalText: "[[reply_to_current]]",
   lastContext: undefined as
     | {
         Provider?: string;
         Surface?: string;
         OriginatingChannel?: string;
+        MediaPath?: string;
+        MediaPaths?: string[];
+        MediaUrl?: string;
+        MediaUrls?: string[];
+        MediaType?: string;
+        MediaTypes?: string[];
       }
     | undefined,
+  workspaceDir: undefined as string | undefined,
   deliveryContext: undefined as
     | {
         channel?: string;
@@ -41,14 +50,16 @@ vi.mock("../session-utils.js", async (importOriginal) => {
   return {
     ...original,
     loadSessionEntry: () => ({
-      cfg: {},
+      cfg: mockState.workspaceDir
+        ? { agents: { defaults: { workspace: mockState.workspaceDir } } }
+        : {},
       storePath: path.join(path.dirname(mockState.transcriptPath), "sessions.json"),
       entry: {
         sessionId: mockState.sessionId,
         sessionFile: mockState.transcriptPath,
         deliveryContext: mockState.deliveryContext,
       },
-      canonicalKey: "main",
+      canonicalKey: mockState.canonicalKey,
     }),
   };
 });
@@ -104,6 +115,8 @@ function createTranscriptFixture(prefix: string) {
     "utf-8",
   );
   mockState.transcriptPath = transcriptPath;
+  mockState.workspaceDir = undefined;
+  mockState.canonicalKey = "main";
 }
 
 function extractFirstTextBlock(payload: unknown): string | undefined {
@@ -255,6 +268,69 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     });
   });
 
+  it("passes workspace attachments as media paths without local-path media URLs", async () => {
+    createTranscriptFixture("openclaw-chat-send-workspace-media-");
+    const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-chat-workspace-"));
+    mockState.canonicalKey = "agent:main:webchat:web-client:chat-1";
+    const payload = "workspace attachment";
+    const workspacePath = path.join("uploads", "webchat", "chat-1", "report.md");
+    const absolutePath = path.join(workspaceDir, workspacePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, payload, "utf-8");
+    const canonicalPath = fs.realpathSync(absolutePath);
+    mockState.workspaceDir = workspaceDir;
+    mockState.finalText = "done";
+    mockState.deliveryContext = undefined;
+    mockState.lastContext = undefined;
+    const respond = vi.fn();
+
+    await chatHandlers["chat.send"]({
+      params: {
+        sessionKey: "main",
+        message: "read the attachment",
+        attachments: [
+          {
+            type: "workspace_file",
+            mimeType: "text/markdown",
+            fileName: "report.md",
+            workspacePath,
+            sizeBytes: Buffer.byteLength(payload),
+            sha256: createHash("sha256").update(payload).digest("hex"),
+          },
+        ],
+        deliver: false,
+        idempotencyKey: "idem-workspace-media",
+      },
+      respond,
+      req: {} as never,
+      client: {
+        connect: {
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "dev",
+            platform: "web",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+          scopes: ["operator.admin"],
+        },
+      } as never,
+      isWebchatConnect: () => true,
+      context: createChatContext() as GatewayRequestContext,
+    });
+
+    await vi.waitFor(() => {
+      expect(mockState.lastContext?.MediaPath).toBe(canonicalPath);
+    });
+    expect(mockState.lastContext).toMatchObject({
+      MediaPath: canonicalPath,
+      MediaPaths: [canonicalPath],
+      MediaType: "text/markdown",
+      MediaTypes: ["text/markdown"],
+    });
+    expect(mockState.lastContext).not.toHaveProperty("MediaUrl");
+    expect(mockState.lastContext).not.toHaveProperty("MediaUrls");
+  });
+
   it("records TUI chat.send input as a first-party UI origin", async () => {
     createTranscriptFixture("openclaw-chat-send-tui-origin-");
     mockState.finalText = "hello";
@@ -323,6 +399,40 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       }),
     );
     expect(extractFirstTextBlock(chatCall?.[1])).toBe("");
+  });
+
+  it("chat.inject deduplicates repeated direct-completion writes", async () => {
+    createTranscriptFixture("openclaw-chat-inject-idempotent-");
+    mockState.deliveryContext = undefined;
+    const context = createChatContext();
+    const firstRespond = vi.fn();
+    const secondRespond = vi.fn();
+    const params = {
+      sessionKey: "main",
+      message: "researcher final",
+      idempotencyKey: "subagent-completion-1",
+    };
+
+    await chatHandlers["chat.inject"]({
+      params,
+      respond: firstRespond,
+      req: {} as never,
+      client: null as never,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+    });
+    await chatHandlers["chat.inject"]({
+      params,
+      respond: secondRespond,
+      req: {} as never,
+      client: null as never,
+      isWebchatConnect: () => false,
+      context: context as GatewayRequestContext,
+    });
+
+    expect(firstRespond).toHaveBeenCalledWith(true, expect.objectContaining({ ok: true }));
+    expect(secondRespond).toHaveBeenCalledWith(true, { ok: true, deduplicated: true });
+    expect(context.broadcast).toHaveBeenCalledTimes(1);
   });
 
   it("chat.send non-streaming final keeps message defined for directive-only assistant text", async () => {
