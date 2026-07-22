@@ -8,26 +8,6 @@ name: AI Code Review
       - reopened
       - ready_for_review
 
-permissions:
-  contents: read
-  issues: write
-  pull-requests: write
-
-env:
-  ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-  ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
-  ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL }}
-  ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
-  CLAUDE_CODE_EFFORT_LEVEL: ${{ vars.CLAUDE_CODE_EFFORT_LEVEL }}
-  CLAUDECODE_REVIEW_ENABLED: ${{ vars.CLAUDECODE_REVIEW_ENABLED }}
-  CLAUDECODE_REVIEW_TIMEOUT_MINUTES: ${{ vars.CLAUDECODE_REVIEW_TIMEOUT_MINUTES || '8' }}
-  CODEX_API_URL: ${{ vars.CODEX_API_URL }}
-  CODEX_TOKEN: ${{ secrets.CODEX_TOKEN }}
-  CODEX_MODEL: ${{ vars.CODEX_MODEL }}
-  CODEX_MODEL_REASONING_EFFORT: ${{ vars.CODEX_MODEL_REASONING_EFFORT }}
-  CODEX_REVIEW_TIMEOUT_MINUTES: ${{ vars.CODEX_REVIEW_TIMEOUT_MINUTES || '8' }}
-
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -39,75 +19,68 @@ jobs:
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(vars.CODEX_REVIEW_TIMEOUT_MINUTES || '8') }}
+    permissions:
+      contents: read
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
       - name: Checkout pull request
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Install Codex CLI
-        env:
-          CODEX_VERSION: 0.117.0
-        run: |
-          set -euo pipefail
-          if [ -z "${CODEX_TOKEN}" ]; then
-            echo "CODEX_TOKEN is empty"
-            exit 1
-          fi
-          if [ -z "${CODEX_API_URL}" ]; then
-            echo "CODEX_API_URL is empty"
-            exit 1
-          fi
-          npm install --global "@openai/codex@${CODEX_VERSION}"
-          echo "$(npm prefix --global)/bin" >> "$GITHUB_PATH"
-          mkdir -p "$HOME/.codex"
-          cat > "$HOME/.codex/config.toml" <<EOF
-          model = "${CODEX_MODEL}"
-          model_reasoning_effort = "${CODEX_MODEL_REASONING_EFFORT}"
-          preferred_auth_method = "apikey"
-          disable_response_storage = true
-          personality = "pragmatic"
-          model_provider = "sss"
-
-          [model_providers.sss]
-          name = "sss"
-          base_url = "${CODEX_API_URL}"
-          wire_api = "responses"
-          env_key = "CODEX_TOKEN"
-          EOF
-          chmod 600 "$HOME/.codex/config.toml"
-
-      - name: Run Codex review
+      - name: Build trusted review prompt
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "${PR_BASE_REF}:refs/remotes/origin/${PR_BASE_REF}"
-          PROMPT="$(cat .github/codex/prompts/review.md)"
-          codex exec \
-            --dangerously-bypass-approvals-and-sandbox \
-            --model "${CODEX_MODEL}" \
-            --output-last-message codex-review.md \
-            "${PROMPT}
+          git show "${PR_BASE_SHA}:.github/codex/prompts/review.md" > .codex-review-prompt.md
+          {
+            printf '\n\n'
+            printf 'Base branch ref: origin/%s\n' "${PR_BASE_REF}"
+            printf 'Base branch commit at PR event: %s\n' "${PR_BASE_SHA}"
+            printf 'Head commit: %s\n' "${PR_HEAD_SHA}"
+            printf 'Checked out commit: %s\n\n' "$(git rev-parse HEAD)"
+            printf 'Review exactly %s...%s. Do not substitute the current base branch tip.\n' "${PR_BASE_SHA}" "${PR_HEAD_SHA}"
+            printf 'Review this pull request and produce a concise markdown report.\n'
+          } >> .codex-review-prompt.md
 
-            Base branch ref: origin/${PR_BASE_REF}
-            Base branch commit at PR event: ${PR_BASE_SHA}
-            Head commit: ${PR_HEAD_SHA}
-            Checked out commit: $(git rev-parse HEAD)
+      - name: Run Codex review
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.CODEX_TOKEN }}
+          responses-api-endpoint: ${{ vars.CODEX_RESPONSES_API_ENDPOINT }}
+          model: ${{ vars.CODEX_MODEL }}
+          effort: ${{ vars.CODEX_MODEL_REASONING_EFFORT }}
+          prompt-file: .codex-review-prompt.md
+          output-file: codex-review.md
+          sandbox: read-only
+          safety-strategy: drop-sudo
+          codex-version: ${{ vars.CODEX_VERSION }}
+          codex-args: '["--ephemeral", "--config", "disable_response_storage=true", "--config", "personality=\"pragmatic\""]'
 
-            Review this pull request and produce a concise markdown report."
-
+  post_codex_review:
+    needs: codex_review
+    if: needs.codex_review.outputs.final_message != ''
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
       - name: Comment review on pull request
         uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ needs.codex_review.outputs.final_message }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const fs = require('fs');
             const marker = '<!-- codex-review -->';
-            const review = fs.readFileSync('codex-review.md', 'utf8').trim();
+            const review = process.env.CODEX_FINAL_MESSAGE.trim();
             if (!review) {
               core.info('No review output generated by Codex.');
               return;
@@ -146,11 +119,24 @@ jobs:
       github.event.pull_request.head.repo.fork == false
     runs-on: ubuntu-latest
     timeout-minutes: ${{ fromJSON(vars.CLAUDECODE_REVIEW_TIMEOUT_MINUTES || '8') }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env:
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+      CLAUDE_CODE_EFFORT_LEVEL: ${{ vars.CLAUDE_CODE_EFFORT_LEVEL }}
+      CLAUDECODE_REVIEW_TIMEOUT_MINUTES: ${{ vars.CLAUDECODE_REVIEW_TIMEOUT_MINUTES || '8' }}
     steps:
       - name: Checkout pull request
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Install Claude Code
@@ -206,7 +192,6 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "${PR_BASE_REF}:refs/remotes/origin/${PR_BASE_REF}"
           PROMPT="$(cat .github/codex/prompts/review.md)"
           CLAUDECODE_COMMAND_TIMEOUT_MINUTES=$((CLAUDECODE_REVIEW_TIMEOUT_MINUTES - 1))
           if [ "${CLAUDECODE_COMMAND_TIMEOUT_MINUTES}" -lt 1 ]; then
