@@ -31,6 +31,12 @@ describe("method scope resolution", () => {
     ]);
   });
 
+  it("requires operator.write to steer an active chat run", () => {
+    expect(listGatewayMethods()).toContain("chat.steer");
+    expect(coreGatewayHandlers["chat.steer"]).toBeDefined();
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("chat.steer")).toEqual(["operator.write"]);
+  });
+
   it("returns empty scopes for unknown methods", () => {
     expect(resolveLeastPrivilegeOperatorScopesForMethod("totally.unknown.method")).toEqual([]);
   });

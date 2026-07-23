@@ -6,6 +6,8 @@ import {
   ProtocolSchemas,
   validateAgentParams,
   validateChatSendParams,
+  validateChatSteerParams,
+  validateChatSteerResult,
   validateSubagentsListParams,
   validateSubagentsListResult,
 } from "./index.js";
@@ -173,6 +175,41 @@ describe("attachment protocol", () => {
     ).toBe(false);
     expect(
       validateAgentParams({ message: "inspect", attachments, idempotencyKey: "agent-2" }),
+    ).toBe(false);
+  });
+});
+
+describe("chat steer protocol", () => {
+  const params = {
+    sessionKey: "agent:main:main",
+    runId: "run-1",
+    idempotencyKey: "steer-1",
+    message: "change direction",
+  };
+
+  it("accepts strict steer params and rejects empty or additional fields", () => {
+    expect(ProtocolSchemas.ChatSteerParams).toBeDefined();
+    expect(validateChatSteerParams(params)).toBe(true);
+    expect(validateChatSteerParams({ ...params, message: "" })).toBe(false);
+    expect(validateChatSteerParams({ ...params, unexpected: true })).toBe(false);
+  });
+
+  it("accepts only the public steer result variants", () => {
+    expect(ProtocolSchemas.ChatSteerResult).toBeDefined();
+    expect(validateChatSteerResult({ runId: "run-1", status: "accepted" })).toBe(true);
+    expect(
+      validateChatSteerResult({
+        runId: "run-1",
+        status: "not_steerable",
+        reason: "compacting",
+      }),
+    ).toBe(true);
+    expect(
+      validateChatSteerResult({
+        runId: "run-1",
+        status: "not_steerable",
+        reason: "unknown",
+      }),
     ).toBe(false);
   });
 });

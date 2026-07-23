@@ -3,6 +3,7 @@ import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
+import { steerEmbeddedPiRun } from "../../agents/pi-embedded-runner/runs.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
@@ -38,6 +39,7 @@ import {
   validateChatAttachmentMaterializeParams,
   validateChatInjectParams,
   validateChatSendParams,
+  validateChatSteerParams,
 } from "../protocol/index.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
@@ -614,6 +616,67 @@ export const chatHandlers: GatewayRequestHandlers = {
       verboseLevel,
     });
   },
+  "chat.steer": ({ params, respond, context }) => {
+    if (!validateChatSteerParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid chat.steer params: ${formatValidationErrors(validateChatSteerParams.errors)}`,
+        ),
+      );
+      return;
+    }
+
+    const { sessionKey, runId, idempotencyKey, message } = params;
+    const sanitizedMessageResult = sanitizeChatSendMessageInput(message);
+    if (!sanitizedMessageResult.ok) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, sanitizedMessageResult.error),
+      );
+      return;
+    }
+    if (!sanitizedMessageResult.message.trim()) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "message required"));
+      return;
+    }
+
+    const active = context.chatAbortControllers.get(runId);
+    if (!active) {
+      context.logGateway.debug(
+        `chat.steer status=not_steerable reason=run_inactive runId=${runId}`,
+      );
+      respond(true, { runId, status: "not_steerable", reason: "run_inactive" });
+      return;
+    }
+    if (active.sessionKey !== sessionKey) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match sessionKey"),
+      );
+      return;
+    }
+    if (active.steerIdempotencyKeys.has(idempotencyKey)) {
+      context.logGateway.debug(`chat.steer status=accepted cached=true runId=${runId}`);
+      respond(true, { runId, status: "accepted" }, undefined, { cached: true, runId });
+      return;
+    }
+
+    const result = steerEmbeddedPiRun(active.sessionId, sanitizedMessageResult.message);
+    if (result.status === "accepted") {
+      active.steerIdempotencyKeys.add(idempotencyKey);
+      context.logGateway.debug(`chat.steer status=accepted cached=false runId=${runId}`);
+    } else {
+      context.logGateway.debug(
+        `chat.steer status=not_steerable reason=${result.reason} runId=${runId}`,
+      );
+    }
+    respond(true, { runId, ...result }, undefined, { runId });
+  },
   "chat.abort": ({ params, respond, context }) => {
     if (!validateChatAbortParams(params)) {
       respond(
@@ -862,6 +925,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         sessionKey: rawSessionKey,
         startedAtMs: now,
         expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
+        steerIdempotencyKeys: new Set(),
       });
       const ackPayload = {
         runId: clientRunId,

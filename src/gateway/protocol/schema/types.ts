@@ -96,6 +96,8 @@ import type {
   ChatAbortParamsSchema,
   ChatEventSchema,
   ChatInjectParamsSchema,
+  ChatSteerParamsSchema,
+  ChatSteerResultSchema,
   LogsTailParamsSchema,
   LogsTailResultSchema,
 } from "./logs-chat.js";
@@ -255,6 +257,8 @@ export type DeviceTokenRevokeParams = Static<typeof DeviceTokenRevokeParamsSchem
 export type ChatAttachmentMaterializeParams = Static<typeof ChatAttachmentMaterializeParamsSchema>;
 export type ChatAbortParams = Static<typeof ChatAbortParamsSchema>;
 export type ChatInjectParams = Static<typeof ChatInjectParamsSchema>;
+export type ChatSteerParams = Static<typeof ChatSteerParamsSchema>;
+export type ChatSteerResult = Static<typeof ChatSteerResultSchema>;
 export type ChatEvent = Static<typeof ChatEventSchema>;
 export type UpdateRunParams = Static<typeof UpdateRunParamsSchema>;
 export type TickEvent = Static<typeof TickEventSchema>;

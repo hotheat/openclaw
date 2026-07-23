@@ -3019,6 +3019,32 @@ public struct ChatSendParams: Codable, Sendable {
     }
 }
 
+public struct ChatSteerParams: Codable, Sendable {
+    public let sessionkey: String
+    public let runid: String
+    public let idempotencykey: String
+    public let message: String
+
+    public init(
+        sessionkey: String,
+        runid: String,
+        idempotencykey: String,
+        message: String)
+    {
+        self.sessionkey = sessionkey
+        self.runid = runid
+        self.idempotencykey = idempotencykey
+        self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionkey = "sessionKey"
+        case runid = "runId"
+        case idempotencykey = "idempotencyKey"
+        case message
+    }
+}
+
 public struct ChatAbortParams: Codable, Sendable {
     public let sessionkey: String
     public let runid: String?

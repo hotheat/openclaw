@@ -62,6 +62,10 @@ import {
   type ChatInjectParams,
   ChatInjectParamsSchema,
   ChatSendParamsSchema,
+  type ChatSteerParams,
+  ChatSteerParamsSchema,
+  type ChatSteerResult,
+  ChatSteerResultSchema,
   type ConfigApplyParams,
   ConfigApplyParamsSchema,
   type ConfigGetParams,
@@ -386,6 +390,8 @@ export const validateChatAttachmentMaterializeParams = ajv.compile<ChatAttachmen
   ChatAttachmentMaterializeParamsSchema,
 );
 export const validateChatSendParams = ajv.compile(ChatSendParamsSchema);
+export const validateChatSteerParams = ajv.compile<ChatSteerParams>(ChatSteerParamsSchema);
+export const validateChatSteerResult = ajv.compile<ChatSteerResult>(ChatSteerResultSchema);
 export const validateChatAbortParams = ajv.compile<ChatAbortParams>(ChatAbortParamsSchema);
 export const validateChatInjectParams = ajv.compile<ChatInjectParams>(ChatInjectParamsSchema);
 export const validateChatEvent = ajv.compile(ChatEventSchema);
@@ -523,6 +529,8 @@ export {
   ChatHistoryParamsSchema,
   ChatAttachmentMaterializeParamsSchema,
   ChatSendParamsSchema,
+  ChatSteerParamsSchema,
+  ChatSteerResultSchema,
   ChatInjectParamsSchema,
   UpdateRunParamsSchema,
   TickEventSchema,
@@ -637,4 +645,6 @@ export type {
   PollParams,
   UpdateRunParams,
   ChatInjectParams,
+  ChatSteerParams,
+  ChatSteerResult,
 };

@@ -45,6 +45,38 @@ export const ChatSendParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const ChatSteerParamsSchema = Type.Object(
+  {
+    sessionKey: NonEmptyString,
+    runId: NonEmptyString,
+    idempotencyKey: NonEmptyString,
+    message: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const ChatSteerResultSchema = Type.Union([
+  Type.Object(
+    {
+      runId: NonEmptyString,
+      status: Type.Literal("accepted"),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      runId: NonEmptyString,
+      status: Type.Literal("not_steerable"),
+      reason: Type.Union([
+        Type.Literal("run_inactive"),
+        Type.Literal("not_streaming"),
+        Type.Literal("compacting"),
+      ]),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
 export const ChatAttachmentMaterializeParamsSchema = Type.Object(
   {
     sessionKey: NonEmptyString,

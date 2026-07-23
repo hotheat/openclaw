@@ -39,6 +39,7 @@ function createActiveRun(sessionKey: string, sessionId: string) {
     sessionKey,
     startedAtMs: now,
     expiresAtMs: now + 30_000,
+    steerIdempotencyKeys: new Set(),
   };
 }
 

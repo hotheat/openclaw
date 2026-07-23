@@ -13,6 +13,7 @@ function createActiveEntry(sessionKey: string): ChatAbortControllerEntry {
     sessionKey,
     startedAtMs: now,
     expiresAtMs: now + 10_000,
+    steerIdempotencyKeys: new Set(),
   };
 }
 

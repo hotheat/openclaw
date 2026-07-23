@@ -89,22 +89,37 @@ function cancelPendingEmbeddedRuns(sessionId: string, reason: string, sessionKey
 }
 
 export function queueEmbeddedPiMessage(sessionId: string, text: string): boolean {
+  return steerEmbeddedPiRun(sessionId, text).status === "accepted";
+}
+
+export type EmbeddedPiSteerResult =
+  | { status: "accepted" }
+  | {
+      status: "not_steerable";
+      reason: "run_inactive" | "not_streaming" | "compacting";
+    };
+
+export function steerEmbeddedPiRun(sessionId: string, text: string): EmbeddedPiSteerResult {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
   if (!handle) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
-    return false;
+    return { status: "not_steerable", reason: "run_inactive" };
   }
   if (!handle.isStreaming()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
-    return false;
+    return { status: "not_steerable", reason: "not_streaming" };
   }
   if (handle.isCompacting()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
-    return false;
+    return { status: "not_steerable", reason: "compacting" };
   }
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
   void handle.queueMessage(text);
-  return true;
+  return { status: "accepted" };
+}
+
+export function isEmbeddedPiRunCompacting(sessionId: string): boolean {
+  return ACTIVE_EMBEDDED_RUNS.get(sessionId)?.isCompacting() ?? false;
 }
 
 export function abortEmbeddedPiRun(sessionId: string): boolean {
