@@ -141,6 +141,7 @@ import {
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
 import { detectAndLoadPromptImages } from "./images.js";
+import { createEmbeddedSteerQueue } from "./steer-queue.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
 
 type PromptBuildHookRunner = {
@@ -1357,10 +1358,14 @@ export async function runEmbeddedAttempt(
         getSdkAutoCompactionCount,
       } = subscription;
 
+      const steerQueue = createEmbeddedSteerQueue({
+        steer: (text) => activeSession.steer(text),
+        hasQueuedMessages: () => activeSession.agent.hasQueuedMessages(),
+        continue: () => activeSession.agent.continue(),
+      });
       const queueHandle: EmbeddedPiQueueHandle = {
-        queueMessage: async (text: string) => {
-          await activeSession.steer(text);
-        },
+        runId: params.runId,
+        queueMessage: (text: string) => steerQueue.queue(text),
         isStreaming: () => activeSession.isStreaming,
         isCompacting: () => subscription.isCompacting(),
         abort: abortRun,
@@ -1902,14 +1907,16 @@ export async function runEmbeddedAttempt(
                 baselineMessageCount: activeSession.messages.length,
               });
               if (imageResult.images.length > 0) {
-                const promptPromise = activeSession.prompt(effectivePrompt, {
-                  images: imageResult.images,
-                });
-                await abortable(promptPromise);
+                await steerQueue.runPrompt(
+                  () =>
+                    activeSession.prompt(effectivePrompt, {
+                      images: imageResult.images,
+                    }),
+                  abortable,
+                );
                 return;
               }
-              const promptPromise = activeSession.prompt(effectivePrompt);
-              await abortable(promptPromise);
+              await steerQueue.runPrompt(() => activeSession.prompt(effectivePrompt), abortable);
             });
           });
         } catch (err) {
@@ -2042,6 +2049,7 @@ export async function runEmbeddedAttempt(
         generationFinishError = describeUnknownError(err);
         throw err;
       } finally {
+        steerQueue.close();
         clearTimeout(abortTimer);
         if (abortWarnTimer) {
           clearTimeout(abortWarnTimer);

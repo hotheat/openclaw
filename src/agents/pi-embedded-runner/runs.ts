@@ -5,7 +5,8 @@ import {
 } from "../../logging/diagnostic.js";
 
 type EmbeddedPiQueueHandle = {
-  queueMessage: (text: string) => Promise<void>;
+  runId: string;
+  queueMessage: (text: string) => boolean;
   isStreaming: () => boolean;
   isCompacting: () => boolean;
   abort: () => void;
@@ -15,7 +16,9 @@ const ACTIVE_EMBEDDED_RUNS = new Map<string, EmbeddedPiQueueHandle>();
 type PendingEmbeddedRunToken = {
   id: number;
   sessionId: string;
+  runId: string;
   sessionKey?: string;
+  steerMessages: string[];
   consumed: boolean;
   cleared: boolean;
   abortSignal: AbortSignal;
@@ -100,21 +103,48 @@ export type EmbeddedPiSteerResult =
     };
 
 export function steerEmbeddedPiRun(sessionId: string, text: string): EmbeddedPiSteerResult {
+  return steerEmbeddedPiRunHandle(sessionId, text);
+}
+
+export function steerEmbeddedPiRunById(
+  sessionId: string,
+  runId: string,
+  text: string,
+): EmbeddedPiSteerResult {
+  return steerEmbeddedPiRunHandle(sessionId, text, runId);
+}
+
+function steerEmbeddedPiRunHandle(
+  sessionId: string,
+  text: string,
+  expectedRunId?: string,
+): EmbeddedPiSteerResult {
   const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
-  if (!handle) {
-    diag.debug(`queue message failed: sessionId=${sessionId} reason=no_active_run`);
+  if (!handle || (expectedRunId && handle.runId !== expectedRunId)) {
+    const pendingToken = expectedRunId
+      ? PENDING_EMBEDDED_RUNS.get(sessionId)?.tokens.find((token) => token.runId === expectedRunId)
+      : undefined;
+    if (pendingToken) {
+      pendingToken.steerMessages.push(text);
+      logMessageQueued({ sessionId, source: "pi-embedded-runner-pending" });
+      return { status: "accepted" };
+    }
+    diag.debug(
+      `queue message failed: sessionId=${sessionId} reason=${
+        handle ? "run_id_mismatch" : "no_active_run"
+      }`,
+    );
     return { status: "not_steerable", reason: "run_inactive" };
-  }
-  if (!handle.isStreaming()) {
-    diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
-    return { status: "not_steerable", reason: "not_streaming" };
   }
   if (handle.isCompacting()) {
     diag.debug(`queue message failed: sessionId=${sessionId} reason=compacting`);
     return { status: "not_steerable", reason: "compacting" };
   }
+  if (!handle.queueMessage(text)) {
+    diag.debug(`queue message failed: sessionId=${sessionId} reason=not_streaming`);
+    return { status: "not_steerable", reason: "not_streaming" };
+  }
   logMessageQueued({ sessionId, source: "pi-embedded-runner" });
-  void handle.queueMessage(text);
   return { status: "accepted" };
 }
 
@@ -215,7 +245,11 @@ export function setActiveEmbeddedRun(
 ) {
   const wasActive = ACTIVE_EMBEDDED_RUNS.has(sessionId);
   const pendingState = PENDING_EMBEDDED_RUNS.get(sessionId);
-  const pendingToken = pendingState?.tokens.shift();
+  const pendingTokenIndex = pendingState?.tokens.findIndex((token) => token.runId === handle.runId);
+  const pendingToken =
+    pendingState && pendingTokenIndex !== undefined && pendingTokenIndex >= 0
+      ? pendingState.tokens.splice(pendingTokenIndex, 1)[0]
+      : undefined;
   if (pendingToken) {
     pendingToken.consumed = true;
     deletePendingStateIfEmpty(sessionId);
@@ -233,6 +267,13 @@ export function setActiveEmbeddedRun(
         sessionId,
       )}`,
     );
+  }
+  for (const message of pendingToken?.steerMessages ?? []) {
+    if (!handle.queueMessage(message)) {
+      diag.warn(
+        `pending steer rejected during run registration: sessionId=${sessionId} runId=${handle.runId}`,
+      );
+    }
   }
 }
 
@@ -267,6 +308,7 @@ export function clearActiveEmbeddedRun(
 
 export function registerPendingEmbeddedRun(
   sessionId: string,
+  runId: string,
   sessionKey?: string,
 ): PendingEmbeddedRunToken {
   const state = PENDING_EMBEDDED_RUNS.get(sessionId) ?? { tokens: [], sessionKey };
@@ -275,7 +317,9 @@ export function registerPendingEmbeddedRun(
   const token: PendingEmbeddedRunToken = {
     id: nextPendingEmbeddedRunId++,
     sessionId,
+    runId,
     sessionKey: sessionKey ?? state.sessionKey,
+    steerMessages: [],
     consumed: false,
     cleared: false,
     abortSignal: controller.signal,

@@ -3,7 +3,7 @@ import path from "node:path";
 import { CURRENT_SESSION_VERSION } from "@mariozechner/pi-coding-agent";
 import { resolveAgentWorkspaceDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveThinkingDefault } from "../../agents/model-selection.js";
-import { steerEmbeddedPiRun } from "../../agents/pi-embedded-runner/runs.js";
+import { steerEmbeddedPiRunById } from "../../agents/pi-embedded-runner/runs.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
@@ -64,6 +64,9 @@ type TranscriptAppendResult = {
 
 type AbortOrigin = "rpc" | "stop-command";
 
+const CHAT_STEER_STARTUP_RETRY_MS = 3_000;
+const CHAT_STEER_STARTUP_POLL_MS = 50;
+
 type AbortedPartialSnapshot = {
   runId: string;
   sessionId: string;
@@ -89,6 +92,8 @@ function resolveWebchatClientSessionId(sessionKey: string): string | undefined {
 const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
 const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
 const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
+const WEBCHAT_INPUT_ARTIFACT_PATH_RE =
+  /[\\/]uploads[\\/]webchat[\\/][^\\/\s\]|]+[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([^\s\]|]+)(?:\s+\(([^)]+)\))?/gi;
 let chatHistoryPlaceholderEmitCount = 0;
 
 function stripDisallowedChatControlChars(message: string): string {
@@ -218,6 +223,84 @@ function sanitizeChatHistoryMessages(messages: unknown[]): unknown[] {
     return res.message;
   });
   return changed ? next : messages;
+}
+
+type ChatHistoryImageAttachment = {
+  attachmentId: string;
+  fileName: string;
+};
+
+function extractChatHistoryImageAttachments(text: string): ChatHistoryImageAttachment[] {
+  const attachments: ChatHistoryImageAttachment[] = [];
+  const seen = new Set<string>();
+  WEBCHAT_INPUT_ARTIFACT_PATH_RE.lastIndex = 0;
+  for (const match of text.matchAll(WEBCHAT_INPUT_ARTIFACT_PATH_RE)) {
+    const attachmentId = match[1];
+    const fileName = match[2];
+    const mimeType = match[3]?.trim().toLowerCase();
+    if (!attachmentId || !fileName || !mimeType?.startsWith("image/") || seen.has(attachmentId)) {
+      continue;
+    }
+    seen.add(attachmentId);
+    attachments.push({ attachmentId, fileName });
+  }
+  return attachments;
+}
+
+function annotateChatHistoryAttachmentReferences(messages: unknown[]): unknown[] {
+  let messagesChanged = false;
+  const annotatedMessages = messages.map((message) => {
+    if (!message || typeof message !== "object") {
+      return message;
+    }
+    const entry = message as Record<string, unknown>;
+    if (typeof entry.role !== "string" || entry.role.toLowerCase() !== "user") {
+      return message;
+    }
+    const content = entry.content;
+    if (!Array.isArray(content)) {
+      return message;
+    }
+    const attachmentReferences = content.flatMap((block) => {
+      if (!block || typeof block !== "object") {
+        return [];
+      }
+      const text = (block as Record<string, unknown>).text;
+      return typeof text === "string" ? extractChatHistoryImageAttachments(text) : [];
+    });
+    if (attachmentReferences.length === 0) {
+      return message;
+    }
+
+    let imageIndex = 0;
+    let contentChanged = false;
+    const annotatedContent = content.map((block) => {
+      if (!block || typeof block !== "object") {
+        return block;
+      }
+      const image = block as Record<string, unknown>;
+      if (image.type !== "image" || typeof image.data !== "string") {
+        return block;
+      }
+      const reference = attachmentReferences[imageIndex];
+      imageIndex += 1;
+      if (!reference) {
+        return block;
+      }
+      contentChanged = true;
+      return {
+        ...image,
+        attachmentId: reference.attachmentId,
+        fileName: reference.fileName,
+      };
+    });
+    if (!contentChanged) {
+      return message;
+    }
+    messagesChanged = true;
+    return { ...entry, content: annotatedContent };
+  });
+  return messagesChanged ? annotatedMessages : messages;
 }
 
 function jsonUtf8Bytes(value: unknown): number {
@@ -510,6 +593,10 @@ function nextChatSeq(context: { agentRunSeq: Map<string, number> }, runId: strin
   return next;
 }
 
+function chatSteerDedupeKey(runId: string, idempotencyKey: string): string {
+  return `chat-steer:${runId}:${idempotencyKey}`;
+}
+
 function broadcastChatFinal(params: {
   context: Pick<GatewayRequestContext, "broadcast" | "nodeSendToSession" | "agentRunSeq">;
   runId: string;
@@ -577,7 +664,8 @@ export const chatHandlers: GatewayRequestHandlers = {
     const requested = typeof limit === "number" ? limit : defaultLimit;
     const max = Math.min(hardMax, requested);
     const sliced = rawMessages.length > max ? rawMessages.slice(-max) : rawMessages;
-    const sanitized = stripEnvelopeFromMessages(sliced);
+    const annotated = annotateChatHistoryAttachmentReferences(sliced);
+    const sanitized = stripEnvelopeFromMessages(annotated);
     const normalized = sanitizeChatHistoryMessages(sanitized);
     const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
     const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
@@ -616,7 +704,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       verboseLevel,
     });
   },
-  "chat.steer": ({ params, respond, context }) => {
+  "chat.steer": async ({ params, respond, context }) => {
     if (!validateChatSteerParams(params)) {
       respond(
         false,
@@ -645,14 +733,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
 
     const active = context.chatAbortControllers.get(runId);
-    if (!active) {
-      context.logGateway.debug(
-        `chat.steer status=not_steerable reason=run_inactive runId=${runId}`,
-      );
-      respond(true, { runId, status: "not_steerable", reason: "run_inactive" });
-      return;
-    }
-    if (active.sessionKey !== sessionKey) {
+    if (active && active.sessionKey !== sessionKey) {
       respond(
         false,
         undefined,
@@ -660,15 +741,50 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    if (active.steerIdempotencyKeys.has(idempotencyKey)) {
+
+    const steerDedupeKey = chatSteerDedupeKey(runId, idempotencyKey);
+    if (active?.steerIdempotencyKeys.has(idempotencyKey) || context.dedupe.has(steerDedupeKey)) {
       context.logGateway.debug(`chat.steer status=accepted cached=true runId=${runId}`);
       respond(true, { runId, status: "accepted" }, undefined, { cached: true, runId });
       return;
     }
 
-    const result = steerEmbeddedPiRun(active.sessionId, sanitizedMessageResult.message);
+    let persistedSessionId = loadSessionEntry(sessionKey).entry?.sessionId;
+    let sessionId = persistedSessionId ?? active?.sessionId;
+    if (!sessionId) {
+      context.logGateway.debug(
+        `chat.steer status=not_steerable reason=run_inactive runId=${runId}`,
+      );
+      respond(true, { runId, status: "not_steerable", reason: "run_inactive" });
+      return;
+    }
+    if (active && persistedSessionId && active.sessionId !== persistedSessionId) {
+      active.sessionId = persistedSessionId;
+    }
+
+    let result = steerEmbeddedPiRunById(sessionId, runId, sanitizedMessageResult.message);
+    if (active && result.status === "not_steerable" && result.reason === "run_inactive") {
+      const deadline = Date.now() + CHAT_STEER_STARTUP_RETRY_MS;
+      while (Date.now() < deadline && context.chatAbortControllers.get(runId) === active) {
+        await new Promise((resolve) => setTimeout(resolve, CHAT_STEER_STARTUP_POLL_MS));
+        persistedSessionId = loadSessionEntry(sessionKey).entry?.sessionId;
+        sessionId = persistedSessionId ?? active.sessionId;
+        if (persistedSessionId && active.sessionId !== persistedSessionId) {
+          active.sessionId = persistedSessionId;
+        }
+        result = steerEmbeddedPiRunById(sessionId, runId, sanitizedMessageResult.message);
+        if (result.status === "accepted" || result.reason !== "run_inactive") {
+          break;
+        }
+      }
+    }
     if (result.status === "accepted") {
-      active.steerIdempotencyKeys.add(idempotencyKey);
+      active?.steerIdempotencyKeys.add(idempotencyKey);
+      context.dedupe.set(steerDedupeKey, {
+        ts: Date.now(),
+        ok: true,
+        payload: { runId, status: "accepted" },
+      });
       context.logGateway.debug(`chat.steer status=accepted cached=false runId=${runId}`);
     } else {
       context.logGateway.debug(

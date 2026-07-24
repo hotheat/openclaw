@@ -2,11 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../protocol/index.js";
 import type { GatewayRequestContext } from "./types.js";
 
-const steerEmbeddedPiRunMock = vi.hoisted(() => vi.fn());
+const steerEmbeddedPiRunByIdMock = vi.hoisted(() => vi.fn());
+const loadSessionEntryMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../agents/pi-embedded-runner/runs.js", () => ({
-  steerEmbeddedPiRun: steerEmbeddedPiRunMock,
+  steerEmbeddedPiRunById: steerEmbeddedPiRunByIdMock,
 }));
+
+vi.mock("../session-utils.js", async () => {
+  const actual = await vi.importActual<typeof import("../session-utils.js")>("../session-utils.js");
+  return {
+    ...actual,
+    loadSessionEntry: loadSessionEntryMock,
+  };
+});
 
 const { chatHandlers } = await import("./chat.js");
 
@@ -26,6 +35,7 @@ function createContext(runId = "run-1", sessionKey = "agent:main:main") {
         },
       ],
     ]),
+    dedupe: new Map(),
     logGateway: {
       debug: vi.fn(),
     },
@@ -49,7 +59,11 @@ async function invokeSteer(
 }
 
 beforeEach(() => {
-  steerEmbeddedPiRunMock.mockReset().mockReturnValue({ status: "accepted" });
+  steerEmbeddedPiRunByIdMock.mockReset().mockReturnValue({ status: "accepted" });
+  loadSessionEntryMock.mockReset().mockReturnValue({
+    storePath: "/tmp/sessions.json",
+    entry: { sessionId: "session-1" },
+  });
 });
 
 describe("chat.steer", () => {
@@ -65,8 +79,8 @@ describe("chat.steer", () => {
     const firstRespond = await invokeSteer(context, params);
     const secondRespond = await invokeSteer(context, params);
 
-    expect(steerEmbeddedPiRunMock).toHaveBeenCalledTimes(1);
-    expect(steerEmbeddedPiRunMock).toHaveBeenCalledWith("session-1", "Café");
+    expect(steerEmbeddedPiRunByIdMock).toHaveBeenCalledTimes(1);
+    expect(steerEmbeddedPiRunByIdMock).toHaveBeenCalledWith("session-1", "run-1", "Café");
     expect(firstRespond).toHaveBeenCalledWith(
       true,
       { runId: "run-1", status: "accepted" },
@@ -83,7 +97,7 @@ describe("chat.steer", () => {
 
   it("returns diagnostic not-steerable results without recording idempotency", async () => {
     const context = createContext();
-    steerEmbeddedPiRunMock.mockReturnValue({
+    steerEmbeddedPiRunByIdMock.mockReturnValue({
       status: "not_steerable",
       reason: "compacting",
     });
@@ -99,18 +113,69 @@ describe("chat.steer", () => {
     expect(context.chatAbortControllers.get("run-1")?.steerIdempotencyKeys.size).toBe(0);
   });
 
-  it("treats a run that already ended as an expected race", async () => {
+  it("recovers an active run after the outer chat controller is released", async () => {
     const context = createContext();
     context.chatAbortControllers.clear();
 
     const respond = await invokeSteer(context, params);
 
-    expect(steerEmbeddedPiRunMock).not.toHaveBeenCalled();
-    expect(respond).toHaveBeenCalledWith(true, {
+    expect(steerEmbeddedPiRunByIdMock).toHaveBeenCalledWith("session-1", "run-1", "Café");
+    expect(respond).toHaveBeenCalledWith(true, { runId: "run-1", status: "accepted" }, undefined, {
       runId: "run-1",
+    });
+  });
+
+  it("refreshes the session id created after the first chat.send acknowledgement", async () => {
+    const context = createContext();
+    const active = context.chatAbortControllers.get("run-1");
+    if (!active) {
+      throw new Error("expected active chat controller");
+    }
+    active.sessionId = "run-1";
+
+    const respond = await invokeSteer(context, params);
+
+    expect(steerEmbeddedPiRunByIdMock).toHaveBeenCalledWith("session-1", "run-1", "Café");
+    expect(active.sessionId).toBe("session-1");
+    expect(respond).toHaveBeenCalledWith(true, { runId: "run-1", status: "accepted" }, undefined, {
+      runId: "run-1",
+    });
+  });
+
+  it("retries while an acknowledged chat run is still starting", async () => {
+    const context = createContext();
+    steerEmbeddedPiRunByIdMock
+      .mockReturnValueOnce({ status: "not_steerable", reason: "run_inactive" })
+      .mockReturnValueOnce({ status: "accepted" });
+
+    const respond = await invokeSteer(context, params);
+
+    expect(steerEmbeddedPiRunByIdMock).toHaveBeenCalledTimes(2);
+    expect(respond).toHaveBeenCalledWith(true, { runId: "run-1", status: "accepted" }, undefined, {
+      runId: "run-1",
+    });
+  });
+
+  it("treats a run that already ended as an expected race", async () => {
+    const context = createContext();
+    context.chatAbortControllers.clear();
+    steerEmbeddedPiRunByIdMock.mockReturnValue({
       status: "not_steerable",
       reason: "run_inactive",
     });
+
+    const respond = await invokeSteer(context, params);
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      {
+        runId: "run-1",
+        status: "not_steerable",
+        reason: "run_inactive",
+      },
+      undefined,
+      { runId: "run-1" },
+    );
   });
 
   it("rejects session mismatches, null bytes, whitespace, and additional fields", async () => {
@@ -125,6 +190,6 @@ describe("chat.steer", () => {
 
     const additional = await invokeSteer(createContext(), { ...params, sessionId: "forged" });
     expect(additional.mock.calls.at(-1)?.[2]?.code).toBe(ErrorCodes.INVALID_REQUEST);
-    expect(steerEmbeddedPiRunMock).not.toHaveBeenCalled();
+    expect(steerEmbeddedPiRunByIdMock).not.toHaveBeenCalled();
   });
 });

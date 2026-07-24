@@ -481,7 +481,11 @@ export async function runEmbeddedPiAgent(
         : "plain"
       : "markdown");
   const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
-  const pendingRunToken = registerPendingEmbeddedRun(params.sessionId, params.sessionKey);
+  const pendingRunToken = registerPendingEmbeddedRun(
+    params.sessionId,
+    params.runId,
+    params.sessionKey,
+  );
   const completionContractTerminalEmitted = { value: false };
   let completionContractEnabled = isCompletionContractEnabled({
     sessionKey: params.sessionKey,

@@ -364,6 +364,59 @@ describe("gateway server chat", () => {
     });
   });
 
+  test("chat.history preserves a safe reference for a materialized screenshot", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      const attachmentId = "53ff15ed-8063-42a2-a589-032f2874738f";
+      const workspacePath = `/home/xiaolu/.openclaw/workspace-main/uploads/webchat/chat-1/${attachmentId}-screenshot.png`;
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `[media attached: ${workspacePath} (image/png) | ${workspacePath}]\n${INBOUND_MEDIA_REPLY_HINT}\n为什么不一样？`,
+              },
+              {
+                type: "image",
+                data: "aGVsbG8=",
+                mimeType: "image/png",
+              },
+            ],
+            timestamp: Date.now(),
+          },
+        }),
+      ]);
+
+      const messages = await fetchHistoryMessages(ws);
+
+      expect(messages).toHaveLength(1);
+      const message = messages[0] as {
+        content?: Array<{
+          type?: string;
+          text?: string;
+          data?: string;
+          omitted?: boolean;
+          attachmentId?: string;
+          fileName?: string;
+        }>;
+      };
+      expect(message.content?.[0]?.text).toBe("为什么不一样？");
+      expect(message.content?.[1]).toMatchObject({
+        type: "image",
+        omitted: true,
+        attachmentId,
+        fileName: "screenshot.png",
+      });
+      expect(message.content?.[1]?.data).toBeUndefined();
+      expect(JSON.stringify(messages)).not.toContain(workspacePath);
+    });
+  });
+
   test("smoke: supports abort and idempotent completion", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       const spy = getReplyFromConfig;
