@@ -1,0 +1,35 @@
+name: Codex Comment
+
+"on":
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  codex_issue_comment:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '@codex') &&
+      github.event.comment.user.type != 'Bot'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: bioinfo-ai-otr/.github/.github/workflows/codex-comment.yml@7a0453b0f2c500a049abfc4e002314cb841e6e32
+    secrets:
+      CODEX_TOKEN: ${{ secrets.CODEX_TOKEN }}
+
+  codex_review_comment:
+    if: >
+      github.event_name == 'pull_request_review_comment' &&
+      contains(github.event.comment.body, '@codex') &&
+      github.event.comment.user.type != 'Bot'
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: bioinfo-ai-otr/.github/.github/workflows/codex-comment.yml@7a0453b0f2c500a049abfc4e002314cb841e6e32
+    secrets:
+      CODEX_TOKEN: ${{ secrets.CODEX_TOKEN }}
