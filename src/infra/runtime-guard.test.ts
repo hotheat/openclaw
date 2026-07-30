@@ -33,11 +33,11 @@ describe("runtime-guard", () => {
   it("validates runtime thresholds", () => {
     const nodeOk: RuntimeDetails = {
       kind: "node",
-      version: "22.12.0",
+      version: "22.19.0",
       execPath: "/usr/bin/node",
       pathEnv: "/usr/bin",
     };
-    const nodeOld: RuntimeDetails = { ...nodeOk, version: "22.11.0" };
+    const nodeOld: RuntimeDetails = { ...nodeOk, version: "22.18.0" };
     const nodeTooOld: RuntimeDetails = { ...nodeOk, version: "21.9.0" };
     const unknown: RuntimeDetails = {
       kind: "unknown",
@@ -78,7 +78,7 @@ describe("runtime-guard", () => {
     const details: RuntimeDetails = {
       ...detectRuntime(),
       kind: "node",
-      version: "22.12.0",
+      version: "22.19.0",
       execPath: "/usr/bin/node",
     };
     expect(() => assertSupportedRuntime(runtime, details)).not.toThrow();

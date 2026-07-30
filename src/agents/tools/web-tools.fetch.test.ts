@@ -493,6 +493,74 @@ describe("web_fetch extraction fallbacks", () => {
     ).toBe(false);
   });
 
+  it("does not start remote fallbacks after the caller aborts", async () => {
+    vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
+    const controller = new AbortController();
+    const cancellation = new Error("cancelled");
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      const url = requestUrl(input);
+      return Promise.resolve({
+        ok: false,
+        status: 403,
+        headers: makeHeaders({ "content-type": "text/html" }),
+        text: async () => {
+          controller.abort(cancellation);
+          return "blocked";
+        },
+        url,
+      } as Response);
+    });
+    const tool = createFetchTool({
+      firecrawl: { enabled: true, apiKey: "firecrawl-test" },
+    });
+
+    await expect(
+      tool?.execute?.(
+        "call-abort",
+        { url: "https://example.com/blocked-abort" },
+        controller.signal,
+      ),
+    ).rejects.toBe(cancellation);
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it("does not cache a response whose body aborts", async () => {
+    const cancellation = new DOMException("stream aborted", "AbortError");
+    let callCount = 0;
+    const mockFetch = installMockFetch((input: RequestInfo | URL) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(cancellation);
+              },
+            }),
+            {
+              status: 200,
+              headers: { "content-type": "text/plain" },
+            },
+          ),
+        );
+      }
+      return Promise.resolve(
+        textResponse("complete response", requestUrl(input)),
+      ) as Promise<Response>;
+    });
+    const tool = createFetchTool({
+      cacheTtlMinutes: 5,
+      firecrawl: { enabled: false },
+    });
+    const url = "https://example.com/aborted-body";
+
+    await expect(tool?.execute?.("call-aborted-body", { url })).rejects.toBe(cancellation);
+
+    const result = await tool?.execute?.("call-complete-body", { url });
+    expect(result?.details).toMatchObject({ rawLength: "complete response".length });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("falls through to firecrawl when scraping-get fails", async () => {
     vi.stubEnv("SCRAPE_API_BASE_URL", "http://scrape.internal:8011");
     installMockFetch((input: RequestInfo | URL) => {

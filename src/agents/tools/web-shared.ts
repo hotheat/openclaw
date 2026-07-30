@@ -94,7 +94,7 @@ export type ReadResponseTextResult = {
 
 export async function readResponseText(
   res: Response,
-  options?: { maxBytes?: number },
+  options?: { maxBytes?: number; throwOnError?: boolean },
 ): Promise<ReadResponseTextResult> {
   const maxBytesRaw = options?.maxBytes;
   const maxBytes =
@@ -145,7 +145,10 @@ export async function readResponseText(
           break;
         }
       }
-    } catch {
+    } catch (error) {
+      if (options?.throwOnError) {
+        throw error;
+      }
       // Best-effort: return whatever we decoded so far.
     } finally {
       if (truncated) {
@@ -164,7 +167,10 @@ export async function readResponseText(
   try {
     const text = await res.text();
     return { text, truncated: false, bytesRead: text.length };
-  } catch {
+  } catch (error) {
+    if (options?.throwOnError) {
+      throw error;
+    }
     return { text: "", truncated: false, bytesRead: 0 };
   }
 }

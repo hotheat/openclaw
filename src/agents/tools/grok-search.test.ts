@@ -417,4 +417,23 @@ describe("createGrokSearchTool", () => {
       transient: true,
     });
   });
+
+  it("does not retry after the caller aborts", async () => {
+    vi.stubEnv("XAI_API_KEY", "xai-test");
+    const controller = new AbortController();
+    const cancellation = new Error("cancelled");
+    const mockFetch = installFetchSequence([
+      () => {
+        controller.abort(cancellation);
+        return jsonResponse({ error: "temporary failure" }, { ok: false, status: 503 });
+      },
+    ]);
+
+    const tool = createGrokSearchTool({ config: {}, sandboxed: true });
+
+    await expect(
+      tool?.execute?.("call-abort", { query: "latest AI news" }, controller.signal),
+    ).rejects.toBe(cancellation);
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
 });

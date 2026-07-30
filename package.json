@@ -197,7 +197,7 @@
     "sqlite-vec": "0.1.7-alpha.2",
     "tar": "7.5.9",
     "tslog": "^4.10.2",
-    "undici": "^7.22.0",
+    "undici": "^8.6.0",
     "ws": "^8.19.0",
     "yaml": "^2.8.2",
     "zod": "^4.3.6"
@@ -232,7 +232,7 @@
     "@discordjs/opus": "^0.10.0"
   },
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22.19.0"
   },
   "packageManager": "pnpm@10.23.0",
   "pnpm": {

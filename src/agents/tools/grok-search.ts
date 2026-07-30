@@ -7,6 +7,7 @@ import { estimateUsageCost, resolveModelCostConfig } from "../../utils/usage-for
 import { normalizeUsage, type NormalizedUsage, type UsageLike } from "../usage.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readStringParam } from "./common.js";
+import { fetchWithWebTimeout, WebRequestTimeoutError } from "./web-request.js";
 import {
   CacheEntry,
   DEFAULT_TIMEOUT_SECONDS,
@@ -15,7 +16,6 @@ import {
   readResponseText,
   resolveCacheTtlMs,
   resolveTimeoutSeconds,
-  withTimeout,
   writeCache,
 } from "./web-shared.js";
 
@@ -447,6 +447,13 @@ function normalizeGrokError(err: unknown): GrokSearchError {
   if (err instanceof GrokSearchError) {
     return err;
   }
+  if (err instanceof WebRequestTimeoutError) {
+    return new GrokSearchError({
+      kind: "transient",
+      transient: true,
+      message: "xAI request timed out.",
+    });
+  }
   if (
     err &&
     typeof err === "object" &&
@@ -472,6 +479,7 @@ async function runGrokSearchRequest(params: {
   model: string;
   timeoutSeconds: number;
   inlineCitations: boolean;
+  signal?: AbortSignal;
 }): Promise<{
   content: string;
   citations: string[];
@@ -491,15 +499,21 @@ async function runGrokSearchRequest(params: {
     tools: [{ type: params.source === "x" ? "x_search" : "web_search" }],
   };
 
-  const res = await fetch(XAI_API_ENDPOINT, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.apiKey}`,
+  const res = await fetchWithWebTimeout(
+    XAI_API_ENDPOINT,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${params.apiKey}`,
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    {
+      timeoutMs: params.timeoutSeconds * 1000,
+      signal: params.signal,
+    },
+  );
 
   if (!res.ok) {
     return throwGrokApiError(res);
@@ -539,6 +553,7 @@ async function runGrokSearchWithRetry(params: {
   model: string;
   timeoutSeconds: number;
   inlineCitations: boolean;
+  signal?: AbortSignal;
 }): Promise<{
   content: string;
   citations: string[];
@@ -549,12 +564,18 @@ async function runGrokSearchWithRetry(params: {
   try {
     return await runGrokSearchRequest(params);
   } catch (err) {
+    if (params.signal?.aborted) {
+      throw err;
+    }
     const normalized = normalizeGrokError(err);
     if (!normalized.transient) {
       throw normalized;
     }
   }
   return runGrokSearchRequest(params).catch((err) => {
+    if (params.signal?.aborted) {
+      throw err;
+    }
     throw normalizeGrokError(err);
   });
 }
@@ -597,6 +618,7 @@ async function runGrokSearch(params: {
   cacheTtlMs: number;
   inlineCitations: boolean;
   config?: OpenClawConfig;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
   const start = Date.now();
   logOperatorMismatch({
@@ -663,6 +685,9 @@ async function runGrokSearch(params: {
     writeCache(GROK_SEARCH_CACHE, cacheKey, payload, params.cacheTtlMs);
     return payload;
   } catch (err) {
+    if (params.signal?.aborted) {
+      throw err;
+    }
     const normalized = normalizeGrokError(err);
     logGrokSearchFailure({
       toolCallId: params.toolCallId,
@@ -690,7 +715,7 @@ export function createGrokSearchTool(options?: {
     description:
       'Search the web using xAI Grok for synthesized answers with citations. Best for: recent news, live developments, public reaction, sentiment, trends, X/Twitter discussion, natural language queries. Note: does not support search operators like site:, intitle:, filetype:. Use source="x" to search X/Twitter posts specifically; default source is "web". Examples: "latest OpenAI announcements", "what are people saying about Tesla earnings", "news about AI regulation 2026"',
     parameters: GrokSearchSchema,
-    execute: async (toolCallId, args) => {
+    execute: async (toolCallId, args, signal) => {
       const apiKey = resolveGrokSearchApiKey(grokSearch);
       if (!apiKey) {
         return jsonResult(missingGrokSearchKeyPayload());
@@ -725,9 +750,13 @@ export function createGrokSearchTool(options?: {
           cacheTtlMs,
           inlineCitations,
           config: options?.config,
+          signal,
         });
         return jsonResult(result);
       } catch (err) {
+        if (signal?.aborted) {
+          throw err;
+        }
         return jsonResult(grokSearchErrorPayload(normalizeGrokError(err)));
       }
     },

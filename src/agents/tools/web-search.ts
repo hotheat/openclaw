@@ -5,6 +5,7 @@ import { wrapWebContent } from "../../security/external-content.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
+import { fetchWithWebTimeout } from "./web-request.js";
 import {
   CacheEntry,
   DEFAULT_CACHE_TTL_MINUTES,
@@ -14,7 +15,6 @@ import {
   readResponseText,
   resolveCacheTtlMs,
   resolveTimeoutSeconds,
-  withTimeout,
   writeCache,
 } from "./web-shared.js";
 
@@ -186,6 +186,7 @@ async function runWebSearch(params: {
   search_lang?: string;
   ui_lang?: string;
   freshness?: string;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
   const cacheKey = normalizeCacheKey(
     `brave:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`,
@@ -213,14 +214,20 @@ async function runWebSearch(params: {
     url.searchParams.set("freshness", params.freshness);
   }
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Subscription-Token": params.apiKey,
+  const res = await fetchWithWebTimeout(
+    url.toString(),
+    {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "X-Subscription-Token": params.apiKey,
+      },
     },
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    {
+      timeoutMs: params.timeoutSeconds * 1000,
+      signal: params.signal,
+    },
+  );
 
   if (!res.ok) {
     const detailResult = await readResponseText(res, { maxBytes: 64_000 });
@@ -276,7 +283,7 @@ export function createWebSearchTool(options?: {
     description:
       'Search the web using Brave Search API. Returns structured results with titles, URLs, and snippets. Best for: finding documentation, official pages, API references, link discovery, region-specific search, and structured queries with operators like site:, intitle:, and filetype:. Examples: "React 19 server components docs", "Python requests library official site", "site:github.com openai cookbook", "intitle:TypeScript handbook"',
     parameters: WebSearchSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       const apiKey = resolveSearchApiKey(search);
       if (!apiKey) {
         return jsonResult(missingSearchKeyPayload());
@@ -308,6 +315,7 @@ export function createWebSearchTool(options?: {
         search_lang,
         ui_lang,
         freshness,
+        signal,
       });
       return jsonResult(result);
     },

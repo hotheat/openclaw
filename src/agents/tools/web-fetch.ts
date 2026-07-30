@@ -18,6 +18,7 @@ import {
   truncateText,
   type ExtractMode,
 } from "./web-fetch-utils.js";
+import { fetchWithWebTimeout, resolveWebFetch } from "./web-request.js";
 import {
   CacheEntry,
   DEFAULT_CACHE_TTL_MINUTES,
@@ -27,7 +28,6 @@ import {
   readResponseText,
   resolveCacheTtlMs,
   resolveTimeoutSeconds,
-  withTimeout,
   writeCache,
 } from "./web-shared.js";
 
@@ -630,6 +630,7 @@ export async function fetchFirecrawlContent(params: {
   proxy: "auto" | "basic" | "stealth";
   storeInCache: boolean;
   timeoutSeconds: number;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   title?: string;
@@ -648,15 +649,21 @@ export async function fetchFirecrawlContent(params: {
     storeInCache: params.storeInCache,
   };
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      "Content-Type": "application/json",
+  const res = await fetchWithWebTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    {
+      timeoutMs: params.timeoutSeconds * 1000,
+      signal: params.signal,
+    },
+  );
 
   const payload = (await res.json()) as {
     success?: boolean;
@@ -703,6 +710,7 @@ export async function fetchJinaReaderContent(params: {
   extractMode: ExtractMode;
   apiKey: string;
   timeoutSeconds: number;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   finalUrl?: string;
@@ -711,14 +719,20 @@ export async function fetchJinaReaderContent(params: {
   await assertScrapeTargetAllowed(params.url);
 
   const endpoint = resolveJinaReaderEndpoint({ url: params.url });
-  const res = await fetch(endpoint, {
-    method: "GET",
-    headers: {
-      Authorization: `Bearer ${params.apiKey}`,
-      Accept: "text/markdown, text/plain;q=0.9, */*;q=0.8",
+  const res = await fetchWithWebTimeout(
+    endpoint,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        Accept: "text/markdown, text/plain;q=0.9, */*;q=0.8",
+      },
     },
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
-  });
+    {
+      timeoutMs: params.timeoutSeconds * 1000,
+      signal: params.signal,
+    },
+  );
 
   const rawText = await res.text().catch(() => "");
   if (!res.ok || rawText.trim().length === 0) {
@@ -739,6 +753,7 @@ export async function fetchScrapeContent(params: {
   extractMode: ExtractMode;
   baseUrl: string;
   timeoutSeconds: number;
+  signal?: AbortSignal;
 }): Promise<{
   text: string;
   finalUrl?: string;
@@ -756,14 +771,20 @@ export async function fetchScrapeContent(params: {
     timeout_ms: timeoutMs,
   };
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const res = await fetchWithWebTimeout(
+    endpoint,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-    signal: withTimeout(undefined, timeoutMs),
-  });
+    {
+      timeoutMs,
+      signal: params.signal,
+    },
+  );
 
   const rawBody = await res.text().catch(() => "");
   const payload = parseScrapeApiResponse(rawBody);
@@ -827,6 +848,7 @@ type WebFetchRuntimeParams = FirecrawlRuntimeParams &
     cacheTtlMs: number;
     userAgent: string;
     readabilityEnabled: boolean;
+    signal?: AbortSignal;
   };
 
 type RemoteFallbackRuntimeParams = WebFetchRuntimeParams & {
@@ -838,7 +860,11 @@ type RemoteFallbackRuntimeParams = WebFetchRuntimeParams & {
 };
 
 function toFirecrawlContentParams(
-  params: FirecrawlRuntimeParams & { url: string; extractMode: ExtractMode },
+  params: FirecrawlRuntimeParams & {
+    url: string;
+    extractMode: ExtractMode;
+    signal?: AbortSignal;
+  },
 ): Parameters<typeof fetchFirecrawlContent>[0] | null {
   if (!params.firecrawlEnabled || !params.firecrawlApiKey) {
     return null;
@@ -853,6 +879,7 @@ function toFirecrawlContentParams(
     proxy: params.firecrawlProxy,
     storeInCache: params.firecrawlStoreInCache,
     timeoutSeconds: params.firecrawlTimeoutSeconds,
+    signal: params.signal,
   };
 }
 
@@ -861,6 +888,7 @@ function toJinaReaderContentParams(
     url: string;
     extractMode: ExtractMode;
     timeoutSeconds: number;
+    signal?: AbortSignal;
   },
 ): Parameters<typeof fetchJinaReaderContent>[0] | null {
   if (!params.jinaReaderApiKey) {
@@ -874,6 +902,7 @@ function toJinaReaderContentParams(
     extractMode: params.extractMode,
     apiKey: params.jinaReaderApiKey,
     timeoutSeconds: params.timeoutSeconds,
+    signal: params.signal,
   };
 }
 
@@ -959,6 +988,7 @@ async function maybeFetchScrapeWebFetchPayload(
     extractMode: params.extractMode,
     baseUrl: params.scrapeBaseUrl,
     timeoutSeconds: params.timeoutSeconds,
+    signal: params.signal,
   });
   const payload = buildScrapeWebFetchPayload({
     scrape,
@@ -978,6 +1008,7 @@ async function maybeFetchFallbackWebFetchPayload(
   options?: { allowFirecrawl?: boolean },
 ): Promise<{ payload: Record<string, unknown> | null; errors: RemoteFallbackError[] }> {
   const errors: RemoteFallbackError[] = [];
+  params.signal?.throwIfAborted();
 
   try {
     const payload = await maybeFetchScrapeWebFetchPayload({
@@ -988,6 +1019,7 @@ async function maybeFetchFallbackWebFetchPayload(
       return { payload, errors };
     }
   } catch (error) {
+    params.signal?.throwIfAborted();
     if (error instanceof SsrFBlockedError) {
       throw error;
     }
@@ -995,6 +1027,7 @@ async function maybeFetchFallbackWebFetchPayload(
   }
 
   if (options?.allowFirecrawl !== false) {
+    params.signal?.throwIfAborted();
     try {
       const payload = await maybeFetchFirecrawlWebFetchPayload({
         ...params,
@@ -1004,8 +1037,10 @@ async function maybeFetchFallbackWebFetchPayload(
         return { payload, errors };
       }
     } catch (error) {
+      params.signal?.throwIfAborted();
       errors.push({ label: "firecrawl", message: toErrorMessage(error) });
       if (shouldTryJinaReaderAfterFirecrawlError(error)) {
+        params.signal?.throwIfAborted();
         try {
           const payload = await maybeFetchJinaReaderWebFetchPayload({
             ...params,
@@ -1015,6 +1050,7 @@ async function maybeFetchFallbackWebFetchPayload(
             return { payload, errors };
           }
         } catch (jinaReaderError) {
+          params.signal?.throwIfAborted();
           errors.push({ label: "jina-reader", message: toErrorMessage(jinaReaderError) });
         }
       }
@@ -1110,8 +1146,10 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
   try {
     const result = await fetchWithSsrFGuard({
       url: params.url,
+      fetchImpl: resolveWebFetch(),
       maxRedirects: params.maxRedirects,
       timeoutMs: params.timeoutSeconds * 1000,
+      signal: params.signal,
       init: {
         headers: {
           Accept: "text/markdown, text/html;q=0.9, */*;q=0.1",
@@ -1132,6 +1170,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       );
     }
   } catch (error) {
+    params.signal?.throwIfAborted();
     if (error instanceof SsrFBlockedError) {
       throw error;
     }
@@ -1194,7 +1233,10 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       });
     }
 
-    const bodyResult = await readResponseText(res, { maxBytes: params.maxResponseBytes });
+    const bodyResult = await readResponseText(res, {
+      maxBytes: params.maxResponseBytes,
+      throwOnError: true,
+    });
     const body = bodyResult.text;
     const responseTruncatedWarning = bodyResult.truncated
       ? `Response body truncated after ${params.maxResponseBytes} bytes.`
@@ -1381,7 +1423,7 @@ export function createWebFetchTool(options?: {
     description:
       "Fetch and extract readable content from a URL (HTML → markdown/text). Use for lightweight page access without browser automation.",
     parameters: WebFetchSchema,
-    execute: async (_toolCallId, args) => {
+    execute: async (_toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const url = readStringParam(params, "url", { required: true });
       const extractMode = readStringParam(params, "extractMode") === "text" ? "text" : "markdown";
@@ -1413,6 +1455,7 @@ export function createWebFetchTool(options?: {
         firecrawlTimeoutSeconds,
         jinaReaderEnabled,
         jinaReaderApiKey,
+        signal,
       });
       return jsonResult(result);
     },
