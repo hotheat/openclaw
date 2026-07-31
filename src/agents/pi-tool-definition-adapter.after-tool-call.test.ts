@@ -44,7 +44,11 @@ function enableAfterToolCallHook() {
 }
 
 async function executeReadTool(callId: string) {
-  const defs = toToolDefinitions([createReadTool()]);
+  const defs = toToolDefinitions([createReadTool()], {
+    agentId: "main",
+    sessionKey: "agent:main:main",
+    runId: "run-adapter",
+  });
   const def = defs[0];
   if (!def) {
     throw new Error("missing tool definition");
@@ -58,9 +62,17 @@ function expectReadAfterToolCallPayload(result: Awaited<ReturnType<typeof execut
     {
       toolName: "read",
       params: { mode: "safe" },
+      toolCallId: expect.any(String),
+      runId: "run-adapter",
       result,
     },
-    { toolName: "read" },
+    {
+      toolName: "read",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      toolCallId: expect.any(String),
+      runId: "run-adapter",
+    },
   );
 }
 
@@ -116,7 +128,11 @@ describe("pi tool definition adapter after_tool_call", () => {
       }),
     } satisfies AgentTool;
 
-    const defs = toToolDefinitions([tool]);
+    const defs = toToolDefinitions([tool], {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      runId: "run-adapter-error",
+    });
     const def = defs[0];
     if (!def) {
       throw new Error("missing tool definition");
@@ -134,9 +150,17 @@ describe("pi tool definition adapter after_tool_call", () => {
       {
         toolName: "exec",
         params: { cmd: "ls" },
+        toolCallId: "call-err",
+        runId: "run-adapter-error",
         error: "boom",
       },
-      { toolName: "exec" },
+      {
+        toolName: "exec",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        toolCallId: "call-err",
+        runId: "run-adapter-error",
+      },
     );
   });
 

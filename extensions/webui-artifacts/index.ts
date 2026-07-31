@@ -1,8 +1,10 @@
-import type {
-  AnyAgentTool,
-  OpenClawPluginApi,
-  OpenClawPluginToolContext,
-} from "../../src/plugins/types.js";
+import {
+  type AnyAgentTool,
+  type OpenClawPluginApi,
+  type OpenClawPluginToolContext,
+  isParentWebchatSessionContext,
+  isParentWebchatSessionKey,
+} from "openclaw/plugin-sdk";
 import { ArtifactClient } from "./src/artifact-client.js";
 import { createWebuiArtifactTool, publishWorkspaceArtifact } from "./src/webui-artifact-tool.js";
 
@@ -19,19 +21,10 @@ function resolvePluginConfig(api: OpenClawPluginApi): WebchatArtifactsConfig {
 }
 
 export function isParentWebchatToolContext(ctx: OpenClawPluginToolContext): boolean {
-  const messageChannel = ctx.messageChannel?.trim().toLowerCase();
-  if (messageChannel !== "webchat" && messageChannel !== "internal") {
-    return false;
-  }
-  const parts = ctx.sessionKey?.split(":") ?? [];
-  return (
-    parts.length === 5 &&
-    parts[0] === "agent" &&
-    Boolean(parts[1]) &&
-    parts[2] === "webchat" &&
-    Boolean(parts[3]) &&
-    Boolean(parts[4])
-  );
+  return isParentWebchatSessionContext({
+    channel: ctx.messageChannel,
+    sessionKey: ctx.sessionKey,
+  });
 }
 
 export default function register(api: OpenClawPluginApi) {
@@ -58,19 +51,13 @@ export default function register(api: OpenClawPluginApi) {
   api.on("subagent_handoff_delivery", async (event) => {
     const config = resolvePluginConfig(api);
     const messageChannel = event.requesterOrigin?.channel?.trim().toLowerCase();
-    const sessionParts = event.requesterSessionKey.split(":");
-    const isWebChatSession =
-      sessionParts.length === 5 &&
-      sessionParts[0] === "agent" &&
-      Boolean(sessionParts[1]) &&
-      sessionParts[2] === "webchat" &&
-      Boolean(sessionParts[3]) &&
-      Boolean(sessionParts[4]);
+    const isWebChatSession = isParentWebchatSessionKey(event.requesterSessionKey);
     const isCompatibleChannel =
       !messageChannel || messageChannel === "webchat" || messageChannel === "internal";
     if (!isWebChatSession || !isCompatibleChannel || !config.endpoint || !config.apiKey) return;
 
     const client = new ArtifactClient(config);
+    const deliveredArtifacts: string[] = [];
     const failures: Array<{ relativePath: string; message: string }> = [];
     for (const [index, artifact] of event.artifacts.entries()) {
       try {
@@ -84,6 +71,7 @@ export default function register(api: OpenClawPluginApi) {
           sourceId: `subagent-handoff:${event.runId}:${index}`,
           signal: event.signal,
         });
+        deliveredArtifacts.push(artifact.relativePath);
       } catch (error) {
         failures.push({
           relativePath: artifact.relativePath,
@@ -91,6 +79,10 @@ export default function register(api: OpenClawPluginApi) {
         });
       }
     }
-    return failures.length > 0 ? { failures } : undefined;
+    return {
+      handled: true,
+      deliveredArtifacts,
+      failures,
+    };
   });
 }

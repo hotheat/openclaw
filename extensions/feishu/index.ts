@@ -6,6 +6,7 @@ import { registerFeishuDocTools } from "./src/docx.js";
 import { registerFeishuDriveTools } from "./src/drive.js";
 import { registerFeishuPermTools } from "./src/perm.js";
 import { setFeishuRuntime } from "./src/runtime.js";
+import { createFeishuSubagentHandoffDeliveryHandler } from "./src/subagent-handoff-delivery.js";
 import { TaskFlowFeishuPublisher } from "./src/taskflow-progress.js";
 import { registerFeishuWikiTools } from "./src/wiki.js";
 
@@ -60,6 +61,10 @@ const plugin = {
     api.on("taskflow_updated", async (event) => {
       await taskFlowPublisher.publish(event);
     });
+    api.on(
+      "subagent_handoff_delivery",
+      createFeishuSubagentHandoffDeliveryHandler({ cfg: api.config }),
+    );
     api.registerChannel({ plugin: feishuPlugin });
     registerFeishuDocTools(api);
     registerFeishuWikiTools(api);

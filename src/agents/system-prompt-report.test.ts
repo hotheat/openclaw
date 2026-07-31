@@ -1,5 +1,8 @@
+import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { buildSystemPromptReport } from "./system-prompt-report.js";
+import { buildAgentSystemPrompt, buildToolListText } from "./system-prompt.js";
+import { buildToolSummaryMap } from "./tool-summaries.js";
 import type { WorkspaceBootstrapFile } from "./workspace.js";
 
 function makeBootstrapFile(overrides: Partial<WorkspaceBootstrapFile>): WorkspaceBootstrapFile {
@@ -111,5 +114,64 @@ describe("buildSystemPromptReport", () => {
     });
 
     expect(report.injectedWorkspaceFiles[0]?.injectedChars).toBe("trimmed".length);
+  });
+
+  it("derives tool list characters from the same renderer used by the prompt", () => {
+    const tools = [
+      {
+        name: "exec",
+        label: "Execute",
+        description: "External description that must not replace the core summary",
+        parameters: { type: "object", properties: {} },
+      },
+      {
+        name: "custom_tool",
+        label: "Custom",
+        description: "Custom summary",
+        parameters: { type: "object", properties: { input: { type: "string" } } },
+      },
+    ] as unknown as AgentTool[];
+    const toolNames = tools.map((tool) => tool.name);
+    const toolSummaries = buildToolSummaryMap(tools);
+    const toolListText = buildToolListText(toolNames, toolSummaries);
+    const systemPrompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/workspace",
+      toolNames,
+      toolSummaries,
+    });
+
+    const report = buildSystemPromptReport({
+      source: "run",
+      generatedAt: 0,
+      bootstrapMaxChars: 20_000,
+      systemPrompt,
+      bootstrapFiles: [],
+      injectedFiles: [],
+      skillsPrompt: "",
+      tools,
+    });
+
+    expect(toolListText).toContain("- exec: Run shell commands");
+    expect(toolListText).toContain("- custom_tool: Custom summary");
+    expect(systemPrompt).toContain(toolListText);
+    expect(report.tools.listChars).toBe(toolListText.length);
+  });
+
+  it("reports zero tool-list and schema characters for an empty tool collection", () => {
+    const report = buildSystemPromptReport({
+      source: "run",
+      generatedAt: 0,
+      bootstrapMaxChars: 20_000,
+      systemPrompt: buildAgentSystemPrompt({
+        workspaceDir: "/tmp/workspace",
+        toolNames: [],
+      }),
+      bootstrapFiles: [],
+      injectedFiles: [],
+      skillsPrompt: "",
+      tools: [],
+    });
+
+    expect(report.tools).toEqual({ listChars: 0, schemaChars: 0, entries: [] });
   });
 });

@@ -4,11 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { Type } from "@sinclair/typebox";
-import {
-  SafeOpenError,
-  openFileWithinRoot,
-  type SafeOpenResult,
-} from "../../../src/infra/fs-safe.js";
+import { SafeOpenError, openFileWithinRoot, type SafeOpenResult } from "openclaw/plugin-sdk";
 import {
   ARTIFACT_SESSION_LIMIT_CODE,
   ArtifactApiError,

@@ -1,4 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  resolveCommandsSystemPromptBundle: vi.fn(async () => ({
+    systemPrompt: "system prompt",
+    tools: [],
+    warnings: [
+      {
+        code: "tools.create_failed",
+        message: "Tool construction failed; report uses empty tool list.",
+      },
+    ],
+    skillsPrompt: "",
+    bootstrapFiles: [],
+    injectedFiles: [],
+    sandboxRuntime: { mode: "off", sandboxed: false },
+  })),
+}));
+
+vi.mock("./commands-system-prompt.js", () => ({
+  resolveCommandsSystemPromptBundle: mocks.resolveCommandsSystemPromptBundle,
+}));
+
 import { buildContextReply } from "./commands-context-report.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -75,5 +97,41 @@ describe("buildContextReply", () => {
   it("does not show bootstrap truncation warning when there is no truncation", async () => {
     const result = await buildContextReply(makeParams("/context list", false));
     expect(result.text).not.toContain("Bootstrap context is over configured limits");
+  });
+
+  it.each(["list", "detail"])("shows tool-construction warnings in %s output", async (mode) => {
+    const params = {
+      ...makeParams(`/context ${mode}`, false),
+      sessionEntry: {
+        totalTokens: 123,
+        inputTokens: 100,
+        outputTokens: 23,
+      },
+    } as HandleCommandsParams;
+
+    const result = await buildContextReply(params);
+
+    expect(result.text).toContain("⚠ Tool construction failed; report uses empty tool list.");
+  });
+
+  it("includes tool-construction warnings in json output", async () => {
+    const params = {
+      ...makeParams("/context json", false),
+      sessionEntry: {
+        totalTokens: 123,
+        inputTokens: 100,
+        outputTokens: 23,
+      },
+    } as HandleCommandsParams;
+
+    const result = await buildContextReply(params);
+    const payload = JSON.parse(result.text ?? "");
+
+    expect(payload.warnings).toEqual([
+      {
+        code: "tools.create_failed",
+        message: "Tool construction failed; report uses empty tool list.",
+      },
+    ]);
   });
 });

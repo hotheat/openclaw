@@ -188,22 +188,59 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     acc: PluginHookSubagentHandoffStagingResult | undefined,
     next: PluginHookSubagentHandoffStagingResult,
   ): PluginHookSubagentHandoffStagingResult => {
-    const artifacts = new Map(
-      (acc?.artifacts ?? []).map((artifact) => [artifact.relativePath, artifact] as const),
+    const acceptedArtifacts = new Map(
+      (acc?.acceptedArtifacts ?? []).map(
+        (artifact) => [artifact.sourceRelativePath, artifact] as const,
+      ),
     );
-    for (const artifact of next.artifacts) {
-      if (!artifacts.has(artifact.relativePath)) {
-        artifacts.set(artifact.relativePath, artifact);
-      }
+    for (const artifact of next.acceptedArtifacts) {
+      const current = acceptedArtifacts.get(artifact.sourceRelativePath);
+      acceptedArtifacts.set(
+        artifact.sourceRelativePath,
+        current ? { ...artifact, ...current } : artifact,
+      );
     }
-    return { artifacts: [...artifacts.values()] };
+    const stagedArtifacts = new Map(
+      (acc?.stagedArtifacts ?? []).map(
+        (artifact) => [artifact.sourceRelativePath, artifact] as const,
+      ),
+    );
+    for (const artifact of next.stagedArtifacts) {
+      const current = stagedArtifacts.get(artifact.sourceRelativePath);
+      stagedArtifacts.set(
+        artifact.sourceRelativePath,
+        current ? { ...artifact, ...current } : artifact,
+      );
+    }
+    const rejections = [...(acc?.rejections ?? []), ...next.rejections];
+    const failures = [...(acc?.failures ?? []), ...next.failures];
+    const haltRemainingHandlers = Boolean(acc?.haltRemainingHandlers || next.haltRemainingHandlers);
+    if (haltRemainingHandlers) {
+      acceptedArtifacts.clear();
+      stagedArtifacts.clear();
+    }
+    return {
+      policyStatus:
+        acc?.policyStatus === "evaluated" || next.policyStatus === "evaluated"
+          ? "evaluated"
+          : "unavailable",
+      acceptedArtifacts: [...acceptedArtifacts.values()],
+      stagedArtifacts: [...stagedArtifacts.values()],
+      rejections,
+      failures,
+      ...(haltRemainingHandlers ? { haltRemainingHandlers: true } : {}),
+    };
   };
 
   const mergeSubagentHandoffDeliveryResult = (
     acc: PluginHookSubagentHandoffDeliveryResult | undefined,
     next: PluginHookSubagentHandoffDeliveryResult,
   ): PluginHookSubagentHandoffDeliveryResult => ({
-    failures: [...(acc?.failures ?? []), ...next.failures],
+    handled: Boolean(acc?.handled || next.handled),
+    deliveredArtifacts: [
+      ...new Set([...(acc?.deliveredArtifacts ?? []), ...(next.deliveredArtifacts ?? [])]),
+    ],
+    failures: [...(acc?.failures ?? []), ...(next.failures ?? [])],
   });
 
   const handleHookError = (params: {
@@ -700,12 +737,52 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
     event: PluginHookSubagentHandoffStagingEvent,
     ctx: PluginHookSubagentContext,
   ): Promise<PluginHookSubagentHandoffStagingResult | undefined> {
-    return runModifyingHook<"subagent_handoff_staging", PluginHookSubagentHandoffStagingResult>(
-      "subagent_handoff_staging",
-      event,
-      ctx,
-      mergeSubagentHandoffStagingResult,
-    );
+    const hookName = "subagent_handoff_staging";
+    const hooks = getHooksForName(registry, hookName);
+    if (hooks.length === 0) {
+      return undefined;
+    }
+
+    logger?.debug?.(`[hooks] running ${hookName} (${hooks.length} handlers, sequential)`);
+
+    let result: PluginHookSubagentHandoffStagingResult | undefined;
+    for (const hook of hooks) {
+      if (event.signal?.aborted) {
+        break;
+      }
+      try {
+        const handlerResult = await (
+          hook.handler as (
+            event: unknown,
+            ctx: unknown,
+          ) => Promise<PluginHookSubagentHandoffStagingResult | void>
+        )(event, ctx);
+        if (handlerResult && !event.signal?.aborted) {
+          result = mergeSubagentHandoffStagingResult(result, handlerResult);
+          if (handlerResult.haltRemainingHandlers) {
+            break;
+          }
+        }
+      } catch (err) {
+        if (event.signal?.aborted) {
+          break;
+        }
+        handleHookError({ hookName, pluginId: hook.pluginId, error: err });
+        result = mergeSubagentHandoffStagingResult(result, {
+          policyStatus: "unavailable",
+          acceptedArtifacts: [],
+          stagedArtifacts: [],
+          rejections: [],
+          failures: [
+            {
+              code: "hook-error",
+              message: `${hook.pluginId}: ${String(err)}`,
+            },
+          ],
+        });
+      }
+    }
+    return result;
   }
 
   /** Run channel-specific delivery after handoff artifacts are staged. */
@@ -723,6 +800,9 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
 
     let result: PluginHookSubagentHandoffDeliveryResult | undefined;
     for (const hook of hooks) {
+      if (event.signal?.aborted) {
+        break;
+      }
       try {
         const handlerResult = await (
           hook.handler as (
@@ -730,12 +810,20 @@ export function createHookRunner(registry: PluginRegistry, options: HookRunnerOp
             ctx: unknown,
           ) => Promise<PluginHookSubagentHandoffDeliveryResult | void>
         )(event, ctx);
-        if (handlerResult) {
+        if (handlerResult && !event.signal?.aborted) {
           result = mergeSubagentHandoffDeliveryResult(result, handlerResult);
+          if (handlerResult.handled) {
+            break;
+          }
         }
       } catch (err) {
+        if (event.signal?.aborted) {
+          break;
+        }
         handleHookError({ hookName, pluginId: hook.pluginId, error: err });
         result = mergeSubagentHandoffDeliveryResult(result, {
+          handled: false,
+          deliveredArtifacts: [],
           failures: [{ message: `${hook.pluginId}: ${String(err)}` }],
         });
       }

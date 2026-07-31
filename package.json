@@ -107,6 +107,7 @@
     "protocol:gen:swift": "node --import tsx scripts/protocol-gen-swift.ts",
     "release:check": "node --import tsx scripts/release-check.ts",
     "smoke:build": "node scripts/build-smoke.mjs",
+    "smoke:npm-pack": "node scripts/npm-pack-plugin-smoke.mjs",
     "start": "node scripts/run-node.mjs",
     "test": "pnpm test:fast",
     "test:all": "pnpm lint && pnpm build && pnpm test:full && pnpm test:e2e && pnpm test:live && pnpm test:docker:all",

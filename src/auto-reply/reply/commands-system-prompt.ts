@@ -13,12 +13,21 @@ import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
 import { buildToolSummaryMap } from "../../agents/tool-summaries.js";
 import type { WorkspaceBootstrapFile } from "../../agents/workspace.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { buildTtsSystemPromptHint } from "../../tts/tts.js";
 import type { HandleCommandsParams } from "./commands-types.js";
+
+const log = createSubsystemLogger("commands-system-prompt");
+
+export type CommandsSystemPromptWarning = {
+  code: "tools.create_failed";
+  message: string;
+};
 
 export type CommandsSystemPromptBundle = {
   systemPrompt: string;
   tools: AgentTool[];
+  warnings: CommandsSystemPromptWarning[];
   skillsPrompt: string;
   bootstrapFiles: WorkspaceBootstrapFile[];
   injectedFiles: EmbeddedContextFile[];
@@ -51,26 +60,41 @@ export async function resolveCommandsSystemPromptBundle(
     cfg: params.cfg,
     sessionKey: params.ctx.SessionKey ?? params.sessionKey,
   });
-  const tools = (() => {
-    try {
-      return createOpenClawCodingTools({
-        config: params.cfg,
-        agentId: params.agentId,
-        workspaceDir,
-        sessionKey: params.sessionKey,
-        messageProvider: params.command.channel,
-        groupId: params.sessionEntry?.groupId ?? undefined,
-        groupChannel: params.sessionEntry?.groupChannel ?? undefined,
-        groupSpace: params.sessionEntry?.space ?? undefined,
-        spawnedBy: params.sessionEntry?.spawnedBy ?? undefined,
-        senderIsOwner: params.command.senderIsOwner,
-        modelProvider: params.provider,
-        modelId: params.model,
-      });
-    } catch {
-      return [];
-    }
-  })();
+  const warnings: CommandsSystemPromptWarning[] = [];
+  let tools: AgentTool[];
+  try {
+    tools = createOpenClawCodingTools({
+      config: params.cfg,
+      agentId: params.agentId,
+      workspaceDir,
+      sessionKey: params.sessionKey,
+      messageProvider: params.command.channel,
+      groupId: params.sessionEntry?.groupId ?? undefined,
+      groupChannel: params.sessionEntry?.groupChannel ?? undefined,
+      groupSpace: params.sessionEntry?.space ?? undefined,
+      spawnedBy: params.sessionEntry?.spawnedBy ?? undefined,
+      senderIsOwner: params.command.senderIsOwner,
+      modelProvider: params.provider,
+      modelId: params.model,
+    });
+  } catch (error) {
+    const errorType = error instanceof Error ? error.name : typeof error;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    log.warn("failed to construct tools for system prompt report", {
+      sessionKey: params.sessionKey,
+      agentId: params.agentId,
+      channel: params.command.channel,
+      provider: params.provider,
+      model: params.model,
+      errorType,
+      errorMessage,
+    });
+    warnings.push({
+      code: "tools.create_failed",
+      message: "Tool construction failed; report uses empty tool list.",
+    });
+    tools = [];
+  }
   const toolSummaries = buildToolSummaryMap(tools);
   const toolNames = tools.map((t) => t.name);
   const { sessionAgentId } = resolveSessionAgentIds({
@@ -135,5 +159,13 @@ export async function resolveCommandsSystemPromptBundle(
     memoryCitationsMode: params.cfg?.memory?.citations,
   });
 
-  return { systemPrompt, tools, skillsPrompt, bootstrapFiles, injectedFiles, sandboxRuntime };
+  return {
+    systemPrompt,
+    tools,
+    warnings,
+    skillsPrompt,
+    bootstrapFiles,
+    injectedFiles,
+    sandboxRuntime,
+  };
 }

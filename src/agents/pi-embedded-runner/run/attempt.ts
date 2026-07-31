@@ -730,6 +730,7 @@ export async function runEmbeddedAttempt(
       ? []
       : createOpenClawCodingTools({
           agentId: sessionAgentId,
+          runId: params.runId,
           exec: {
             ...params.execOverrides,
             elevated: params.bashElevated,
@@ -1016,6 +1017,11 @@ export async function runEmbeddedAttempt(
       const { builtInTools, customTools } = splitSdkTools({
         tools,
         sandboxEnabled: !!sandbox?.enabled,
+        hookContext: {
+          agentId: sessionAgentId,
+          sessionKey: params.sessionKey,
+          runId: params.runId,
+        },
       });
 
       // Add client tools (OpenResponses hosted tools) to customTools
@@ -1033,6 +1039,7 @@ export async function runEmbeddedAttempt(
             {
               agentId: sessionAgentId,
               sessionKey: params.sessionKey,
+              runId: params.runId,
               loopDetection: clientToolLoopDetection,
             },
           )

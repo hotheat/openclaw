@@ -6,6 +6,9 @@ import { listDeliverableMessageChannels } from "../utils/message-channel.js";
 import type { ResolvedTimeFormat } from "./date-time.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
+import { buildToolingSection, buildToolListText } from "./system-prompt-tools.js";
+
+export { buildToolListText };
 
 /**
  * Controls which hardcoded sections are included in the system prompt.
@@ -202,7 +205,7 @@ export function buildAgentSystemPrompt(params: {
   ownerDisplay?: OwnerIdDisplay;
   ownerDisplaySecret?: string;
   reasoningTagHint?: boolean;
-  toolNames?: string[];
+  toolNames: string[];
   toolSummaries?: Record<string, string>;
   modelAliasLines?: string[];
   userTimezone?: string;
@@ -251,107 +254,11 @@ export function buildAgentSystemPrompt(params: {
   };
   memoryCitationsMode?: MemoryCitationsMode;
 }) {
-  const coreToolSummaries: Record<string, string> = {
-    read: "Read file contents",
-    write: "Create or overwrite files",
-    edit: "Make precise edits to files",
-    apply_patch: "Apply multi-file patches",
-    grep: "Search file contents for patterns",
-    find: "Find files by glob pattern",
-    ls: "List directory contents",
-    exec: "Run shell commands (pty available for TTY-required CLIs)",
-    process: "Manage background exec sessions",
-    web_search: "Search the web (Brave API)",
-    grok_search: "Search the web with xAI Grok for synthesized answers with citations",
-    web_fetch: "Fetch and extract readable content from a URL",
-    // Channel docking: add login tools here when a channel needs interactive linking.
-    browser: "Control web browser",
-    canvas: "Present/eval/snapshot the Canvas",
-    nodes: "List/describe/notify/camera/screen on paired nodes",
-    cron: "Manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
-    message: "Send messages and channel actions",
-    gateway: "Restart, apply config, or run updates on the running OpenClaw process",
-    agents_list: "List agent ids allowed for sessions_spawn",
-    sessions_list: "List other sessions (incl. sub-agents) with filters/last",
-    sessions_history: "Fetch history for another session/sub-agent",
-    sessions_send: "Send a message to another session/sub-agent",
-    sessions_spawn: "Spawn a sub-agent session",
-    subagents: "List, steer, or kill sub-agent runs for this requester session",
-    session_status:
-      "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
-    image: "Analyze an image with the configured image model",
-  };
-
-  const toolOrder = [
-    "read",
-    "write",
-    "edit",
-    "apply_patch",
-    "grep",
-    "find",
-    "ls",
-    "exec",
-    "process",
-    "web_search",
-    "grok_search",
-    "web_fetch",
-    "browser",
-    "canvas",
-    "nodes",
-    "cron",
-    "message",
-    "gateway",
-    "agents_list",
-    "sessions_list",
-    "sessions_history",
-    "sessions_send",
-    "subagents",
-    "session_status",
-    "image",
-  ];
-
-  const rawToolNames = (params.toolNames ?? []).map((tool) => tool.trim());
-  const canonicalToolNames = rawToolNames.filter(Boolean);
-  // Preserve caller casing while deduping tool names by lowercase.
-  const canonicalByNormalized = new Map<string, string>();
-  for (const name of canonicalToolNames) {
-    const normalized = name.toLowerCase();
-    if (!canonicalByNormalized.has(normalized)) {
-      canonicalByNormalized.set(normalized, name);
-    }
-  }
-  const resolveToolName = (normalized: string) =>
-    canonicalByNormalized.get(normalized) ?? normalized;
-
-  const normalizedTools = canonicalToolNames.map((tool) => tool.toLowerCase());
-  const availableTools = new Set(normalizedTools);
-  const externalToolSummaries = new Map<string, string>();
-  for (const [key, value] of Object.entries(params.toolSummaries ?? {})) {
-    const normalized = key.trim().toLowerCase();
-    if (!normalized || !value?.trim()) {
-      continue;
-    }
-    externalToolSummaries.set(normalized, value.trim());
-  }
-  const extraTools = Array.from(
-    new Set(normalizedTools.filter((tool) => !toolOrder.includes(tool))),
-  );
-  const enabledTools = toolOrder.filter((tool) => availableTools.has(tool));
-  const toolLines = enabledTools.map((tool) => {
-    const summary = coreToolSummaries[tool] ?? externalToolSummaries.get(tool);
-    const name = resolveToolName(tool);
-    return summary ? `- ${name}: ${summary}` : `- ${name}`;
+  const { availableTools, readToolName, toolingSection } = buildToolingSection({
+    toolNames: params.toolNames ?? [],
+    toolSummaries: params.toolSummaries,
   });
-  for (const tool of extraTools.toSorted()) {
-    const summary = coreToolSummaries[tool] ?? externalToolSummaries.get(tool);
-    const name = resolveToolName(tool);
-    toolLines.push(summary ? `- ${name}: ${summary}` : `- ${name}`);
-  }
-
   const hasGateway = availableTools.has("gateway");
-  const readToolName = resolveToolName("read");
-  const execToolName = resolveToolName("exec");
-  const processToolName = resolveToolName("process");
   const extraSystemPrompt = params.extraSystemPrompt?.trim();
   const securityPolicyPrompt = params.securityPolicyPrompt?.trim();
   const ownerDisplay = params.ownerDisplay === "hash" ? "hash" : "raw";
@@ -448,35 +355,7 @@ export function buildAgentSystemPrompt(params: {
   const lines = [
     "You are a personal assistant running inside OpenClaw.",
     "",
-    "## Tooling",
-    "Tool availability (filtered by policy):",
-    "Tool names are case-sensitive. Call tools exactly as listed.",
-    toolLines.length > 0
-      ? toolLines.join("\n")
-      : [
-          "Pi lists the standard tools above. This runtime enables:",
-          "- grep: search file contents for patterns",
-          "- find: find files by glob pattern",
-          "- ls: list directory contents",
-          "- apply_patch: apply multi-file patches",
-          `- ${execToolName}: run shell commands (supports background via yieldMs/background)`,
-          `- ${processToolName}: manage background exec sessions`,
-          "- browser: control OpenClaw's dedicated browser",
-          "- canvas: present/eval/snapshot the Canvas",
-          "- nodes: list/describe/notify/camera/screen on paired nodes",
-          "- cron: manage cron jobs and wake events (use for reminders; when scheduling a reminder, write the systemEvent text as something that will read like a reminder when it fires, and mention that it is a reminder depending on the time gap between setting and firing; include recent context in reminder text if appropriate)",
-          "- sessions_list: list sessions",
-          "- sessions_history: fetch session history",
-          "- sessions_send: send to another session",
-          "- subagents: list/steer/kill sub-agent runs",
-          '- session_status: show usage/time/model state and answer "what model are we using?"',
-        ].join("\n"),
-    "For shell-based code search, prefer `rg` for text search and `rg --files` for file discovery because ripgrep is usually faster than grep/find. If `rg` is unavailable, fall back to available alternatives.",
-    "TOOLS.md does not control tool availability; it is user guidance for how to use external tools.",
-    `For long waits, avoid rapid poll loops: use ${execToolName} with enough yieldMs or ${processToolName}(action=poll, timeout=<ms>).`,
-    "If a task is more complex or takes longer, spawn a sub-agent. Completion is push-based: it will auto-announce when done.",
-    "Do not poll `subagents list` / `sessions_list` in a loop; only check status on-demand (for intervention, debugging, or when explicitly asked).",
-    "",
+    toolingSection,
     "## Tool Call Style",
     "Default: do not narrate routine, low-risk tool calls (just call the tool).",
     "Narrate only when it helps: multi-step work, complex/challenging problems, sensitive actions (e.g., deletions), or when the user explicitly asks.",

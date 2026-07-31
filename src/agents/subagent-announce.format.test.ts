@@ -4,6 +4,7 @@ import {
   __testing as sessionBindingServiceTesting,
   registerSessionBindingAdapter,
 } from "../infra/outbound/session-binding-service.js";
+import type { PluginHookSubagentHandoffStagingResult } from "../plugins/types.js";
 import {
   enqueueAnnounce,
   getAnnounceQueueSizeForTests,
@@ -52,13 +53,39 @@ const subagentDeliveryTargetHookMock = vi.fn(
     undefined,
 );
 let hasSubagentDeliveryTargetHook = false;
-let hasSubagentHandoffStagingHook = false;
+let hasSubagentHandoffStagingHook = true;
 let hasSubagentHandoffDeliveryHook = false;
-const subagentHandoffStagingHookMock = vi.fn(async (_event: unknown, _ctx: unknown) => ({
-  artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
-}));
+const buildAcceptedStagingResult = (event: unknown): PluginHookSubagentHandoffStagingResult => {
+  const handoff = (event as { handoff?: { artifacts?: Array<{ relativePath?: string }> } }).handoff;
+  const sourcePaths = (handoff?.artifacts ?? [])
+    .map((artifact) => artifact.relativePath?.trim())
+    .filter((value): value is string => Boolean(value));
+  return {
+    policyStatus: "evaluated" as const,
+    acceptedArtifacts: sourcePaths.map((sourceRelativePath) => ({
+      sourceRelativePath,
+      requesterRelativePath: sourceRelativePath,
+    })),
+    stagedArtifacts: sourcePaths.map((sourceRelativePath) => ({
+      sourceRelativePath,
+      relativePath: sourceRelativePath,
+    })),
+    rejections: [],
+    failures: [],
+  };
+};
+const subagentHandoffStagingHookMock = vi.fn(async (event: unknown, _ctx: unknown) =>
+  buildAcceptedStagingResult(event),
+);
 const subagentHandoffDeliveryHookMock = vi.fn(
-  async (_event: unknown, _ctx: unknown): Promise<unknown> => undefined,
+  async (event: unknown, _ctx: unknown): Promise<unknown> => ({
+    handled: true,
+    deliveredArtifacts:
+      (event as { artifacts?: Array<{ relativePath?: string }> }).artifacts
+        ?.map((artifact) => artifact.relativePath)
+        .filter((value): value is string => Boolean(value)) ?? [],
+    failures: [],
+  }),
 );
 const hookRunnerMock = {
   hasHooks: vi.fn((hookName: string) => {
@@ -227,17 +254,25 @@ describe("subagent announce formatting", () => {
     subagentRegistryMock.countActiveDescendantRuns.mockClear().mockReturnValue(0);
     subagentRegistryMock.resolveRequesterForChildSession.mockClear().mockReturnValue(null);
     hasSubagentDeliveryTargetHook = false;
-    hasSubagentHandoffStagingHook = false;
+    hasSubagentHandoffStagingHook = true;
     hasSubagentHandoffDeliveryHook = false;
     hookRunnerMock.hasHooks.mockClear();
     hookRunnerMock.runSubagentDeliveryTarget.mockClear();
     hookRunnerMock.runSubagentHandoffStaging.mockClear();
     hookRunnerMock.runSubagentHandoffDelivery.mockClear();
     subagentDeliveryTargetHookMock.mockReset().mockResolvedValue(undefined);
-    subagentHandoffStagingHookMock.mockReset().mockResolvedValue({
-      artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
-    });
+    subagentHandoffStagingHookMock
+      .mockReset()
+      .mockImplementation(async (event: unknown) => buildAcceptedStagingResult(event));
     subagentHandoffDeliveryHookMock.mockReset().mockResolvedValue(undefined);
+    subagentHandoffDeliveryHookMock.mockImplementation(async (event: unknown) => ({
+      handled: true,
+      deliveredArtifacts:
+        (event as { artifacts?: Array<{ relativePath?: string }> }).artifacts
+          ?.map((artifact) => artifact.relativePath)
+          .filter((value): value is string => Boolean(value)) ?? [],
+      failures: [],
+    }));
     readLatestAssistantReplyMock.mockClear().mockResolvedValue("raw subagent reply");
     chatHistoryMock.mockReset().mockResolvedValue({ messages: [] });
     sessionStore = {};
@@ -481,7 +516,25 @@ describe("subagent announce formatting", () => {
       messages: [
         {
           role: "assistant",
-          content: [{ type: "text", text: "final.pptx ready; delivery.json status failed" }],
+          content: [
+            {
+              type: "text",
+              text: [
+                "final.pptx ready",
+                "<SUBAGENT_HANDOFF>",
+                JSON.stringify({
+                  mode: "export-file",
+                  export: {
+                    path: "artifacts/pptx-generator/run-1/final.pptx",
+                    title: "Deck",
+                    mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                  },
+                  verification: { status: "passed" },
+                }),
+                "</SUBAGENT_HANDOFF>",
+              ].join("\n"),
+            },
+          ],
         },
       ],
     });
@@ -519,10 +572,687 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("Succeeded: 1");
     expect(msg).toContain("Failed: 0");
     expect(msg).toContain("Active: 0");
-    expect(msg).toContain("final.pptx ready; delivery.json status failed");
-    expect(msg).toContain("For verified user-requested deliverables referenced above");
+    expect(msg).toContain("final.pptx ready");
+    expect(msg).toContain("Deliverable artifacts:");
+    expect(msg).toContain("artifacts/pptx-generator/run-1/final.pptx");
+    expect(msg).toContain("Delivery: ready");
+    expect(msg).toContain("Verification: passed");
+    expect(msg).toContain("call the `message` tool");
     expect(msg).toContain(`reply ONLY: ${SILENT_REPLY_TOKEN}`);
+    expect(msg).not.toContain("<SUBAGENT_HANDOFF>");
     expect(msg).not.toContain("Stats:");
+  });
+
+  it("routes WebChat parent delivery checks through webui artifact publish", async () => {
+    const requesterSessionKey = "agent:main:webchat:namespace:chat_1";
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-webchat-parent-delivery",
+      },
+      [requesterSessionKey]: {
+        sessionId: "requester-session-webchat-parent-delivery",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck ready",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: { path: "artifacts/pptx-generator/run-2/final.pptx", title: "Deck" },
+          verification: { status: "passed" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-webchat-parent-delivery",
+      requesterSessionKey,
+      requesterDisplayKey: requesterSessionKey,
+      requesterOrigin: { channel: "internal" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(params.channel).toBe("internal");
+    expect(params.deliver).toBe(false);
+    expect(params.to).toBeUndefined();
+    expect(message).toContain("Deliverable artifacts:");
+    expect(message).toContain("artifacts/pptx-generator/run-2/final.pptx");
+    expect(message).toContain("call `webui_artifact_publish`");
+    expect(message).not.toContain("call the `message` tool");
+    expect(message).not.toContain("<SUBAGENT_HANDOFF>");
+  });
+
+  it("does not present failed verification artifacts as deliverable", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-failed-verification",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-failed-verification",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "verification failed",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: { path: "artifacts/pptx-generator/run-failed/final.pptx", title: "Deck" },
+          verification: { status: "failed" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-failed-verification",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).not.toContain("Deliverable artifacts:");
+    expect(message).not.toContain("artifacts/pptx-generator/run-failed/final.pptx");
+    expect(message).not.toContain("call the `message` tool");
+    expect(message).not.toContain("call `webui_artifact_publish`");
+  });
+
+  it("keeps unmanaged researcher artifacts out of core parent auto-delivery", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-unmanaged-researcher",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-unmanaged-researcher",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "research complete",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/exports/feishu/research/run-1/report.md",
+            title: "Research report",
+            mime: "text/markdown",
+          },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+    subagentHandoffStagingHookMock.mockResolvedValueOnce({
+      policyStatus: "evaluated",
+      acceptedArtifacts: [],
+      stagedArtifacts: [],
+      rejections: [
+        {
+          code: "plugin:test-requester",
+          message: "Requester policy rejected this artifact.",
+        },
+      ],
+      failures: [],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-unmanaged-researcher",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("research complete");
+    expect(message).not.toContain("Deliverable artifacts:");
+    expect(message).not.toContain("artifacts/exports/feishu/research/run-1/report.md");
+    expect(message).not.toContain("call the `message` tool");
+    expect(message).not.toContain("call `webui_artifact_publish`");
+  });
+
+  it("preserves Researcher Markdown and citation URLs when stripping handoff metadata", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-researcher-markdown",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-researcher-markdown",
+      },
+    };
+    const report = [
+      "# 调研报告",
+      "",
+      "## 结论",
+      "",
+      "- 来源: https://arxiv.org/abs/2607.01234",
+      "",
+      "| 指标 | 值 |",
+      "| --- | --- |",
+      "| A | 1 |",
+      "",
+      "```python",
+      "print('kept')",
+      "```",
+    ].join("\n");
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        report,
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/exports/feishu/research/run-1/report.md",
+            title: "Research report",
+            mime: "text/markdown",
+          },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-researcher-markdown",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain(report);
+    expect(message).not.toContain("<SUBAGENT_HANDOFF>");
+  });
+
+  it("reports invalid accepted mappings instead of producing a silent empty result", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-invalid-mapping",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-invalid-mapping",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "research complete",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/exports/feishu/research/run-1/report.md",
+            title: "Research report",
+          },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+    subagentHandoffStagingHookMock.mockResolvedValueOnce({
+      policyStatus: "evaluated",
+      acceptedArtifacts: [
+        {
+          sourceRelativePath: "artifacts/unknown/not-declared.md",
+          requesterRelativePath: "../../escape.md",
+        },
+      ],
+      stagedArtifacts: [],
+      rejections: [],
+      failures: [],
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-invalid-mapping",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("Artifact delivery issues:");
+    expect(message).toContain("did not accept any valid artifact mapping");
+    expect(message).not.toContain("../../escape.md");
+    expect(message).not.toContain("artifacts/unknown/not-declared.md");
+  });
+
+  it("does not stage or deliver a handoff after the outer announce signal aborts", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("run cancelled"));
+    const handoffReply = [
+      "research complete",
+      "<SUBAGENT_HANDOFF>",
+      JSON.stringify({
+        mode: "export-file",
+        export: {
+          path: "artifacts/exports/feishu/research/run-1/report.md",
+          title: "Research report",
+        },
+      }),
+      "</SUBAGENT_HANDOFF>",
+    ].join("\n");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-aborted-handoff",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      roundOneReply: handoffReply,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+      signal: controller.signal,
+    });
+
+    expect(didAnnounce).toBe(false);
+    expect(subagentHandoffStagingHookMock).not.toHaveBeenCalled();
+    expect(subagentHandoffDeliveryHookMock).not.toHaveBeenCalled();
+    expect(agentSpy).not.toHaveBeenCalled();
+    expect(sendSpy).not.toHaveBeenCalled();
+  });
+
+  it("presents failed verification artifacts declared for warning delivery", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-warning-delivery",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-warning-delivery",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck generated with verification issues",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: { path: "artifacts/pptx-generator/run-warning/final.pptx", title: "Deck" },
+          verification: {
+            status: "failed",
+            summary: "Slide 7 contains text overflow.",
+          },
+          delivery: { status: "warning" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-warning-delivery",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("Deliverable artifacts:");
+    expect(message).toContain("artifacts/pptx-generator/run-warning/final.pptx");
+    expect(message).toContain("Delivery: warning");
+    expect(message).toContain("Verification: failed");
+    expect(message).toContain("Verification details: Slide 7 contains text overflow.");
+    expect(message).toContain("explicitly tell the user that verification failed");
+    expect(message).toContain("call the `message` tool");
+  });
+
+  it("requires parent delivery for managed artifacts even when completion delivery is direct", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-managed-direct",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-managed-direct",
+      },
+    };
+    hasSubagentHandoffDeliveryHook = true;
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck ready",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/pptx-generator/run-managed-direct/final.pptx",
+            title: "Deck",
+          },
+          verification: { status: "passed" },
+          delivery: { status: "ready" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-managed-direct",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "direct",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).not.toHaveBeenCalled();
+    expect(subagentHandoffDeliveryHookMock).not.toHaveBeenCalled();
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("Deliverable artifacts:");
+    expect(message).toContain("call the `message` tool");
+  });
+
+  it.each([
+    { status: "error" as const, error: "boom" },
+    { status: "timeout" as const },
+    { status: "unknown" as const },
+  ])("does not deliver managed artifacts for a $status run", async (outcome) => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: `child-session-${outcome.status}-artifact`,
+      },
+      "agent:main:main": {
+        sessionId: `requester-session-${outcome.status}-artifact`,
+      },
+    };
+    hasSubagentHandoffDeliveryHook = true;
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "partial deck",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: `artifacts/pptx-generator/run-${outcome.status}/final.pptx`,
+            title: "Deck",
+          },
+          verification: { status: "passed" },
+          delivery: { status: "ready" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: `run-${outcome.status}-artifact`,
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      outcome,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(subagentHandoffStagingHookMock).toHaveBeenCalledWith(
+      expect.objectContaining({ deliveryEligible: false, outcome: outcome.status }),
+      expect.anything(),
+    );
+    expect(subagentHandoffDeliveryHookMock).not.toHaveBeenCalled();
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).not.toContain("Deliverable artifacts:");
+    expect(message).not.toContain("call the `message` tool");
+    expect(message).not.toContain("Deployment policy did not accept any valid artifact mapping");
+  });
+
+  it("binds a missing-channel WebChat parent turn to internal delivery", async () => {
+    const requesterSessionKey = "agent:main:webchat:namespace:chat_1";
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-webchat-missing-channel",
+      },
+      [requesterSessionKey]: {
+        sessionId: "requester-session-webchat-missing-channel",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck ready",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: { path: "artifacts/pptx-generator/run-3/final.pptx", title: "Deck" },
+          verification: { status: "passed" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-webchat-missing-channel",
+      requesterSessionKey,
+      requesterDisplayKey: requesterSessionKey,
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(params.channel).toBe("internal");
+    expect(params.deliver).toBe(false);
+    expect(message).toContain("Deliverable artifacts:");
+    expect(message).toContain("artifacts/pptx-generator/run-3/final.pptx");
+    expect(message).toContain("call `webui_artifact_publish`");
+    expect(message).not.toContain("call the `message` tool");
+  });
+
+  it("coalesces sibling WebChat artifacts on the internal surface", async () => {
+    vi.stubEnv("OPENCLAW_TEST_FAST", "0");
+    const requesterSessionKey = "agent:main:webchat:namespace:chat_batch";
+    sessionStore = {
+      "agent:main:subagent:webchat-a": {
+        sessionId: "child-session-webchat-a",
+      },
+      "agent:main:subagent:webchat-b": {
+        sessionId: "child-session-webchat-b",
+      },
+      [requesterSessionKey]: {
+        sessionId: "requester-session-webchat-batch",
+      },
+    };
+    readLatestAssistantReplyMock.mockImplementation(async (params?: unknown) => {
+      const sessionKey =
+        typeof params === "string"
+          ? params
+          : (params as { sessionKey?: string } | undefined)?.sessionKey;
+      const suffix = sessionKey?.endsWith("webchat-a") ? "a" : "b";
+      return [
+        `deck ${suffix} ready`,
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: `artifacts/pptx-generator/webchat-${suffix}/final.pptx`,
+            title: `Deck ${suffix}`,
+          },
+          verification: { status: "passed" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n");
+    });
+
+    const results = await Promise.all([
+      runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:webchat-a",
+        childRunId: "run-webchat-a",
+        requesterSessionKey,
+        requesterDisplayKey: requesterSessionKey,
+        requesterOrigin: { channel: "internal" },
+        ...defaultOutcomeAnnounce,
+        label: "deck-a",
+        expectsCompletionMessage: true,
+        completionDelivery: "parent",
+      }),
+      runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:webchat-b",
+        childRunId: "run-webchat-b",
+        requesterSessionKey,
+        requesterDisplayKey: requesterSessionKey,
+        requesterOrigin: { channel: "internal" },
+        ...defaultOutcomeAnnounce,
+        label: "deck-b",
+        expectsCompletionMessage: true,
+        completionDelivery: "parent",
+      }),
+    ]);
+
+    expect(results).toEqual([true, true]);
+    await vi.waitFor(
+      () => {
+        expect(agentSpy).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 3_000 },
+    );
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(params.channel).toBe("internal");
+    expect(params.deliver).toBe(false);
+    expect(message).toContain("artifacts/pptx-generator/webchat-a/final.pptx");
+    expect(message).toContain("artifacts/pptx-generator/webchat-b/final.pptx");
+    expect(message.match(/call `webui_artifact_publish`/g)).toHaveLength(1);
+  });
+
+  it("strips malformed handoff metadata from parent completion prompts", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-malformed-handoff",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-malformed-handoff",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck generation failed",
+        "<SUBAGENT_HANDOFF>",
+        "{invalid-json}",
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-malformed-handoff",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(subagentHandoffStagingHookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handoffMalformed: true,
+        handoff: expect.objectContaining({
+          quality: expect.objectContaining({ deliveryStatus: "blocked" }),
+          artifacts: [],
+        }),
+      }),
+      expect.anything(),
+    );
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("deck generation failed");
+    expect(message).toContain("Malformed subagent handoff metadata");
+    expect(message).not.toContain("<SUBAGENT_HANDOFF>");
+    expect(message).not.toContain("{invalid-json}");
+  });
+
+  it("stages a handoff trailer with trailing text as malformed", async () => {
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-trailing-handoff",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-trailing-handoff",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "deck generation finished",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/pptx-generator/run-trailing/final.pptx",
+          },
+          verification: { status: "passed" },
+          delivery: { status: "ready" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+        "unexpected trailing text",
+      ].join("\n"),
+    );
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-trailing-handoff",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "parent",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(subagentHandoffStagingHookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handoffMalformed: true,
+        handoff: expect.objectContaining({
+          quality: expect.objectContaining({ deliveryStatus: "blocked" }),
+          artifacts: [],
+        }),
+      }),
+      expect.anything(),
+    );
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("unexpected trailing text");
+    expect(message).toContain("Malformed subagent handoff metadata");
+    expect(message).not.toContain("artifacts/pptx-generator/run-trailing/final.pptx");
   });
 
   it("keeps parent artifact delivery checks when sibling runs are still active", async () => {
@@ -534,15 +1264,21 @@ describe("subagent announce formatting", () => {
         sessionId: "requester-session-parent-delivery-active-sibling",
       },
     };
-    chatHistoryMock.mockResolvedValueOnce({
-      messages: [
-        {
-          role: "assistant",
-          content: [{ type: "text", text: "final.pptx ready; delivery.json status failed" }],
-        },
-      ],
-    });
-    readLatestAssistantReplyMock.mockResolvedValue("");
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "final.pptx ready",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: "artifacts/pptx-generator/run-active-sibling/final.pptx",
+            title: "Deck",
+          },
+          verification: { status: "passed" },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
     subagentRegistryMock.countActiveDescendantRuns.mockImplementation((sessionKey: string) =>
       sessionKey === "agent:main:main" ? 1 : 0,
     );
@@ -567,7 +1303,7 @@ describe("subagent announce formatting", () => {
     const msg = typeof call?.params?.message === "string" ? call.params.message : "";
     expect(msg).toContain("Active: 1");
     expect(msg).toContain("Other subagent runs are still active.");
-    expect(msg).toContain("For verified user-requested deliverables referenced above");
+    expect(msg).toContain("For user-requested deliverables listed above");
   });
 
   it("coalesces parent completions into one requester turn", async () => {
@@ -637,7 +1373,7 @@ describe("subagent announce formatting", () => {
     expect(message).toContain("wrote AACR_072.jsonl");
     expect(message).not.toContain("Stats:");
     expect(message).not.toContain("Parked TaskFlows");
-    expect(message.match(/For verified user-requested deliverables/g)).toHaveLength(1);
+    expect(message).not.toContain("For verified user-requested deliverables");
   });
 
   it("keeps one pending parent wake while the requester run is active", async () => {
@@ -895,13 +1631,87 @@ describe("subagent announce formatting", () => {
     expect(subagentHandoffDeliveryHookMock).toHaveBeenCalledWith(
       expect.objectContaining({
         requesterSessionKey,
-        artifacts: [{ relativePath: "artifacts/imports/researcher/run-1/report.md" }],
+        artifacts: [
+          {
+            sourceRelativePath: "artifacts/exports/researcher/run-1/report.md",
+            relativePath: "artifacts/exports/researcher/run-1/report.md",
+            fileName: undefined,
+            title: "Report",
+            mimeType: "text/markdown",
+            profileId: undefined,
+            deliveryPolicy: undefined,
+          },
+        ],
       }),
       expect.objectContaining({ requesterSessionKey }),
     );
     expect(subagentHandoffDeliveryHookMock.mock.invocationCallOrder[0]).toBeLessThan(
       chatInjectSpy.mock.invocationCallOrder[0],
     );
+  });
+
+  it("sends a confirmation prompt without invoking automatic channel delivery", async () => {
+    const relativePath = "artifacts/exports/feishu/run-confirm/report.md";
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-confirmation",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-confirmation",
+      },
+    };
+    readLatestAssistantReplyMock.mockResolvedValueOnce(
+      [
+        "researcher final",
+        "<SUBAGENT_HANDOFF>",
+        JSON.stringify({
+          mode: "export-file",
+          export: {
+            path: relativePath,
+            title: "Report",
+            mime: "text/markdown",
+          },
+        }),
+        "</SUBAGENT_HANDOFF>",
+      ].join("\n"),
+    );
+    subagentHandoffStagingHookMock.mockResolvedValueOnce({
+      policyStatus: "evaluated",
+      acceptedArtifacts: [
+        {
+          sourceRelativePath: relativePath,
+          requesterRelativePath: relativePath,
+          profileId: "researcher-export",
+          deliveryPolicy: "confirmation",
+        },
+      ],
+      stagedArtifacts: [],
+      rejections: [],
+      failures: [],
+    });
+    hasSubagentHandoffDeliveryHook = true;
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-confirmation",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "default" },
+      ...defaultOutcomeAnnounce,
+      expectsCompletionMessage: true,
+      completionDelivery: "direct",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(subagentHandoffDeliveryHookMock).not.toHaveBeenCalled();
+    expect(agentSpy).not.toHaveBeenCalled();
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: { message?: string } };
+    expect(call.params?.message).toContain("researcher final");
+    expect(call.params?.message).toContain(
+      "A result file is ready. Reply that you want the file sent to receive it.",
+    );
+    expect(call.params?.message).not.toContain(relativePath);
   });
 
   it("direct completion delivery does not fall back to requester agent without a direct target", async () => {
@@ -1605,7 +2415,7 @@ describe("subagent announce formatting", () => {
     expect(msg).not.toContain("old tool output");
   });
 
-  it("strips export-file handoff metadata from direct completion delivery", async () => {
+  it("routes an unhandled export through the parent without exposing handoff metadata", async () => {
     chatHistoryMock.mockResolvedValueOnce({
       messages: [
         {
@@ -1647,32 +2457,24 @@ describe("subagent announce formatting", () => {
     });
 
     expect(didAnnounce).toBe(true);
-    expect(sendSpy).toHaveBeenCalledTimes(1);
-    const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
-    expect(call?.params).toEqual(
-      expect.objectContaining({
-        channel: "discord",
-        to: "channel:12345",
-      }),
-    );
-    expect(call?.params?.mediaUrls).toBeUndefined();
-    expect(call?.params?.message).toEqual(expect.stringContaining("已完成一版可交付的内部扫描。"));
-    expect(call?.params?.message).not.toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
-    expect(call?.params?.message).not.toEqual(
-      expect.stringContaining("artifacts/exports/feishu/glp1-route-scan-20260518"),
-    );
-    expect(call?.params).not.toMatchObject({
-      channel: "discord",
-      to: "channel:12345",
-      mediaUrls: ["artifacts/exports/feishu/glp1-route-scan-20260518/glp1-route-scan.md"],
-    });
+    expect(sendSpy).not.toHaveBeenCalled();
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("已完成一版可交付的内部扫描。");
+    expect(message).toContain("Deliverable artifacts:");
+    expect(message).toContain("call the `message` tool");
+    expect(message).not.toContain("<SUBAGENT_HANDOFF>");
   });
 
-  it("reports handoff artifact delivery failures in direct completion delivery", async () => {
+  it("keeps only failed direct-delivery artifacts for parent recovery", async () => {
     hasSubagentHandoffStagingHook = true;
     hasSubagentHandoffDeliveryHook = true;
+    const deliveredPath = "artifacts/exports/feishu/glp1-summary.md";
+    const failedPath = "artifacts/exports/feishu/glp1-data.csv";
     subagentHandoffDeliveryHookMock.mockResolvedValueOnce({
-      failures: [{ relativePath: "artifacts/report.md", message: "upload failed" }],
+      handled: true,
+      deliveredArtifacts: [deliveredPath],
+      failures: [{ relativePath: failedPath, message: "upload failed" }],
     });
     chatHistoryMock.mockResolvedValueOnce({
       messages: [
@@ -1687,11 +2489,18 @@ describe("subagent announce formatting", () => {
                 "<SUBAGENT_HANDOFF>",
                 JSON.stringify({
                   mode: "export-file",
-                  export: {
-                    path: "artifacts/exports/feishu/glp1-route-scan.md",
-                    title: "GLP-1 路线扫描",
-                    mime: "text/markdown",
-                  },
+                  exports: [
+                    {
+                      path: deliveredPath,
+                      title: "GLP-1 summary",
+                      mime: "text/markdown",
+                    },
+                    {
+                      path: failedPath,
+                      title: "GLP-1 data",
+                      mime: "text/csv",
+                    },
+                  ],
                 }),
                 "</SUBAGENT_HANDOFF>",
               ].join("\n"),
@@ -1713,11 +2522,15 @@ describe("subagent announce formatting", () => {
     });
 
     expect(didAnnounce).toBe(true);
-    const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
-    expect(call?.params?.message).toEqual(expect.stringContaining("Artifact delivery incomplete"));
-    expect(call?.params?.message).toEqual(expect.stringContaining("artifacts/report.md"));
-    expect(call?.params?.message).toEqual(expect.stringContaining("upload failed"));
-    expect(call?.params?.message).not.toEqual(expect.stringContaining("<SUBAGENT_HANDOFF>"));
+    expect(sendSpy).not.toHaveBeenCalled();
+    const params = await getSingleAgentCallParams();
+    const message = typeof params.message === "string" ? params.message : "";
+    expect(message).toContain("Artifact delivery issues:");
+    expect(message.match(/upload failed/g)).toHaveLength(1);
+    expect(message).toContain(failedPath);
+    expect(message).not.toContain(deliveredPath);
+    expect(message).not.toContain("Artifact delivery incomplete");
+    expect(message).not.toContain("<SUBAGENT_HANDOFF>");
   });
 
   it("falls back to latest tool output for completion-mode when assistant output is empty", async () => {
@@ -2023,6 +2836,21 @@ describe("subagent announce formatting", () => {
   it("keeps completion-mode announce internal for nested requester subagent sessions", async () => {
     embeddedRunMock.isEmbeddedPiRunActive.mockReturnValue(false);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockReturnValue(false);
+    hasSubagentHandoffDeliveryHook = true;
+    const nestedReply = [
+      "deck ready",
+      "<SUBAGENT_HANDOFF>",
+      JSON.stringify({
+        mode: "export-file",
+        export: {
+          path: "artifacts/pptx-generator/nested/final.pptx",
+          title: "Nested deck",
+        },
+        verification: { status: "passed" },
+      }),
+      "</SUBAGENT_HANDOFF>",
+    ].join("\n");
+    readLatestAssistantReplyMock.mockResolvedValue(nestedReply);
 
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:orchestrator:subagent:worker",
@@ -2031,6 +2859,7 @@ describe("subagent announce formatting", () => {
       requesterOrigin: { channel: "whatsapp", accountId: "acct-123", to: "+1555" },
       requesterDisplayKey: "agent:main:subagent:orchestrator",
       expectsCompletionMessage: true,
+      completionDelivery: "parent",
       ...defaultOutcomeAnnounce,
     });
 
@@ -2044,8 +2873,12 @@ describe("subagent announce formatting", () => {
     expect(call?.params?.deliver).toBe(false);
     expect(call?.params?.channel).toBeUndefined();
     expect(call?.params?.to).toBeUndefined();
+    expect(subagentHandoffStagingHookMock).toHaveBeenCalledTimes(1);
+    expect(subagentHandoffDeliveryHookMock).not.toHaveBeenCalled();
     const message = typeof call?.params?.message === "string" ? call.params.message : "";
     expect(message).toContain("Use these results as an internal orchestration update.");
+    expect(message).not.toContain("call the `message` tool");
+    expect(message).not.toContain("call `webui_artifact_publish`");
   });
 
   it("keeps direct completion delivery internal for nested requester subagent sessions", async () => {

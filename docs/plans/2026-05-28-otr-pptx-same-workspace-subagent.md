@@ -1,5 +1,7 @@
 # Implementation Plan: OTR PPTX Same-Workspace Subagent
 
+> 本文已于 2026-07-27 被 `docs/plans/2026-07-27-channel-scoped-subagent-artifact-delivery.md` 取代。当前设计已移除 `artifact_jobs`，PPTX completion 保留在 parent 链路，并由 requester agent 负责渠道相关的文件交付。
+
 ## Overview
 
 本计划替代旧的 `artifact_jobs + ppt-agent + 独立 workspace` PPT 链路。

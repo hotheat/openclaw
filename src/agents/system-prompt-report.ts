@@ -2,6 +2,8 @@ import path from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { SessionSystemPromptReport } from "../config/sessions/types.js";
 import type { EmbeddedContextFile } from "./pi-embedded-helpers.js";
+import { buildToolListText } from "./system-prompt-tools.js";
+import { buildToolSummaryMap } from "./tool-summaries.js";
 import type { WorkspaceBootstrapFile } from "./workspace.js";
 
 function extractBetween(
@@ -106,17 +108,6 @@ function buildToolsEntries(tools: AgentTool[]): SessionSystemPromptReport["tools
   });
 }
 
-function extractToolListText(systemPrompt: string): string {
-  const markerA = "Tool names are case-sensitive. Call tools exactly as listed.\n";
-  const markerB =
-    "\nTOOLS.md does not control tool availability; it is user guidance for how to use external tools.";
-  const extracted = extractBetween(systemPrompt, markerA, markerB);
-  if (!extracted.found) {
-    return "";
-  }
-  return extracted.text.replace(markerA, "").trim();
-}
-
 export function buildSystemPromptReport(params: {
   source: SessionSystemPromptReport["source"];
   generatedAt: number;
@@ -141,8 +132,11 @@ export function buildSystemPromptReport(params: {
     "\n## Silent Replies\n",
   );
   const projectContextChars = projectContext.text.length;
-  const toolListText = extractToolListText(systemPrompt);
-  const toolListChars = toolListText.length;
+  const toolListText = buildToolListText(
+    params.tools.map((tool) => tool.name),
+    buildToolSummaryMap(params.tools),
+  );
+  const toolListChars = params.tools.length > 0 ? toolListText.length : 0;
   const toolsEntries = buildToolsEntries(params.tools);
   const toolsSchemaChars = toolsEntries.reduce((sum, t) => sum + (t.schemaChars ?? 0), 0);
   const skillsEntries = parseSkillBlocks(params.skillsPrompt);

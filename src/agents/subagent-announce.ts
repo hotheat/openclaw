@@ -13,6 +13,7 @@ import { callGateway } from "../gateway/call.js";
 import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-router.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
+import type { PluginHookAcceptedArtifact, PluginHookStagedArtifact } from "../plugins/types.js";
 import { normalizeAccountId, normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
@@ -22,7 +23,11 @@ import {
   mergeDeliveryContext,
   normalizeDeliveryContext,
 } from "../utils/delivery-context.js";
-import { isDeliverableMessageChannel } from "../utils/message-channel.js";
+import {
+  INTERNAL_MESSAGE_CHANNEL,
+  isDeliverableMessageChannel,
+  normalizeMessageChannel,
+} from "../utils/message-channel.js";
 import { resolveAgentWorkspaceDir } from "./agent-scope.js";
 import {
   buildAnnounceIdFromChildRun,
@@ -34,6 +39,7 @@ import {
   queueEmbeddedPiMessage,
   waitForEmbeddedPiRunEnd,
 } from "./pi-embedded.js";
+import { isParentWebchatSessionContext, isParentWebchatSessionKey } from "./session-surface.js";
 import {
   type AnnounceQueueItem,
   buildCompletionAnnouncePrompt,
@@ -41,6 +47,17 @@ import {
   enqueueAnnounceWithOutcome,
 } from "./subagent-announce-queue.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
+import {
+  buildRequesterVisibleAcceptedArtifacts,
+  buildSubagentHandoffAnnounceView,
+  type SubagentHandoffAnnounceView,
+  type SubagentHandoffDeliveryIssue,
+} from "./subagent-handoff-announce.js";
+import {
+  analyzeSubagentHandoff,
+  stripSubagentHandoff,
+  type ParsedSubagentHandoff,
+} from "./subagent-handoff.js";
 import { persistSubagentResultSnapshot } from "./subagent-result-store.js";
 import type { SpawnSubagentMode, SubagentCompletionDelivery } from "./subagent-spawn.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
@@ -68,43 +85,58 @@ type SubagentAnnounceDeliveryResult = {
   error?: string;
 };
 
-type SubagentHandoffDeliveryFailure = {
-  relativePath?: string;
-  message: string;
-};
-
-type SubagentHandoffDeliveryResult = {
-  failures: SubagentHandoffDeliveryFailure[];
-};
-
 function appendVisibleHandoffWarning(text: string, warning: string): string {
   const base = text.trim();
   return base ? `${base}\n\n${warning}` : warning;
 }
 
-function formatHandoffDeliveryWarning(failures: SubagentHandoffDeliveryFailure[]): string {
-  if (failures.length === 0) {
+function formatHandoffDeliveryWarning(view: SubagentHandoffAnnounceView): string {
+  if (view.deliveryIssues.length === 0) {
     return "";
   }
-  const listed = failures
+  const listed = view.deliveryIssues
     .slice(0, 5)
-    .map((failure) => {
-      const target = failure.relativePath?.trim() || "artifact";
-      return `- ${target}: ${failure.message}`;
-    })
+    .map((issue) => `- ${issue.reason}`)
     .join("\n");
-  const suffix = failures.length > 5 ? `\n- ...and ${failures.length - 5} more` : "";
-  return `Artifact delivery incomplete. The subagent finished, but ${failures.length} file(s) were not delivered.\n${listed}${suffix}`;
+  const suffix =
+    view.deliveryIssues.length > 5 ? `\n- ...and ${view.deliveryIssues.length - 5} more` : "";
+  return `Artifact delivery incomplete.\n${listed}${suffix}`;
 }
 
-function createHandoffTimeoutSignal(): { signal: AbortSignal; dispose: () => void } {
+function formatHandoffConfirmationPrompt(view: SubagentHandoffAnnounceView): string {
+  const confirmationCount = view.deliverableArtifacts.filter(
+    (artifact) => artifact.deliveryPolicy === "confirmation",
+  ).length;
+  if (confirmationCount === 0) {
+    return "";
+  }
+  return confirmationCount === 1
+    ? "A result file is ready. Reply that you want the file sent to receive it."
+    : `${confirmationCount} result files are ready. Reply that you want the files sent to receive them.`;
+}
+
+function createHandoffTimeoutSignal(parentSignal?: AbortSignal): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
   const controller = new AbortController();
+  const abortFromParent = () => {
+    controller.abort(parentSignal?.reason);
+  };
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
   const timeout = setTimeout(() => {
     controller.abort(new Error("Subagent handoff delivery timed out"));
   }, DEFAULT_SUBAGENT_HANDOFF_TIMEOUT_MS);
   return {
     signal: controller.signal,
-    dispose: () => clearTimeout(timeout),
+    dispose: () => {
+      clearTimeout(timeout);
+      parentSignal?.removeEventListener("abort", abortFromParent);
+    },
   };
 }
 
@@ -113,53 +145,113 @@ async function stageAndDeliverSubagentHandoff(params: {
   childSessionKey: string;
   requesterSessionKey: string;
   content: string;
+  handoff: ParsedSubagentHandoff;
+  handoffAt: number;
+  allowChannelDelivery: boolean;
   requesterOrigin?: DeliveryContext;
   outcome?: SubagentRunOutcome;
   completionDelivery?: SubagentCompletionDelivery;
-}): Promise<SubagentHandoffDeliveryResult> {
-  const emptyResult = { failures: [] };
-  if (!params.content.includes("<SUBAGENT_HANDOFF>")) {
-    return emptyResult;
-  }
-
+  handoffMalformed?: boolean;
+  signal?: AbortSignal;
+}): Promise<SubagentHandoffAnnounceView> {
+  const buildView = (
+    acceptedArtifacts: PluginHookAcceptedArtifact[] = [],
+    stagedArtifacts: PluginHookStagedArtifact[] = [],
+    deliveryIssues: SubagentHandoffDeliveryIssue[] = [],
+    workspacePaths: string[] = [],
+  ) =>
+    buildSubagentHandoffAnnounceView({
+      handoff: params.handoff,
+      acceptedArtifacts,
+      stagedArtifacts,
+      deliveryIssues,
+      workspacePaths,
+    });
   const hookRunner = getGlobalHookRunner();
   if (!hookRunner?.hasHooks("subagent_handoff_staging")) {
-    return emptyResult;
+    return buildView(
+      [],
+      [],
+      [
+        {
+          kind: "policy-unavailable",
+          reason: "Artifact staging policy is unavailable.",
+        },
+      ],
+    );
   }
 
   const cfg = loadConfig();
   const childAgentId = resolveAgentIdFromSessionKey(params.childSessionKey);
   const requesterAgentId = resolveAgentIdFromSessionKey(params.requesterSessionKey);
   if (!childAgentId || !requesterAgentId) {
-    return emptyResult;
+    return buildView(
+      [],
+      [],
+      [
+        {
+          kind: "policy-unavailable",
+          reason: "Artifact staging policy could not resolve the requester session.",
+        },
+      ],
+    );
   }
 
   const childWorkspaceDir = resolveAgentWorkspaceDir(cfg, childAgentId);
   const requesterWorkspaceDir = resolveAgentWorkspaceDir(cfg, requesterAgentId);
   if (!childWorkspaceDir || !requesterWorkspaceDir) {
-    return emptyResult;
+    return buildView(
+      [],
+      [],
+      [
+        {
+          kind: "policy-unavailable",
+          reason: "Artifact staging policy could not resolve the requester workspace.",
+        },
+      ],
+    );
   }
+  const workspacePaths = [childWorkspaceDir, requesterWorkspaceDir];
 
-  const timeoutSignal = createHandoffTimeoutSignal();
-  const timedOut = new Promise<SubagentHandoffDeliveryResult>((resolve) => {
+  const timeoutSignal = createHandoffTimeoutSignal(params.signal);
+  if (timeoutSignal.signal.aborted) {
+    timeoutSignal.dispose();
+    return buildView(
+      [],
+      [],
+      [{ kind: "staging-failed", reason: "Artifact staging was cancelled." }],
+      workspacePaths,
+    );
+  }
+  const timedOut = new Promise<SubagentHandoffAnnounceView>((resolve) => {
     timeoutSignal.signal.addEventListener(
       "abort",
       () =>
-        resolve({
-          failures: [{ message: "handoff delivery timed out" }],
-        }),
+        resolve(
+          buildView(
+            [],
+            [],
+            [{ kind: "staging-failed", reason: "Artifact staging timed out." }],
+            workspacePaths,
+          ),
+        ),
       { once: true },
     );
   });
-  const run = (async (): Promise<SubagentHandoffDeliveryResult> => {
+  const run = (async (): Promise<SubagentHandoffAnnounceView> => {
+    const deliveryEligible = params.outcome?.status === "ok";
     const event = {
       runId: params.runId,
       childSessionKey: params.childSessionKey,
       requesterSessionKey: params.requesterSessionKey,
       content: params.content,
+      handoff: params.handoff,
+      handoffAt: params.handoffAt,
       childWorkspaceDir,
       requesterWorkspaceDir,
       requesterOrigin: params.requesterOrigin,
+      deliveryEligible,
+      handoffMalformed: params.handoffMalformed === true,
       outcome: params.outcome?.status,
       completionDelivery: params.completionDelivery,
       signal: timeoutSignal.signal,
@@ -170,23 +262,143 @@ async function stageAndDeliverSubagentHandoff(params: {
       requesterSessionKey: params.requesterSessionKey,
     };
     const staged = await hookRunner.runSubagentHandoffStaging(event, ctx);
-    if (!staged?.artifacts.length || !hookRunner.hasHooks("subagent_handoff_delivery")) {
-      return emptyResult;
+    if (timeoutSignal.signal.aborted) {
+      return buildView(
+        [],
+        [],
+        [{ kind: "staging-failed", reason: "Artifact staging timed out." }],
+        workspacePaths,
+      );
     }
-
-    return (
-      (await hookRunner.runSubagentHandoffDelivery(
-        {
-          ...event,
-          artifacts: staged.artifacts,
-        },
-        ctx,
-      )) ?? emptyResult
+    if (!staged) {
+      return buildView(
+        [],
+        [],
+        [
+          {
+            kind: "policy-unavailable",
+            reason: "Artifact staging policy returned no assessment.",
+          },
+        ],
+        workspacePaths,
+      );
+    }
+    const deliveryIssues: SubagentHandoffDeliveryIssue[] = [
+      ...(staged.policyStatus === "unavailable" && staged.failures.length === 0
+        ? [
+            {
+              kind: "policy-unavailable" as const,
+              reason: "Artifact staging policy is unavailable.",
+            },
+          ]
+        : []),
+      ...staged.rejections.map((rejection) => ({
+        kind: "policy-rejected" as const,
+        reason: rejection.message || "Artifact rejected by deployment policy.",
+      })),
+      ...staged.failures.map((failure) => ({
+        kind: "staging-failed" as const,
+        reason: failure.message || "Artifact staging failed.",
+      })),
+    ];
+    let acceptedArtifacts = deliveryEligible ? staged.acceptedArtifacts : [];
+    let stagedArtifacts = deliveryEligible ? staged.stagedArtifacts : [];
+    const deliveryArtifacts = buildRequesterVisibleAcceptedArtifacts({
+      handoff: params.handoff,
+      acceptedArtifacts,
+      stagedArtifacts,
+    });
+    const automaticDeliveryArtifacts = deliveryArtifacts.filter(
+      (artifact) => artifact.deliveryPolicy !== "confirmation",
     );
-  })().catch(
-    (error): SubagentHandoffDeliveryResult => ({
-      failures: [{ message: summarizeDeliveryError(error) }],
-    }),
+    if (
+      deliveryEligible &&
+      staged.policyStatus === "evaluated" &&
+      params.handoff.artifacts.length > 0 &&
+      deliveryArtifacts.length === 0 &&
+      staged.rejections.length === 0 &&
+      staged.failures.length === 0
+    ) {
+      deliveryIssues.push({
+        kind: "policy-rejected",
+        reason: "Deployment policy did not accept any valid artifact mapping.",
+      });
+    }
+    if (
+      !timeoutSignal.signal.aborted &&
+      deliveryEligible &&
+      params.allowChannelDelivery &&
+      params.handoff.quality.deliveryStatus !== "blocked" &&
+      automaticDeliveryArtifacts.length > 0
+    ) {
+      const deliveryResult = hookRunner.hasHooks("subagent_handoff_delivery")
+        ? await hookRunner.runSubagentHandoffDelivery(
+            {
+              ...event,
+              artifacts: automaticDeliveryArtifacts,
+            },
+            ctx,
+          )
+        : undefined;
+      if (!deliveryResult?.handled) {
+        deliveryIssues.push({
+          kind: "staging-failed",
+          reason: "No channel adapter handled automatic artifact delivery.",
+        });
+      } else {
+        const deliverablePaths = new Set(
+          automaticDeliveryArtifacts.map((artifact) => artifact.relativePath),
+        );
+        const deliveredPaths = new Set(
+          (deliveryResult.deliveredArtifacts ?? []).filter((relativePath) =>
+            deliverablePaths.has(relativePath),
+          ),
+        );
+        const failedPaths = new Set(
+          deliveryResult.failures
+            .map((failure) => failure.relativePath)
+            .filter((relativePath): relativePath is string => Boolean(relativePath)),
+        );
+        for (const failure of deliveryResult.failures) {
+          deliveryIssues.push({
+            kind: "staging-failed",
+            reason: failure.message || "Artifact channel delivery failed.",
+          });
+        }
+        for (const artifact of automaticDeliveryArtifacts) {
+          if (
+            !deliveredPaths.has(artifact.relativePath) &&
+            !failedPaths.has(artifact.relativePath)
+          ) {
+            deliveryIssues.push({
+              kind: "staging-failed",
+              reason: `Channel adapter did not report an outcome for ${artifact.relativePath}.`,
+            });
+          }
+        }
+        if (deliveredPaths.size > 0) {
+          acceptedArtifacts = acceptedArtifacts.filter(
+            (artifact) => !deliveredPaths.has(artifact.requesterRelativePath),
+          );
+          stagedArtifacts = stagedArtifacts.filter(
+            (artifact) => !deliveredPaths.has(artifact.relativePath),
+          );
+        }
+      }
+    }
+    return buildView(acceptedArtifacts, stagedArtifacts, deliveryIssues, workspacePaths);
+  })().catch((error) =>
+    buildView(
+      [],
+      [],
+      [
+        {
+          kind: "staging-failed",
+          reason: summarizeDeliveryError(error),
+        },
+      ],
+      workspacePaths,
+    ),
   );
 
   try {
@@ -240,9 +452,7 @@ function buildCompletionDeliveryMessage(params: {
   spawnMode?: SpawnSubagentMode;
   outcome?: SubagentRunOutcome;
 }): string {
-  const findingsText = params.findings
-    .replace(/\s*<SUBAGENT_HANDOFF>[\s\S]*?<\/SUBAGENT_HANDOFF>\s*/gi, "\n")
-    .trim();
+  const findingsText = stripSubagentHandoffMetadata(params.findings);
   const hasFindings = findingsText.length > 0 && findingsText !== "(no output)";
   const header = (() => {
     if (params.outcome?.status === "error") {
@@ -263,6 +473,24 @@ function buildCompletionDeliveryMessage(params: {
     return header;
   }
   return `${header}\n\n${findingsText}`;
+}
+
+function stripSubagentHandoffMetadata(content: string): string {
+  return stripSubagentHandoff(content);
+}
+
+function buildMalformedSubagentHandoff(): ParsedSubagentHandoff {
+  return {
+    mode: "inline",
+    summary: "Malformed subagent handoff metadata; artifact delivery was withheld.",
+    quality: {
+      gate: "managed",
+      verificationStatus: "unknown",
+      deliveryStatus: "blocked",
+    },
+    artifacts: [],
+    omittedArtifactCount: 0,
+  };
 }
 
 function summarizeDeliveryError(error: unknown): string {
@@ -707,6 +935,7 @@ async function sendAnnounce(item: AnnounceQueueItem) {
   const requesterDepth = getSubagentDepthFromSessionStore(item.sessionKey);
   const requesterIsSubagent = requesterDepth >= 1;
   const origin = item.origin;
+  const runChannel = item.runChannel ?? origin?.channel;
   const threadId =
     origin?.threadId != null && origin.threadId !== "" ? String(origin.threadId) : undefined;
   // Share one announce identity across direct and queued delivery paths so
@@ -723,11 +952,11 @@ async function sendAnnounce(item: AnnounceQueueItem) {
     params: {
       sessionKey: item.sessionKey,
       message: item.prompt,
-      channel: requesterIsSubagent ? undefined : origin?.channel,
+      channel: requesterIsSubagent ? undefined : runChannel,
       accountId: requesterIsSubagent ? undefined : origin?.accountId,
       to: requesterIsSubagent ? undefined : origin?.to,
       threadId: requesterIsSubagent ? undefined : threadId,
-      deliver: !requesterIsSubagent,
+      deliver: !requesterIsSubagent && item.deliver !== false,
       idempotencyKey,
     },
     expectFinal: item.waitForFinal === true,
@@ -876,7 +1105,6 @@ function queueOutcomeToDeliveryResult(
 function buildCollectedCompletionInstruction(params: {
   remainingActiveSubagentRuns: number;
   requesterIsSubagent: boolean;
-  requiresParentDeliveryCheck: boolean;
 }): string {
   const lines: string[] = [];
   if (params.requesterIsSubagent) {
@@ -890,12 +1118,14 @@ function buildCollectedCompletionInstruction(params: {
   } else {
     lines.push("Use these results to send one concise user-facing update.");
   }
-  if (params.requiresParentDeliveryCheck) {
-    lines.push(
-      `For verified user-requested deliverables referenced above, use the message tool when delivery is still needed. If already sent, reply ONLY: ${SILENT_REPLY_TOKEN}.`,
-    );
-  }
   return lines.join(" ");
+}
+
+function buildCollectedArtifactDeliveryInstruction(useWebuiArtifactPublish: boolean): string {
+  const deliveryInstruction = useWebuiArtifactPublish
+    ? "For user-requested deliverables listed above, call `webui_artifact_publish` with the workspace-relative path when delivery is still needed."
+    : "For user-requested deliverables listed above, call the `message` tool with the explicit current-channel target when delivery is still needed.";
+  return `${deliveryInstruction} If already sent, reply ONLY: ${SILENT_REPLY_TOKEN}.`;
 }
 
 async function queueCollectedParentCompletion(params: {
@@ -909,10 +1139,21 @@ async function queueCollectedParentCompletion(params: {
   requesterIsSubagent: boolean;
   requiresParentDeliveryCheck: boolean;
   requesterOrigin?: DeliveryContext;
+  requesterSurfaceChannel?: string;
+  handoff?: SubagentHandoffAnnounceView;
+  resultSnapshot?: string;
 }): Promise<SubagentAnnounceDeliveryResult> {
   const cfg = loadConfig();
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
   const origin = normalizeDeliveryContext(params.requesterOrigin);
+  const requesterSurfaceChannel = normalizeMessageChannel(params.requesterSurfaceChannel);
+  const useWebuiArtifactPublish =
+    isParentWebchatSessionContext({
+      channel: requesterSurfaceChannel,
+      sessionKey: canonicalKey,
+    }) ||
+    (!requesterSurfaceChannel && isParentWebchatSessionKey(canonicalKey));
+  const webchatRunChannel = requesterSurfaceChannel ?? INTERNAL_MESSAGE_CHANNEL;
   const completionStatus =
     params.outcome.status === "ok"
       ? "succeeded"
@@ -922,7 +1163,7 @@ async function queueCollectedParentCompletion(params: {
   const resultRef = await persistSubagentResultSnapshot({
     announceId: params.announceId,
     sessionKey: params.childSessionKey,
-    result: params.findings,
+    result: params.resultSnapshot ?? params.findings,
   });
   const item: AnnounceQueueItem = {
     announceId: params.announceId,
@@ -930,7 +1171,10 @@ async function queueCollectedParentCompletion(params: {
     summaryLine: `${params.taskLabel}: ${completionStatus}`,
     enqueuedAt: Date.now(),
     sessionKey: canonicalKey,
-    origin,
+    origin: useWebuiArtifactPublish ? undefined : origin,
+    originKey: useWebuiArtifactPublish ? `surface:${webchatRunChannel}` : undefined,
+    runChannel: useWebuiArtifactPublish ? webchatRunChannel : undefined,
+    deliver: !useWebuiArtifactPublish,
     waitForFinal: true,
     completion: {
       label: params.taskLabel,
@@ -940,12 +1184,16 @@ async function queueCollectedParentCompletion(params: {
         id: resultRef,
         sessionKey: params.childSessionKey,
       },
+      handoff: params.handoff,
       remainingActive: params.remainingActiveSubagentRuns,
       instruction: buildCollectedCompletionInstruction({
         remainingActiveSubagentRuns: params.remainingActiveSubagentRuns,
         requesterIsSubagent: params.requesterIsSubagent,
-        requiresParentDeliveryCheck: params.requiresParentDeliveryCheck,
       }),
+      deliveryInstruction:
+        params.requiresParentDeliveryCheck && !params.requesterIsSubagent
+          ? buildCollectedArtifactDeliveryInstruction(useWebuiArtifactPublish)
+          : undefined,
     },
   };
   item.prompt = buildCompletionAnnouncePrompt([item]) ?? params.findings;
@@ -1309,7 +1557,7 @@ export function buildSubagentSystemPrompt(params: {
     "- NO external messages (email, tweets, etc.) unless explicitly tasked with a specific recipient/channel",
     "- NO cron jobs or persistent state",
     `- NO pretending to be the ${parentLabel}`,
-    `- Only use the \`message\` tool when explicitly instructed to contact a specific external recipient; otherwise return plain text and let the ${parentLabel} deliver it`,
+    `- Use the \`message\` tool only when it is present in your actual tool list and you are explicitly instructed to contact a specific external recipient; otherwise return the content, recipient, and channel to the ${parentLabel} for delivery`,
     "",
   ];
 
@@ -1370,8 +1618,9 @@ function buildAnnounceReplyInstruction(params: {
       ? [
           " This completion was routed through you for parent-side delivery checks.",
           " If the result or the relevant skill instructions explicitly say a generated artifact should be delivered, and that artifact path exists in the current workspace, call the `message` tool to send it before replying.",
-          " Treat a ready final/export path, a delivery manifest that asks the parent to send, a failed child-send status with a verified artifact, or a direct user request for the file as delivery signals.",
-          " Do not auto-send arbitrary log, draft, diagnostic, intermediate, or failed-verification paths.",
+          " Treat a ready final/export path, a delivery manifest that asks the parent to send, a failed child-send status with a deliverable artifact, or a direct user request for the file as delivery signals.",
+          " A failed-verification artifact is deliverable only when its handoff delivery.status is warning; tell the user verification failed and include the reported verification details when sending it.",
+          " Do not auto-send arbitrary log, draft, diagnostic, intermediate, blocked, unknown-verification, or contradictory-status paths.",
           ` If the \`message\` tool already sent the user-facing update or file, reply ONLY: ${SILENT_REPLY_TOKEN}.`,
         ].join("")
       : "";
@@ -1559,7 +1808,12 @@ export async function runSubagentAnnounceFlow(params: {
     const subagentName = resolveAgentIdFromSessionKey(params.childSessionKey);
     const announceSessionId = childSessionId || "unknown";
     const findings = reply || "(no output)";
-    let deliveryFindings = findings;
+    const handoffAnalysis = analyzeSubagentHandoff(findings);
+    const handoffMalformed = handoffAnalysis.didFindHandoff && !handoffAnalysis.handoff;
+    const parsedHandoff =
+      handoffAnalysis.handoff ?? (handoffMalformed ? buildMalformedSubagentHandoff() : undefined);
+    const announceFindings = stripSubagentHandoffMetadata(findings);
+    let deliveryFindings = announceFindings;
     let completionMessage = "";
     let triggerMessage = "";
 
@@ -1612,8 +1866,11 @@ export async function runSubagentAnnounceFlow(params: {
     } catch {
       // Best-effort only; fall back to default announce instructions when unavailable.
     }
-    const shouldCollectParentCompletion =
-      expectsCompletionMessage && (params.completionDelivery === "parent" || requesterIsSubagent);
+    let shouldCollectParentCompletion =
+      expectsCompletionMessage &&
+      (params.completionDelivery === "parent" ||
+        requesterIsSubagent ||
+        parsedHandoff?.quality.gate === "managed");
     if (!shouldCollectParentCompletion) {
       const replyInstruction = buildAnnounceReplyInstruction({
         remainingActiveSubagentRuns,
@@ -1628,7 +1885,7 @@ export async function runSubagentAnnounceFlow(params: {
         endedAt: params.endedAt,
       });
       completionMessage = buildCompletionDeliveryMessage({
-        findings,
+        findings: announceFindings,
         subagentName,
         spawnMode: params.spawnMode,
         outcome,
@@ -1637,7 +1894,7 @@ export async function runSubagentAnnounceFlow(params: {
         `[System Message] [sessionId: ${announceSessionId}] A ${announceType} "${taskLabel}" just ${statusLabel}.`,
         "",
         "Result:",
-        findings,
+        announceFindings,
         "",
         statsLine,
       ].join("\n");
@@ -1670,22 +1927,44 @@ export async function runSubagentAnnounceFlow(params: {
             routeMode: "fallback" as const,
           };
     const completionDirectOrigin = completionResolution.origin;
-    if (!requesterIsSubagent) {
-      const handoffDelivery = await stageAndDeliverSubagentHandoff({
-        runId: params.childRunId,
-        childSessionKey: params.childSessionKey,
-        requesterSessionKey: targetRequesterSessionKey,
-        content: findings,
-        requesterOrigin: completionDirectOrigin ?? directOrigin,
-        outcome,
-        completionDelivery: params.completionDelivery,
-      });
-      const handoffWarning = formatHandoffDeliveryWarning(handoffDelivery.failures);
-      if (handoffWarning) {
-        deliveryFindings = appendVisibleHandoffWarning(deliveryFindings, handoffWarning);
-        completionMessage = appendVisibleHandoffWarning(completionMessage, handoffWarning);
-        triggerMessage = appendVisibleHandoffWarning(triggerMessage, handoffWarning);
+    const handoffView = parsedHandoff
+      ? await stageAndDeliverSubagentHandoff({
+          runId: params.childRunId,
+          childSessionKey: params.childSessionKey,
+          requesterSessionKey: targetRequesterSessionKey,
+          content: findings,
+          handoff: parsedHandoff,
+          handoffAt: params.endedAt ?? Date.now(),
+          allowChannelDelivery: !requesterIsSubagent && !shouldCollectParentCompletion,
+          requesterOrigin: completionDirectOrigin ?? directOrigin,
+          outcome,
+          completionDelivery: params.completionDelivery,
+          handoffMalformed,
+          signal: params.signal,
+        })
+      : undefined;
+    if (handoffView) {
+      if (expectsCompletionMessage && handoffView.deliveryIssues.length > 0) {
+        shouldCollectParentCompletion = true;
       }
+      if (!shouldCollectParentCompletion) {
+        const handoffWarning = formatHandoffDeliveryWarning(handoffView);
+        if (handoffWarning) {
+          deliveryFindings = appendVisibleHandoffWarning(deliveryFindings, handoffWarning);
+          completionMessage = appendVisibleHandoffWarning(completionMessage, handoffWarning);
+          triggerMessage = appendVisibleHandoffWarning(triggerMessage, handoffWarning);
+        }
+        const confirmationPrompt = formatHandoffConfirmationPrompt(handoffView);
+        if (confirmationPrompt) {
+          deliveryFindings = appendVisibleHandoffWarning(deliveryFindings, confirmationPrompt);
+          completionMessage = appendVisibleHandoffWarning(completionMessage, confirmationPrompt);
+          triggerMessage = appendVisibleHandoffWarning(triggerMessage, confirmationPrompt);
+        }
+      }
+    }
+    if (params.signal?.aborted) {
+      shouldDeleteChildSession = false;
+      return false;
     }
     // Use a deterministic idempotency key so the gateway dedup cache
     // catches duplicates if this announce is also queued by the gateway-
@@ -1697,12 +1976,21 @@ export async function runSubagentAnnounceFlow(params: {
           requesterSessionKey: targetRequesterSessionKey,
           announceId,
           taskLabel,
-          findings: deliveryFindings,
+          findings: stripSubagentHandoffMetadata(deliveryFindings),
+          resultSnapshot: findings,
           outcome,
           remainingActiveSubagentRuns,
           requesterIsSubagent,
-          requiresParentDeliveryCheck: params.completionDelivery === "parent",
+          requiresParentDeliveryCheck:
+            !requesterIsSubagent &&
+            Boolean(
+              handoffView?.deliverableArtifacts.some(
+                (artifact) => artifact.deliveryPolicy !== "confirmation",
+              ),
+            ),
           requesterOrigin: directOrigin,
+          requesterSurfaceChannel: targetRequesterOrigin?.channel,
+          handoff: handoffView,
         })
       : await deliverSubagentAnnouncement({
           requesterSessionKey: targetRequesterSessionKey,

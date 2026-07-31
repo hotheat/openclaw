@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import * as sdk from "./index.js";
 
 describe("plugin-sdk exports", () => {
+  it("exports parent WebChat session predicates for bundled plugins", () => {
+    expect(sdk.isParentWebchatSessionKey("agent:main:webchat:default:session-1")).toBe(true);
+    expect(
+      sdk.isParentWebchatSessionContext({
+        channel: "internal",
+        sessionKey: "agent:main:webchat:default:session-1",
+      }),
+    ).toBe(true);
+  });
+
+  it("exports safe file access for bundled plugins", () => {
+    expect(sdk.SafeOpenError).toBeTypeOf("function");
+    expect(sdk.openFileWithinRoot).toBeTypeOf("function");
+  });
+
   it("does not expose runtime modules", () => {
     const forbidden = [
       "chunkMarkdownText",

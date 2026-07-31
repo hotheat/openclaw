@@ -232,6 +232,24 @@ describe("message tool channel context", () => {
     expect(mocks.runMessageAction).not.toHaveBeenCalled();
   });
 
+  it("rejects WebChat delivery when the parent session runs through internal", async () => {
+    const tool = createMessageTool({
+      config: {} as never,
+      currentChannelProvider: "internal",
+      agentSessionKey: "agent:feishu-ou_123:webchat:namespace:chat_1",
+    });
+
+    await expect(
+      tool.execute("1", {
+        action: "send",
+        channel: "webchat",
+        target: "user:ou_123",
+        message: "hi",
+      }),
+    ).rejects.toThrow(/webchat is not deliverable/);
+    expect(mocks.runMessageAction).not.toHaveBeenCalled();
+  });
+
   it("rejects gateway-client as a WebChat message target", async () => {
     const tool = createMessageTool({
       config: {} as never,

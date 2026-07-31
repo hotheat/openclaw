@@ -112,19 +112,33 @@ describe("after_tool_call hook wiring", () => {
     const firstCall = (hookMocks.runner.runAfterToolCall as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(firstCall).toBeDefined();
     const event = firstCall?.[0] as
-      | { toolName?: string; params?: unknown; error?: unknown; durationMs?: unknown }
+      | {
+          toolName?: string;
+          toolCallId?: string;
+          runId?: string;
+          params?: unknown;
+          error?: unknown;
+          durationMs?: unknown;
+        }
       | undefined;
-    const context = firstCall?.[1] as { toolName?: string } | undefined;
+    const context = firstCall?.[1] as
+      | { toolName?: string; toolCallId?: string; runId?: string; sessionKey?: string }
+      | undefined;
     expect(event).toBeDefined();
     expect(context).toBeDefined();
     if (!event || !context) {
       throw new Error("missing hook call payload");
     }
     expect(event.toolName).toBe("read");
+    expect(event.toolCallId).toBe("call-1");
+    expect(event.runId).toBe("test-run-1");
     expect(event.params).toEqual({ path: "/tmp/file.txt" });
     expect(event.error).toBeUndefined();
     expect(typeof event.durationMs).toBe("number");
     expect(context.toolName).toBe("read");
+    expect(context.toolCallId).toBe("call-1");
+    expect(context.runId).toBe("test-run-1");
+    expect(context.sessionKey).toBe("test-session");
   });
 
   it("includes error in after_tool_call event on tool failure", async () => {

@@ -342,8 +342,9 @@ export function handleMessageEnd(
     rawThinking: extractAssistantThinking(assistantMessage),
   });
 
-  const text = resolveSilentReplyFallbackText({
-    text: ctx.stripBlockTags(rawText, { thinking: false, final: false }),
+  const deliveryText = ctx.stripBlockTags(rawText, { thinking: false, final: false });
+  const sessionVisibleText = resolveSilentReplyFallbackText({
+    text: deliveryText,
     messagingToolSentTexts: ctx.state.messagingToolSentTexts,
   });
   const rawThinking =
@@ -352,7 +353,7 @@ export function handleMessageEnd(
         extractThinkingFromTaggedText(rawText)
       : "";
   const formattedReasoning = rawThinking ? formatReasoningMessage(rawThinking) : "";
-  const trimmedText = text.trim();
+  const trimmedText = sessionVisibleText.trim();
   const parsedText = trimmedText ? parseReplyDirectives(stripTrailingDirective(trimmedText)) : null;
   let cleanedText = parsedText?.text ?? "";
   let mediaUrls = parsedText?.mediaUrls;
@@ -395,7 +396,7 @@ export function handleMessageEnd(
   const chunkerHasBuffered = ctx.blockChunker?.hasBuffered() ?? false;
   const shouldEmitNonStreamingToolUse =
     normalizedAssistantMessage.stopReason === "toolUse" && ctx.state.deltaBuffer.length === 0;
-  ctx.finalizeAssistantTexts({ text, addedDuringMessage, chunkerHasBuffered });
+  ctx.finalizeAssistantTexts({ text: deliveryText, addedDuringMessage, chunkerHasBuffered });
 
   const onBlockReply = ctx.params.onBlockReply;
   const shouldEmitReasoning = Boolean(
@@ -422,15 +423,15 @@ export function handleMessageEnd(
     (ctx.state.blockReplyBreak === "message_end" ||
       shouldEmitNonStreamingToolUse ||
       (ctx.blockChunker ? ctx.blockChunker.hasBuffered() : ctx.state.blockBuffer.length > 0)) &&
-    text &&
+    deliveryText &&
     onBlockReply
   ) {
     if (ctx.blockChunker?.hasBuffered()) {
       ctx.blockChunker.drain({ force: true, emit: ctx.emitBlockChunk });
       ctx.blockChunker.reset();
-    } else if (text !== ctx.state.lastBlockReplyText) {
+    } else if (deliveryText !== ctx.state.lastBlockReplyText) {
       // Check for duplicates before emitting (same logic as emitBlockChunk).
-      const normalizedText = normalizeTextForComparison(text);
+      const normalizedText = normalizeTextForComparison(deliveryText);
       if (
         isMessagingToolDuplicateNormalized(
           normalizedText,
@@ -438,11 +439,11 @@ export function handleMessageEnd(
         )
       ) {
         ctx.log.debug(
-          `Skipping message_end block reply - already sent via messaging tool: ${text.slice(0, 50)}...`,
+          `Skipping message_end block reply - already sent via messaging tool: ${deliveryText.slice(0, 50)}...`,
         );
       } else {
-        ctx.state.lastBlockReplyText = text;
-        const splitResult = ctx.consumeReplyDirectives(text, { final: true });
+        ctx.state.lastBlockReplyText = deliveryText;
+        const splitResult = ctx.consumeReplyDirectives(deliveryText, { final: true });
         if (splitResult) {
           const {
             text: cleanedText,

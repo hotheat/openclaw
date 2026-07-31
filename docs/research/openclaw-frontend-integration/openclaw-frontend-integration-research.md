@@ -1,5 +1,7 @@
 # OpenClaw Agent 前端对接技术调研报告
 
+> `artifact_jobs` 已移除；本文相关链路仅供历史参考。
+>
 > 调研日期: 2026-07-06
 > 目标: 评估将 openclaw-integration 作为后端，在 agent-frontend 中实现类似 OpenWork / AIonUI 的前端交互模式
 

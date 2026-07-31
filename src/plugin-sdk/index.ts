@@ -1,4 +1,18 @@
 export { createAccountListHelpers } from "../channels/plugins/account-helpers.js";
+export {
+  SUBAGENT_HANDOFF_DELIVERY_STATUSES,
+  SUBAGENT_HANDOFF_GATES,
+  SUBAGENT_HANDOFF_ISSUE_CODES,
+  SUBAGENT_HANDOFF_STAGING_POLICY_STATUSES,
+  SUBAGENT_HANDOFF_VERIFICATION_STATUSES,
+} from "../agents/subagent-handoff-contract.js";
+export type {
+  SubagentHandoffDeliveryStatus,
+  SubagentHandoffGate,
+  SubagentHandoffIssueCode,
+  SubagentHandoffStagingPolicyStatus,
+  SubagentHandoffVerificationStatus,
+} from "../agents/subagent-handoff-contract.js";
 export { CHANNEL_MESSAGE_ACTION_NAMES } from "../channels/plugins/message-action-names.js";
 export {
   BLUEBUBBLES_ACTIONS,
@@ -90,6 +104,9 @@ export type {
   OpenClawPluginApi,
   OpenClawPluginService,
   OpenClawPluginServiceContext,
+  OpenClawPluginToolContext,
+  PluginHookHandlerMap,
+  PluginHookSubagentHandoffDeliveryResult,
   ProviderAuthContext,
   ProviderAuthResult,
 } from "../plugins/types.js";
@@ -199,6 +216,10 @@ export type { ChatType } from "../channels/chat-type.js";
 /** @deprecated Use ChatType instead */
 export type { RoutePeerKind } from "../routing/resolve-route.js";
 export { resolveAckReaction } from "../agents/identity.js";
+export {
+  isParentWebchatSessionContext,
+  isParentWebchatSessionKey,
+} from "../agents/session-surface.js";
 export type { ReplyPayload } from "../auto-reply/types.js";
 export type { ChunkMode } from "../auto-reply/chunk.js";
 export { SILENT_REPLY_TOKEN, isSilentReplyText } from "../auto-reply/tokens.js";
@@ -216,6 +237,7 @@ export type {
   PersistentDedupeOptions,
 } from "./persistent-dedupe.js";
 export { formatErrorMessage } from "../infra/errors.js";
+export { SafeOpenError, openFileWithinRoot, type SafeOpenResult } from "../infra/fs-safe.js";
 export {
   DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,

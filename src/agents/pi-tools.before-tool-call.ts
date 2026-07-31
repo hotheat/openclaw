@@ -8,6 +8,7 @@ import type { AnyAgentTool } from "./tools/common.js";
 export type HookContext = {
   agentId?: string;
   sessionKey?: string;
+  runId?: string;
   loopDetection?: ToolLoopDetectionConfig;
 };
 
@@ -122,11 +123,15 @@ export async function runBeforeToolCallHook(args: {
       {
         toolName,
         params: normalizedParams,
+        ...(args.toolCallId ? { toolCallId: args.toolCallId } : {}),
+        ...(args.ctx?.runId ? { runId: args.ctx.runId } : {}),
       },
       {
         toolName,
-        agentId: args.ctx?.agentId,
-        sessionKey: args.ctx?.sessionKey,
+        ...(args.ctx?.agentId ? { agentId: args.ctx.agentId } : {}),
+        ...(args.ctx?.sessionKey ? { sessionKey: args.ctx.sessionKey } : {}),
+        ...(args.toolCallId ? { toolCallId: args.toolCallId } : {}),
+        ...(args.ctx?.runId ? { runId: args.ctx.runId } : {}),
       },
     );
 

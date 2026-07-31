@@ -12,6 +12,7 @@ import { loadSessionStore } from "../../config/sessions/store.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveCommandsSystemPromptBundle } from "./commands-system-prompt.js";
+import type { CommandsSystemPromptWarning } from "./commands-system-prompt.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
 // Export HTML templates are bundled with this module
@@ -23,15 +24,17 @@ interface SessionData {
   leafId: string | null;
   systemPrompt?: string;
   tools?: Array<{ name: string; description?: string; parameters?: unknown }>;
+  warnings?: CommandsSystemPromptWarning[];
 }
 
 function loadTemplate(fileName: string): string {
   return fs.readFileSync(path.join(EXPORT_HTML_DIR, fileName), "utf-8");
 }
 
-function generateHtml(sessionData: SessionData): string {
+export function generateHtml(sessionData: SessionData): string {
   const template = loadTemplate("template.html");
   const templateCss = loadTemplate("template.css");
+  const templateTreeJs = loadTemplate("template-tree.js");
   const templateJs = loadTemplate("template.js");
   const markedJs = loadTemplate(path.join("vendor", "marked.min.js"));
   const hljsJs = loadTemplate(path.join("vendor", "highlight.min.js"));
@@ -90,12 +93,18 @@ function generateHtml(sessionData: SessionData): string {
     .replace("/* {{CONTAINER_BG_DECL}} */", `--container-bg: ${containerBg};`)
     .replace("/* {{INFO_BG_DECL}} */", `--info-bg: ${infoBg};`);
 
-  return template
-    .replace("{{CSS}}", css)
-    .replace("{{JS}}", templateJs)
-    .replace("{{SESSION_DATA}}", sessionDataBase64)
-    .replace("{{MARKED_JS}}", markedJs)
-    .replace("{{HIGHLIGHT_JS}}", hljsJs);
+  const replacements = [
+    ["{{CSS}}", css],
+    ["{{TREE_JS}}", templateTreeJs],
+    ["{{JS}}", templateJs],
+    ["{{SESSION_DATA}}", sessionDataBase64],
+    ["{{MARKED_JS}}", markedJs],
+    ["{{HIGHLIGHT_JS}}", hljsJs],
+  ] as const;
+  return replacements.reduce(
+    (html, [placeholder, content]) => html.replace(placeholder, () => content),
+    template,
+  );
 }
 
 function parseExportArgs(commandBodyNormalized: string): { outputPath?: string } {
@@ -149,7 +158,7 @@ export async function buildExportSessionReply(params: HandleCommandsParams): Pro
   const leafId = sessionManager.getLeafId();
 
   // 3. Build full system prompt
-  const { systemPrompt, tools } = await resolveCommandsSystemPromptBundle(params);
+  const { systemPrompt, tools, warnings } = await resolveCommandsSystemPromptBundle(params);
 
   // 4. Prepare session data
   const sessionData: SessionData = {
@@ -162,6 +171,7 @@ export async function buildExportSessionReply(params: HandleCommandsParams): Pro
       description: t.description,
       parameters: t.parameters,
     })),
+    warnings,
   };
 
   // 5. Generate HTML

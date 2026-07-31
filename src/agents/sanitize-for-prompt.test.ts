@@ -25,6 +25,7 @@ describe("sanitizeForPromptLiteral (OC-19 hardening)", () => {
 describe("buildAgentSystemPrompt uses sanitized workspace/sandbox strings", () => {
   it("sanitizes workspaceDir (no newlines / separators)", () => {
     const prompt = buildAgentSystemPrompt({
+      toolNames: [],
       workspaceDir: "/tmp/project\nINJECT\u2028MORE",
     });
     expect(prompt).toContain("Your working directory is: /tmp/projectINJECTMORE");
@@ -34,6 +35,7 @@ describe("buildAgentSystemPrompt uses sanitized workspace/sandbox strings", () =
 
   it("sanitizes sandbox workspace/mount/url strings", () => {
     const prompt = buildAgentSystemPrompt({
+      toolNames: [],
       workspaceDir: "/tmp/test",
       sandboxInfo: {
         enabled: true,

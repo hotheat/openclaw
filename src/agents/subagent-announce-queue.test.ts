@@ -7,6 +7,29 @@ import {
   enqueueAnnounceWithOutcome,
   resetAnnounceQueuesForTests,
 } from "./subagent-announce-queue.js";
+import type { SubagentHandoffAnnounceView } from "./subagent-handoff-announce.js";
+
+function createHandoffView(
+  deliverableArtifacts: SubagentHandoffAnnounceView["deliverableArtifacts"],
+  options: {
+    omittedArtifactCount?: number;
+    blocked?: SubagentHandoffAnnounceView["blocked"];
+  } = {},
+): SubagentHandoffAnnounceView {
+  const first = deliverableArtifacts[0];
+  return {
+    quality: {
+      gate: "managed",
+      verificationStatus: first?.verificationStatus ?? "failed",
+      verificationSummary: first?.verificationSummary,
+      deliveryStatus: options.blocked ? "blocked" : (first?.deliveryStatus ?? "blocked"),
+    },
+    deliverableArtifacts,
+    blocked: options.blocked,
+    deliveryIssues: [],
+    omittedArtifactCount: options.omittedArtifactCount ?? 0,
+  };
+}
 
 function createRetryingSend() {
   const prompts: string[] = [];
@@ -520,6 +543,175 @@ describe("subagent-announce-queue", () => {
     expect(prompt).toContain("Omitted results:");
   });
 
+  it("keeps structured artifacts visible when completion text is truncated", () => {
+    const prompt = buildCompletionAnnouncePrompt([
+      {
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "otr-pptx-generator",
+          status: "succeeded",
+          result: "x".repeat(10_000),
+          resultRef: { id: "result-pptx", sessionKey: "agent:main:subagent:pptx" },
+          handoff: createHandoffView([
+            {
+              relativePath: "artifacts/pptx-generator/run-1/final.pptx",
+              title: "Deck",
+              mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+              verificationStatus: "passed",
+              deliveryStatus: "ready",
+            },
+          ]),
+          remainingActive: 0,
+          instruction: "",
+        },
+      },
+    ]);
+
+    expect(prompt).toContain("Truncated: true");
+    expect(prompt).toContain("Deliverable artifacts:");
+    expect(prompt).toContain("artifacts/pptx-generator/run-1/final.pptx");
+    expect(prompt).toContain("Delivery: ready");
+    expect(prompt).toContain("Verification: passed");
+    expect(prompt).toContain("Title: Deck");
+  });
+
+  it("caps aggregate structured artifact metadata", () => {
+    const prompt = buildCompletionAnnouncePrompt(
+      Array.from({ length: 30 }, (_, index) => ({
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: `deck-${index}`,
+          status: "succeeded" as const,
+          result: "done",
+          handoff: createHandoffView([
+            {
+              relativePath: `artifacts/pptx-generator/${index}/${"p".repeat(700)}/final.pptx`,
+              title: `Deck ${"t".repeat(500)}`,
+              mimeType: `application/x-${"m".repeat(500)}`,
+              verificationStatus: "passed" as const,
+              deliveryStatus: "ready" as const,
+            },
+          ]),
+          remainingActive: 0,
+          instruction: "",
+        },
+      })),
+    );
+
+    expect(prompt).toBeDefined();
+    expect(prompt?.length).toBeLessThan(30_000);
+    expect(prompt).toContain("Deliverable artifacts:");
+    expect(prompt).toContain("Omitted artifacts:");
+  });
+
+  it("keeps an earlier artifact delivery instruction when the latest item has no artifact", () => {
+    const prompt = buildCompletionAnnouncePrompt([
+      {
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "deck",
+          status: "succeeded",
+          result: "deck ready",
+          handoff: createHandoffView([
+            {
+              relativePath: "artifacts/pptx-generator/early/final.pptx",
+              verificationStatus: "passed",
+              deliveryStatus: "ready",
+            },
+          ]),
+          remainingActive: 1,
+          instruction: "Wait for remaining results.",
+          deliveryInstruction: "Call webui_artifact_publish.",
+        },
+      },
+      {
+        prompt: "",
+        enqueuedAt: Date.now() + 1,
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "notes",
+          status: "succeeded",
+          result: "notes ready",
+          remainingActive: 0,
+          instruction: "Send one concise update.",
+        },
+      },
+    ]);
+
+    expect(prompt).toContain("artifacts/pptx-generator/early/final.pptx");
+    expect(prompt).toContain("Send one concise update.");
+    expect(prompt).toContain("Call webui_artifact_publish.");
+  });
+
+  it("includes failed artifacts declared for warning delivery", () => {
+    const prompt = buildCompletionAnnouncePrompt([
+      {
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "warning-deck",
+          status: "succeeded",
+          result: "verification failed",
+          handoff: createHandoffView([
+            {
+              relativePath: "artifacts/pptx-generator/warning/final.pptx",
+              verificationStatus: "failed",
+              verificationSummary: "Slide 7 contains text overflow.",
+              deliveryStatus: "warning",
+            },
+          ]),
+          remainingActive: 0,
+          instruction: "",
+          deliveryInstruction: "Deliver the listed artifacts.",
+        },
+      },
+    ]);
+
+    expect(prompt).toContain("Deliverable artifacts:");
+    expect(prompt).toContain("artifacts/pptx-generator/warning/final.pptx");
+    expect(prompt).toContain("Delivery: warning");
+    expect(prompt).toContain("Verification: failed");
+    expect(prompt).toContain("Verification details: Slide 7 contains text overflow.");
+    expect(prompt).toContain("explicitly tell the user that verification failed");
+    expect(prompt).toContain("Deliver the listed artifacts.");
+  });
+
+  it("excludes artifacts with blocked delivery", () => {
+    const prompt = buildCompletionAnnouncePrompt([
+      {
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "failed /home/user/workspace/artifacts/pptx-generator/failed/final.pptx",
+          status: "succeeded",
+          result: "verification failed",
+          handoff: createHandoffView([], {
+            blocked: {
+              reason: "Verification failed.",
+            },
+          }),
+          remainingActive: 0,
+          instruction: "",
+        },
+      },
+    ]);
+
+    expect(prompt).not.toContain("Deliverable artifacts:");
+    expect(prompt).not.toContain("artifacts/pptx-generator/failed/final.pptx");
+    expect(prompt).toContain("Blocked handoff:");
+    expect(prompt).not.toContain("/home/user/workspace");
+    expect(prompt).not.toContain("artifacts/pptx-generator/failed/final.pptx");
+    expect(prompt).toContain("Reason: Verification failed.");
+  });
+
   it("marks truncated completion receipts as incomplete", async () => {
     const receipt = enqueueAnnounceWithReceipt({
       key: "completion:agent:main:main",
@@ -543,5 +735,75 @@ describe("subagent-announce-queue", () => {
     });
 
     await expect(receipt.delivered).resolves.toEqual({ contentComplete: false });
+  });
+
+  it("marks artifact-capped completion receipts as incomplete", async () => {
+    const receipt = enqueueAnnounceWithReceipt({
+      key: "completion:agent:main:artifacts",
+      item: {
+        announceId: "announce:artifact-capped",
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "many decks",
+          status: "succeeded",
+          result: "done",
+          resultRef: { id: "result-artifacts", sessionKey: "agent:main:subagent:artifacts" },
+          handoff: createHandoffView(
+            Array.from({ length: 30 }, (_, index) => ({
+              relativePath: `artifacts/pptx-generator/${index}/final.pptx`,
+              verificationStatus: "passed" as const,
+              deliveryStatus: "ready" as const,
+            })),
+          ),
+          remainingActive: 0,
+          instruction: "",
+          deliveryInstruction: "Deliver the listed artifacts.",
+        },
+      },
+      settings: { mode: "collect", debounceMs: 0, lossless: true },
+      send: vi.fn(async () => undefined),
+    });
+
+    await expect(receipt.delivered).resolves.toEqual({ contentComplete: false });
+  });
+
+  it("marks parser-omitted artifact receipts as incomplete", async () => {
+    const send = vi.fn(async (_item: AnnounceQueueItem) => undefined);
+    const receipt = enqueueAnnounceWithReceipt({
+      key: "completion:agent:main:parser-omitted",
+      item: {
+        announceId: "announce:parser-omitted",
+        prompt: "",
+        enqueuedAt: Date.now(),
+        sessionKey: "agent:main:main",
+        completion: {
+          label: "parser-limited decks",
+          status: "succeeded",
+          result: "done",
+          resultRef: { id: "result-parser", sessionKey: "agent:main:subagent:parser" },
+          handoff: createHandoffView(
+            [
+              {
+                relativePath: "artifacts/pptx-generator/kept/final.pptx",
+                verificationStatus: "passed",
+                deliveryStatus: "ready",
+              },
+            ],
+            { omittedArtifactCount: 1 },
+          ),
+          remainingActive: 0,
+          instruction: "",
+          deliveryInstruction: "Deliver the listed artifacts.",
+        },
+      },
+      settings: { mode: "collect", debounceMs: 0, lossless: true },
+      send,
+    });
+
+    await expect(receipt.delivered).resolves.toEqual({ contentComplete: false });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].prompt).toContain("Omitted artifacts: 1");
   });
 });

@@ -218,14 +218,6 @@ const CORE_TOOL_DEFINITIONS: CoreToolDefinition[] = [
     includeInOpenClawGroup: true,
   },
   {
-    id: "artifact_jobs",
-    label: "artifact_jobs",
-    description: "Artifact job staging",
-    sectionId: "agents",
-    profiles: ["coding"],
-    includeInOpenClawGroup: true,
-  },
-  {
     id: "image",
     label: "image",
     description: "Image understanding",

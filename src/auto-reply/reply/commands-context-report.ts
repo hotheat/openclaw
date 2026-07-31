@@ -6,6 +6,7 @@ import { buildSystemPromptReport } from "../../agents/system-prompt-report.js";
 import type { SessionSystemPromptReport } from "../../config/sessions/types.js";
 import type { ReplyPayload } from "../types.js";
 import { resolveCommandsSystemPromptBundle } from "./commands-system-prompt.js";
+import type { CommandsSystemPromptWarning } from "./commands-system-prompt.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
 function estimateTokensFromChars(chars: number): number {
@@ -41,36 +42,47 @@ function formatListTop(
   return { lines, omitted };
 }
 
-async function resolveContextReport(
-  params: HandleCommandsParams,
-): Promise<SessionSystemPromptReport> {
+async function resolveContextReport(params: HandleCommandsParams): Promise<{
+  report: SessionSystemPromptReport;
+  warnings: CommandsSystemPromptWarning[];
+}> {
   const existing = params.sessionEntry?.systemPromptReport;
   if (existing && existing.source === "run") {
-    return existing;
+    return { report: existing, warnings: [] };
   }
 
   const bootstrapMaxChars = resolveBootstrapMaxChars(params.cfg);
   const bootstrapTotalMaxChars = resolveBootstrapTotalMaxChars(params.cfg);
-  const { systemPrompt, tools, skillsPrompt, bootstrapFiles, injectedFiles, sandboxRuntime } =
-    await resolveCommandsSystemPromptBundle(params);
-
-  return buildSystemPromptReport({
-    source: "estimate",
-    generatedAt: Date.now(),
-    sessionId: params.sessionEntry?.sessionId,
-    sessionKey: params.sessionKey,
-    provider: params.provider,
-    model: params.model,
-    workspaceDir: params.workspaceDir,
-    bootstrapMaxChars,
-    bootstrapTotalMaxChars,
-    sandbox: { mode: sandboxRuntime.mode, sandboxed: sandboxRuntime.sandboxed },
+  const {
     systemPrompt,
+    tools,
+    warnings,
+    skillsPrompt,
     bootstrapFiles,
     injectedFiles,
-    skillsPrompt,
-    tools,
-  });
+    sandboxRuntime,
+  } = await resolveCommandsSystemPromptBundle(params);
+
+  return {
+    report: buildSystemPromptReport({
+      source: "estimate",
+      generatedAt: Date.now(),
+      sessionId: params.sessionEntry?.sessionId,
+      sessionKey: params.sessionKey,
+      provider: params.provider,
+      model: params.model,
+      workspaceDir: params.workspaceDir,
+      bootstrapMaxChars,
+      bootstrapTotalMaxChars,
+      sandbox: { mode: sandboxRuntime.mode, sandboxed: sandboxRuntime.sandboxed },
+      systemPrompt,
+      bootstrapFiles,
+      injectedFiles,
+      skillsPrompt,
+      tools,
+    }),
+    warnings,
+  };
 }
 
 export async function buildContextReply(params: HandleCommandsParams): Promise<ReplyPayload> {
@@ -94,7 +106,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
     };
   }
 
-  const report = await resolveContextReport(params);
+  const { report, warnings } = await resolveContextReport(params);
   const session = {
     totalTokens: params.sessionEntry?.totalTokens ?? null,
     inputTokens: params.sessionEntry?.inputTokens ?? null,
@@ -103,7 +115,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
   } as const;
 
   if (sub === "json") {
-    return { text: JSON.stringify({ report, session }, null, 2) };
+    return { text: JSON.stringify({ report, session, warnings }, null, 2) };
   }
 
   if (sub !== "list" && sub !== "show" && sub !== "detail" && sub !== "deep") {
@@ -140,6 +152,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
     ? `Tools: ${formatNameList(toolNames, 30)}`
     : "Tools: (none)";
   const systemPromptLine = `System prompt (${report.source}): ${formatCharsAndTokens(report.systemPrompt.chars)} (Project Context ${formatCharsAndTokens(report.systemPrompt.projectContextChars)})`;
+  const warningLines = warnings.map((warning) => `⚠ ${warning.message}`);
   const workspaceLabel = report.workspaceDir ?? params.workspaceDir;
   const bootstrapMaxLabel =
     typeof report.bootstrapMaxChars === "number"
@@ -209,6 +222,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
         `Bootstrap max/total: ${bootstrapTotalLabel}`,
         sandboxLine,
         systemPromptLine,
+        ...warningLines,
         ...(bootstrapWarningLines.length ? ["", ...bootstrapWarningLines] : []),
         "",
         "Injected workspace files:",
@@ -248,6 +262,7 @@ export async function buildContextReply(params: HandleCommandsParams): Promise<R
       `Bootstrap max/total: ${bootstrapTotalLabel}`,
       sandboxLine,
       systemPromptLine,
+      ...warningLines,
       ...(bootstrapWarningLines.length ? ["", ...bootstrapWarningLines] : []),
       "",
       "Injected workspace files:",

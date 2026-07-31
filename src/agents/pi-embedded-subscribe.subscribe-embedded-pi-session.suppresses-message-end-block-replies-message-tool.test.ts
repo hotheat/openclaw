@@ -10,13 +10,15 @@ import { subscribeEmbeddedPiSession } from "./pi-embedded-subscribe.js";
 function createBlockReplyHarness(blockReplyBreak: "message_end" | "text_end") {
   const { session, emit } = createStubSessionHarness();
   const onBlockReply = vi.fn();
-  subscribeEmbeddedPiSession({
+  const onAgentEvent = vi.fn();
+  const subscription = subscribeEmbeddedPiSession({
     session,
     runId: "run",
     onBlockReply,
+    onAgentEvent,
     blockReplyBreak,
   });
-  return { emit, onBlockReply };
+  return { emit, onAgentEvent, onBlockReply, subscription };
 }
 
 async function emitMessageToolLifecycle(params: {
@@ -69,6 +71,26 @@ describe("subscribeEmbeddedPiSession", () => {
     });
     emitAssistantMessageEnd(emit, messageText);
 
+    expect(onBlockReply).not.toHaveBeenCalled();
+  });
+  it("mirrors a successful message-tool send without making it deliverable again", async () => {
+    const { emit, onAgentEvent, onBlockReply, subscription } =
+      createBlockReplyHarness("message_end");
+
+    const messageText = "This is the delivered answer.";
+    await emitMessageToolLifecycle({
+      emit,
+      toolCallId: "tool-message-mirror",
+      message: messageText,
+      result: "ok",
+    });
+    emitAssistantMessageEnd(emit, "NO_REPLY");
+
+    const assistantEvents = onAgentEvent.mock.calls.filter(
+      ([event]) => event.stream === "assistant",
+    );
+    expect(assistantEvents.at(-1)?.[0].data.text).toBe(messageText);
+    expect(subscription.assistantTexts).toEqual(["NO_REPLY"]);
     expect(onBlockReply).not.toHaveBeenCalled();
   });
   it("does not suppress message_end replies when message tool reports error", async () => {

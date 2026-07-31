@@ -567,6 +567,8 @@ export async function handleToolExecutionEnd(
     const hookEvent: PluginHookAfterToolCallEvent = {
       toolName,
       params: (toolArgs && typeof toolArgs === "object" ? toolArgs : {}) as Record<string, unknown>,
+      toolCallId,
+      runId: ctx.params.runId,
       result: sanitizedResult,
       error: isToolError ? extractToolErrorMessage(sanitizedResult) : undefined,
       durationMs,
@@ -574,8 +576,9 @@ export async function handleToolExecutionEnd(
     void hookRunnerAfter
       .runAfterToolCall(hookEvent, {
         toolName,
-        agentId: undefined,
-        sessionKey: undefined,
+        sessionKey: ctx.params.sessionKey,
+        toolCallId,
+        runId: ctx.params.runId,
       })
       .catch((err) => {
         ctx.log.warn(`after_tool_call hook failed: tool=${toolName} error=${String(err)}`);

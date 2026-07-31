@@ -131,12 +131,37 @@ describe("resolveSubagentToolPolicy depth awareness", () => {
     expect(isToolAllowedByPolicyName("sessions_history", policy)).toBe(true);
   });
 
-  it("depth-1 orchestrator still denies gateway, cron, memory", () => {
+  it("depth-1 orchestrator still denies gateway, cron, and memory", () => {
     const policy = resolveSubagentToolPolicy(baseCfg, 1);
     expect(isToolAllowedByPolicyName("gateway", policy)).toBe(false);
     expect(isToolAllowedByPolicyName("cron", policy)).toBe(false);
     expect(isToolAllowedByPolicyName("memory_search", policy)).toBe(false);
     expect(isToolAllowedByPolicyName("memory_get", policy)).toBe(false);
+  });
+
+  it("leaves user-facing delivery tools enabled by default", () => {
+    const policy = resolveSubagentToolPolicy(baseCfg, 1);
+    expect(isToolAllowedByPolicyName("message", policy)).toBe(true);
+    expect(isToolAllowedByPolicyName("webui_artifact_publish", policy)).toBe(true);
+  });
+
+  it("applies an explicit subagent delivery-tool deny", () => {
+    const policy = resolveSubagentToolPolicy(
+      {
+        ...baseCfg,
+        tools: {
+          subagents: {
+            tools: {
+              deny: ["message", "webui_artifact_publish"],
+            },
+          },
+        },
+      },
+      1,
+    );
+
+    expect(isToolAllowedByPolicyName("message", policy)).toBe(false);
+    expect(isToolAllowedByPolicyName("webui_artifact_publish", policy)).toBe(false);
   });
 
   it("depth-2 leaf denies sessions_spawn", () => {

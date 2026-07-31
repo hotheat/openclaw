@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
       agentChannel?: string;
       internalExecution?: boolean;
       requireExplicitMessageTarget?: boolean;
+      disableMessageTool?: boolean;
     }) => unknown[]
   >(() => []),
 }));
@@ -41,6 +42,45 @@ describe("createOpenClawCodingTools message provider", () => {
       agentChannel: "internal",
       internalExecution: true,
       requireExplicitMessageTarget: true,
+    });
+  });
+
+  it.each(["webchat", "internal"])(
+    "disables message for a parent WebChat session reached through %s",
+    (messageProvider) => {
+      createOpenClawCodingTools({
+        messageProvider,
+        sessionKey: "agent:main:webchat:namespace:chat_1",
+      });
+
+      expect(mocks.createOpenClawTools.mock.calls[0]?.[0]).toMatchObject({
+        disableMessageTool: true,
+      });
+    },
+  );
+
+  it.each([
+    ["internal", "agent:main:main"],
+    ["internal", "agent:main:subagent:child_1"],
+    ["control-ui", "agent:main:webchat:namespace:chat_1"],
+    ["feishu", "agent:main:webchat:namespace:chat_1"],
+  ])("keeps message for channel=%s sessionKey=%s", (messageProvider, sessionKey) => {
+    createOpenClawCodingTools({ messageProvider, sessionKey });
+
+    expect(mocks.createOpenClawTools.mock.calls[0]?.[0]).toMatchObject({
+      disableMessageTool: false,
+    });
+  });
+
+  it("preserves an explicit disableMessageTool request", () => {
+    createOpenClawCodingTools({
+      messageProvider: "feishu",
+      sessionKey: "agent:main:main",
+      disableMessageTool: true,
+    });
+
+    expect(mocks.createOpenClawTools.mock.calls[0]?.[0]).toMatchObject({
+      disableMessageTool: true,
     });
   });
 });

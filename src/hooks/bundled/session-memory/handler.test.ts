@@ -1150,10 +1150,85 @@ describe("session-memory hook", () => {
       action: "reset",
     });
 
-    expect(memoryContent).toContain("### Researcher 产物");
+    expect(memoryContent).toContain("### Exported artifacts");
     expect(memoryContent).toContain("`artifacts/exports/feishu/test/no-header-report.md`");
     expect(memoryContent).toContain("已输出研究草案。");
     expect(memoryContent).not.toContain("<SUBAGENT_HANDOFF>");
+  });
+
+  it("does not persist blocked export handoffs or force a daily note", async () => {
+    vi.mocked(runEmbeddedPiAgent).mockClear();
+    const blockedPath = "artifacts/exports/feishu/test/blocked-report.md";
+    const sessionContent = createMockSessionContent([
+      {
+        role: "assistant",
+        content: [
+          "<SUBAGENT_HANDOFF>",
+          JSON.stringify({
+            mode: "export-file",
+            summary: "验证失败的研究草案。",
+            verification: {
+              status: "failed",
+              summary: "引用检查未通过。",
+            },
+            delivery: {
+              status: "blocked",
+            },
+            export: {
+              path: blockedPath,
+              title: "被阻止的研究草案",
+            },
+          }),
+          "</SUBAGENT_HANDOFF>",
+        ].join("\n"),
+      },
+    ]);
+
+    const { files, memoryContent, rootMemoryContent } = await runNewWithPreviousSession({
+      sessionContent,
+      action: "reset",
+    });
+
+    expect(files).toEqual([]);
+    expect(memoryContent).toBe("");
+    expect(rootMemoryContent).toBe("");
+    expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
+  });
+
+  it("continues to persist quality-approved export handoffs", async () => {
+    const readyPath = "artifacts/exports/feishu/test/ready-report.md";
+    const sessionContent = createMockSessionContent([
+      {
+        role: "assistant",
+        content: [
+          "<SUBAGENT_HANDOFF>",
+          JSON.stringify({
+            mode: "export-file",
+            summary: "已通过验证的研究草案。",
+            verification: {
+              status: "passed",
+            },
+            delivery: {
+              status: "ready",
+            },
+            export: {
+              path: readyPath,
+              title: "已批准的研究草案",
+            },
+          }),
+          "</SUBAGENT_HANDOFF>",
+        ].join("\n"),
+      },
+    ]);
+
+    const { files, memoryContent } = await runNewWithPreviousSession({
+      sessionContent,
+      action: "reset",
+    });
+
+    expect(files).toEqual(["2026-05-15.md"]);
+    expect(memoryContent).toContain("### Exported artifacts");
+    expect(memoryContent).toContain(`\`${readyPath}\``);
   });
 
   it("falls back to latest .jsonl.reset.* transcript when active file is empty", async () => {

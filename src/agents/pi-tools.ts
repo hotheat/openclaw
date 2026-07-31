@@ -49,6 +49,7 @@ import {
 import { cleanToolSchemaForGemini, normalizeToolParameters } from "./pi-tools.schema.js";
 import type { AnyAgentTool } from "./pi-tools.types.js";
 import type { SandboxContext } from "./sandbox.js";
+import { isParentWebchatSessionContext } from "./session-surface.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 import {
   applyToolPolicyPipeline,
@@ -192,6 +193,7 @@ export const __testing = {
 
 export function createOpenClawCodingTools(options?: {
   agentId?: string;
+  runId?: string;
   exec?: ExecToolDefaults & ProcessToolDefaults;
   messageProvider?: string;
   internalExecution?: boolean;
@@ -251,6 +253,10 @@ export function createOpenClawCodingTools(options?: {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const messageChannelHint = normalizeMessageChannel(options?.messageProvider);
+  const isParentWebchatSession = isParentWebchatSessionContext({
+    channel: messageChannelHint,
+    sessionKey: options?.sessionKey,
+  });
   const {
     agentId,
     globalPolicy,
@@ -504,7 +510,7 @@ export function createOpenClawCodingTools(options?: {
       modelHasVision: options?.modelHasVision,
       requireExplicitMessageTarget:
         options?.requireExplicitMessageTarget || options?.internalExecution,
-      disableMessageTool: options?.disableMessageTool,
+      disableMessageTool: options?.disableMessageTool === true || isParentWebchatSession,
       requesterAgentIdOverride: agentId,
       requesterSenderId: options?.senderId,
       senderIsOwner: options?.senderIsOwner,
@@ -549,6 +555,7 @@ export function createOpenClawCodingTools(options?: {
     wrapToolWithBeforeToolCallHook(tool, {
       agentId,
       sessionKey: options?.sessionKey,
+      runId: options?.runId,
       loopDetection: resolveToolLoopDetectionConfig({ cfg: options?.config, agentId }),
     }),
   );

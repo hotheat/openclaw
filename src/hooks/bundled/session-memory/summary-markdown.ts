@@ -97,8 +97,11 @@ export function normalizeStructuredSummary(params: {
     body,
   ];
 
-  if (params.researcherExports.length > 0 && !/###\s*Researcher 产物/i.test(body)) {
-    parts.push("", "### Researcher 产物");
+  if (
+    params.researcherExports.length > 0 &&
+    !/###\s*(?:Researcher 产物|Exported artifacts)/i.test(body)
+  ) {
+    parts.push("", "### Exported artifacts");
     for (const item of params.researcherExports) {
       parts.push(`- \`${item.exportPath}\` — ${item.description}`);
     }

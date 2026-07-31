@@ -2,6 +2,11 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Command } from "commander";
 import type { AuthProfileCredential, OAuthCredential } from "../agents/auth-profiles/types.js";
+import type {
+  SubagentHandoffIssueCode,
+  SubagentHandoffStagingPolicyStatus,
+} from "../agents/subagent-handoff-contract.js";
+import type { ParsedSubagentHandoff } from "../agents/subagent-handoff.js";
 import type { TaskFlow } from "../agents/taskflow/types.js";
 import type { AnyAgentTool } from "../agents/tools/common.js";
 import type { AgentTraceSink } from "../agents/tracing/types.js";
@@ -498,12 +503,16 @@ export type PluginHookToolContext = {
   agentId?: string;
   sessionKey?: string;
   toolName: string;
+  toolCallId?: string;
+  runId?: string;
 };
 
 // before_tool_call hook
 export type PluginHookBeforeToolCallEvent = {
   toolName: string;
   params: Record<string, unknown>;
+  toolCallId?: string;
+  runId?: string;
 };
 
 export type PluginHookBeforeToolCallResult = {
@@ -516,6 +525,8 @@ export type PluginHookBeforeToolCallResult = {
 export type PluginHookAfterToolCallEvent = {
   toolName: string;
   params: Record<string, unknown>;
+  toolCallId?: string;
+  runId?: string;
   result?: unknown;
   error?: string;
   durationMs?: number;
@@ -670,11 +681,27 @@ export type PluginHookSubagentSpawnedEvent = {
   threadRequested: boolean;
 };
 
+export type PluginHookAcceptedArtifact = {
+  sourceRelativePath: string;
+  requesterRelativePath: string;
+  profileId?: string;
+  deliveryPolicy?: "auto" | "confirmation";
+};
+
 export type PluginHookStagedArtifact = {
+  sourceRelativePath: string;
   relativePath: string;
   fileName?: string;
   title?: string;
   mimeType?: string;
+  profileId?: string;
+  deliveryPolicy?: "auto" | "confirmation";
+};
+
+export type PluginHookSubagentHandoffIssue = {
+  sourceRelativePath?: string;
+  code: SubagentHandoffIssueCode;
+  message: string;
 };
 
 export type PluginHookSubagentHandoffStagingEvent = {
@@ -682,6 +709,8 @@ export type PluginHookSubagentHandoffStagingEvent = {
   childSessionKey: string;
   requesterSessionKey: string;
   content: string;
+  handoff: ParsedSubagentHandoff;
+  handoffAt: number;
   childWorkspaceDir: string;
   requesterWorkspaceDir: string;
   requesterOrigin?: {
@@ -690,13 +719,20 @@ export type PluginHookSubagentHandoffStagingEvent = {
     to?: string;
     threadId?: string | number;
   };
+  deliveryEligible: boolean;
+  handoffMalformed?: boolean;
   outcome?: "ok" | "error" | "timeout" | "unknown";
   completionDelivery?: "auto" | "parent" | "direct";
   signal?: AbortSignal;
 };
 
 export type PluginHookSubagentHandoffStagingResult = {
-  artifacts: PluginHookStagedArtifact[];
+  policyStatus: SubagentHandoffStagingPolicyStatus;
+  acceptedArtifacts: PluginHookAcceptedArtifact[];
+  stagedArtifacts: PluginHookStagedArtifact[];
+  rejections: PluginHookSubagentHandoffIssue[];
+  failures: PluginHookSubagentHandoffIssue[];
+  haltRemainingHandlers?: boolean;
 };
 
 export type PluginHookSubagentHandoffDeliveryEvent = PluginHookSubagentHandoffStagingEvent & {
@@ -709,6 +745,8 @@ export type PluginHookSubagentHandoffDeliveryFailure = {
 };
 
 export type PluginHookSubagentHandoffDeliveryResult = {
+  handled?: boolean;
+  deliveredArtifacts?: string[];
   failures: PluginHookSubagentHandoffDeliveryFailure[];
 };
 

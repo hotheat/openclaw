@@ -25,7 +25,7 @@ function copyExportHtmlTemplates() {
   }
 
   // Copy main template files
-  const templateFiles = ["template.html", "template.css", "template.js"];
+  const templateFiles = ["template.html", "template.css", "template-tree.js", "template.js"];
   for (const file of templateFiles) {
     const srcFile = path.join(srcDir, file);
     const distFile = path.join(distDir, file);

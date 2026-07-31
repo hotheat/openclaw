@@ -86,7 +86,10 @@ function splitToolExecuteArgs(args: ToolExecuteArgsAny): {
   };
 }
 
-export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
+export function toToolDefinitions(
+  tools: AnyAgentTool[],
+  hookContext?: HookContext,
+): ToolDefinition[] {
   return tools.map((tool) => {
     const name = tool.name || "tool";
     const normalizedName = normalizeToolName(name);
@@ -124,9 +127,17 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
                 {
                   toolName: name,
                   params: isPlainObject(afterParams) ? afterParams : {},
+                  toolCallId,
+                  ...(hookContext?.runId ? { runId: hookContext.runId } : {}),
                   result,
                 },
-                { toolName: name },
+                {
+                  toolName: name,
+                  toolCallId,
+                  ...(hookContext?.agentId ? { agentId: hookContext.agentId } : {}),
+                  ...(hookContext?.sessionKey ? { sessionKey: hookContext.sessionKey } : {}),
+                  ...(hookContext?.runId ? { runId: hookContext.runId } : {}),
+                },
               );
             } catch (hookErr) {
               logDebug(
@@ -170,9 +181,17 @@ export function toToolDefinitions(tools: AnyAgentTool[]): ToolDefinition[] {
                 {
                   toolName: normalizedName,
                   params: isPlainObject(params) ? params : {},
+                  toolCallId,
+                  ...(hookContext?.runId ? { runId: hookContext.runId } : {}),
                   error: described.message,
                 },
-                { toolName: normalizedName },
+                {
+                  toolName: normalizedName,
+                  toolCallId,
+                  ...(hookContext?.agentId ? { agentId: hookContext.agentId } : {}),
+                  ...(hookContext?.sessionKey ? { sessionKey: hookContext.sessionKey } : {}),
+                  ...(hookContext?.runId ? { runId: hookContext.runId } : {}),
+                },
               );
             } catch (hookErr) {
               logDebug(

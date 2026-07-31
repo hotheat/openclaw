@@ -18,6 +18,10 @@ import {
   previewQueueSummaryPrompt,
   waitForQueueDebounce,
 } from "../utils/queue-helpers.js";
+import {
+  scrubSubagentHandoffText,
+  type SubagentHandoffAnnounceView,
+} from "./subagent-handoff-announce.js";
 
 export type AnnounceQueueItem = {
   // Stable announce identity shared by direct + queued delivery paths.
@@ -29,6 +33,8 @@ export type AnnounceQueueItem = {
   sessionKey: string;
   origin?: DeliveryContext;
   originKey?: string;
+  runChannel?: string;
+  deliver?: boolean;
   waitForFinal?: boolean;
   completion?: {
     label: string;
@@ -38,11 +44,17 @@ export type AnnounceQueueItem = {
       id: string;
       sessionKey: string;
     };
+    handoff?: SubagentHandoffAnnounceView;
     remainingActive: number;
     instruction: string;
+    deliveryInstruction?: string;
   };
   deliveryReceipt?: AnnounceDeliveryReceipt;
 };
+
+function scrubCompletionLabel(label: string): string {
+  return scrubSubagentHandoffText(label, []) ?? "subagent task";
+}
 
 export type AnnounceQueueSettings = {
   mode: QueueMode;
@@ -85,6 +97,8 @@ const ANNOUNCE_QUEUES = new Map<string, AnnounceQueueState>();
 const MAX_COMPLETION_LABEL_CHARS = 120;
 const MAX_COMPLETION_RESULT_CHARS = 2_000;
 const MAX_COMPLETION_RESULTS_CHARS = 12_000;
+const MAX_COMPLETION_ARTIFACTS = 20;
+const MAX_COMPLETION_ARTIFACT_CHARS = 12_000;
 
 export function resetAnnounceQueuesForTests() {
   // Test isolation: other suites may leave a draining queue behind in the worker.
@@ -349,7 +363,7 @@ function buildCompletionAnnounceBatch(
   const succeeded = completions.filter((item) => item.status === "succeeded").length;
   const failed = completions.filter((item) => item.status === "failed").length;
   const unknown = completions.length - succeeded - failed;
-  const labels = completions.map((item) => item.label).join(", ");
+  const labels = completions.map((item) => scrubCompletionLabel(item.label)).join(", ");
   const lines = [
     "[Subagent completion summary]",
     `Completed: ${labels}`,
@@ -392,7 +406,10 @@ function buildCompletionAnnounceBatch(
   if (results.length > 0) {
     lines.push("", "Results:");
     for (const item of results) {
-      lines.push(`- ${item.value.label} [${item.value.status}]`, item.value.result);
+      lines.push(
+        `- ${scrubCompletionLabel(item.value.label)} [${item.value.status}]`,
+        item.value.result,
+      );
       if (incompleteItems.has(item.source)) {
         lines.push("  Truncated: true");
         if (item.value.resultRef?.sessionKey) {
@@ -401,6 +418,87 @@ function buildCompletionAnnounceBatch(
         }
       }
     }
+  }
+  const artifactLines: string[] = [];
+  let artifactChars = 0;
+  let includedArtifacts = 0;
+  let omittedArtifacts = 0;
+  let includesWarningArtifact = false;
+  for (const item of completionItems) {
+    const omittedArtifactCount = Math.max(0, item.value.handoff?.omittedArtifactCount ?? 0);
+    if (omittedArtifactCount > 0) {
+      omittedArtifacts += omittedArtifactCount;
+      incompleteItems.add(item.source);
+    }
+  }
+  for (const item of completionItems) {
+    const taskLabel = scrubCompletionLabel(item.value.label);
+    for (const artifact of item.value.handoff?.deliverableArtifacts ?? []) {
+      if (artifact.deliveryStatus === "warning") {
+        includesWarningArtifact = true;
+      }
+      const block = [
+        `- ${taskLabel}: ${artifact.relativePath}`,
+        `  Delivery: ${artifact.deliveryStatus}`,
+        `  Verification: ${artifact.verificationStatus}`,
+        ...(artifact.deliveryStatus === "warning"
+          ? [`  Verification details: ${artifact.verificationSummary || "not provided"}`]
+          : []),
+        ...(artifact.title ? [`  Title: ${artifact.title}`] : []),
+        ...(artifact.mimeType ? [`  MIME: ${artifact.mimeType}`] : []),
+      ];
+      const blockChars = block.join("\n").length;
+      if (
+        includedArtifacts >= MAX_COMPLETION_ARTIFACTS ||
+        artifactChars + blockChars > MAX_COMPLETION_ARTIFACT_CHARS
+      ) {
+        omittedArtifacts += 1;
+        incompleteItems.add(item.source);
+        continue;
+      }
+      artifactLines.push(...block);
+      artifactChars += blockChars;
+      includedArtifacts += 1;
+    }
+  }
+  const blockedLines: string[] = [];
+  for (const item of completionItems) {
+    const blocked = item.value.handoff?.blocked;
+    if (!blocked) {
+      continue;
+    }
+    const taskLabel = scrubCompletionLabel(item.value.label);
+    blockedLines.push(
+      `- Task: ${taskLabel}`,
+      `  Reason: ${blocked.reason}`,
+      ...(blocked.verificationSummary
+        ? [`  Verification details: ${blocked.verificationSummary}`]
+        : []),
+    );
+  }
+  if (artifactLines.length > 0) {
+    lines.push("", "Deliverable artifacts:", ...artifactLines);
+  }
+  if (blockedLines.length > 0) {
+    lines.push(
+      "",
+      "Blocked handoff:",
+      ...blockedLines,
+      "Instruction: Inform the user that the artifact cannot be delivered. Do not offer sending or expose workspace paths.",
+    );
+  }
+  const deliveryIssueLines: string[] = [];
+  for (const item of completionItems) {
+    const taskLabel = scrubCompletionLabel(item.value.label);
+    for (const issue of item.value.handoff?.deliveryIssues ?? []) {
+      deliveryIssueLines.push(`- ${taskLabel} [${issue.kind}]: ${issue.reason}`);
+    }
+  }
+  if (deliveryIssueLines.length > 0) {
+    lines.push("", "Artifact delivery issues:", ...deliveryIssueLines);
+  }
+  if (omittedArtifacts > 0) {
+    lines.push("", `Omitted artifacts: ${omittedArtifacts}`);
   }
   if (omitted.length > 0) {
     lines.push("", "Omitted results:");
@@ -420,6 +518,18 @@ function buildCompletionAnnounceBatch(
   }
   if (latest.instruction.trim()) {
     lines.push("", latest.instruction.trim());
+  }
+  if (includesWarningArtifact) {
+    lines.push(
+      "",
+      "Warning delivery requirement: when sending an artifact marked warning, explicitly tell the user that verification failed and include the verification details above. Do not describe it as verified or fully passed.",
+    );
+  }
+  const deliveryInstruction = completionItems.findLast((item) =>
+    item.value.deliveryInstruction?.trim(),
+  )?.value.deliveryInstruction;
+  if (artifactLines.length > 0 && deliveryInstruction?.trim()) {
+    lines.push("", deliveryInstruction.trim());
   }
   return { prompt: lines.join("\n"), incompleteItems };
 }
@@ -586,7 +696,7 @@ function enqueueAnnounceItem(params: {
   }
 
   const origin = normalizeDeliveryContext(params.item.origin);
-  const originKey = deliveryContextKey(origin);
+  const originKey = params.item.originKey ?? deliveryContextKey(origin);
   const item = { ...params.item, origin, originKey };
   queue.items.push(item);
   scheduleAnnounceDrain(params.key);

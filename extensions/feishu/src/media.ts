@@ -186,7 +186,7 @@ function assertOutboundMediaWithinLimit(params: {
   });
 }
 
-function isImageFileName(fileName: string): boolean {
+export function isImageFileName(fileName: string): boolean {
   const ext = path.extname(fileName).toLowerCase();
   return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".tiff"].includes(ext);
 }

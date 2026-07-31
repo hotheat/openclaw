@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { parseSubagentHandoffBlocks } from "../../../agents/subagent-handoff.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../../config/sessions.js";
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { hasInterSessionUserProvenance } from "../../../sessions/input-provenance.js";
@@ -93,43 +94,16 @@ function sanitizeTranscriptText(text: string, role: TranscriptMessage["role"]): 
 }
 
 function extractResearcherExportsFromText(text: string): ResearcherExportSummary[] {
-  if (!text.includes("<SUBAGENT_HANDOFF>")) {
-    return [];
-  }
-
   const results: ResearcherExportSummary[] = [];
-  const handoffPattern = /<SUBAGENT_HANDOFF>\s*([\s\S]*?)\s*<\/SUBAGENT_HANDOFF>/g;
-  for (const match of text.matchAll(handoffPattern)) {
-    const raw = match[1]?.trim();
-    if (!raw) {
+  for (const handoff of parseSubagentHandoffBlocks(text)) {
+    if (handoff.mode === "inline" || handoff.quality.deliveryStatus === "blocked") {
       continue;
     }
-    try {
-      const parsed = JSON.parse(raw) as {
-        mode?: unknown;
-        summary?: unknown;
-        export?: { path?: unknown; title?: unknown };
-      };
-      if (parsed.mode !== "export-file") {
-        continue;
-      }
-      const exportPath =
-        typeof parsed.export?.path === "string"
-          ? parsed.export.path.trim().replace(/\\/g, "/")
-          : "";
-      if (!exportPath || exportPath.startsWith("/") || exportPath.startsWith("..")) {
-        continue;
-      }
-      const description =
-        (typeof parsed.summary === "string" && parsed.summary.trim()) ||
-        (typeof parsed.export?.title === "string" && parsed.export.title.trim()) ||
-        "Research deliverable exported.";
+    for (const artifact of handoff.artifacts) {
       results.push({
-        exportPath,
-        description,
+        exportPath: artifact.relativePath,
+        description: handoff.summary || artifact.title || "Artifact exported.",
       });
-    } catch {
-      continue;
     }
   }
   return results;

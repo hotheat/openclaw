@@ -319,6 +319,33 @@ describe("createOpenClawCodingTools", () => {
     expect(names.has("telegram")).toBe(false);
     expect(names.has("whatsapp")).toBe(false);
   });
+  it("keeps Feishu message while applying the deployment deny policy", () => {
+    const tools = createOpenClawCodingTools({
+      config: {
+        tools: {
+          deny: ["gateway", "tts"],
+        },
+      },
+      messageProvider: "feishu",
+      sessionKey: "agent:main:main",
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+
+    expect(names.has("message")).toBe(true);
+    expect(names.has("tts")).toBe(false);
+    expect(names.has("artifact_jobs")).toBe(false);
+  });
+  it("removes message but preserves sessions_spawn for parent WebChat sessions", () => {
+    const tools = createOpenClawCodingTools({
+      messageProvider: "internal",
+      sessionKey: "agent:main:webchat:namespace:chat_1",
+    });
+    const names = new Set(tools.map((tool) => tool.name));
+
+    expect(names.has("message")).toBe(false);
+    expect(names.has("sessions_spawn")).toBe(true);
+    expect(names.has("artifact_jobs")).toBe(false);
+  });
   it("filters session tools for sub-agent sessions by default", () => {
     const tools = createOpenClawCodingTools({
       sessionKey: "agent:main:subagent:test",

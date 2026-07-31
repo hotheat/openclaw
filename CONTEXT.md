@@ -52,6 +52,18 @@ _Avoid_: transparent proxy, gateway passthrough
 BFF 为浏览器聊天绑定的 Gateway 会话，key 形如 `agent:{agentId}:webchat:{clientInstanceId}:{clientSessionId}`；transcript 独立于其他渠道会话。
 _Avoid_: main 会话（有歧义，见下）
 
+**交付界面（Delivery Surface）**:
+一次运行实际面向的交付形态，由 channel 与会话身份**共同**决定，与单一 channel 值不等价。同一个 channel 值可以对应不同交付界面（后台运行与浏览器聊天都可能以 `internal` 执行），同一个交付界面也可能以多个 channel 值出现。决定该次运行加载哪些工具、以及提示词描述哪些能力。
+_Avoid_: 把 channel 直接当作界面、surface 与 channel 混用
+
+**父 WebChat 会话（Parent WebChat Session）**:
+浏览器用户直接驱动的 WebChat Session 本体，是 WebUI Artifact 的唯一发布主体。区别于由它 spawn 出的 Child Session——子会话不构成父 WebChat 会话，其产物需回到父会话再发布。
+_Avoid_: 泛指的 webchat 会话（无法区分父子）
+
+**Control UI 会话**:
+内置控制台（`ui/`）驱动的会话，与 WebChat Session 属于**不同交付界面**，不享有 WebUI Artifact 发布能力。两者曾共用同一 client mode，现已明确分离。
+_Avoid_: 把 Control UI 归入 WebChat
+
 **Agent Main Session（渠道主会话）**:
 OpenClaw 的 `agent:{agentId}:main`；`dmScope=main`（默认）时飞书私聊落在这条会话。与 WebChat Session 的固定 ID `main` 同名不同物（ADR-0002 的混淆根源）。
 

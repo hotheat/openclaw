@@ -17,7 +17,7 @@ M2 需要让父 WebUI 会话中的 agent 把 workspace 内的本地文件交给�
 
 - `webchat` 维持非可投递渠道；WebUI 接收者由 BFF **Redis session binding**（不可逆摘要 key，存 `{principal, targetKind, targetId, clientSessionId, agentId}`，有界 TTL 宽限支持迟到发布；`complete/abort` 不依赖 binding）定义，channel 模型零改动。
 - 新增持久面：artifact DB 表（bff/agent-server Postgres + alembic）、OSS `openclaw-artifacts/` 前缀（复用现有私有 bucket）、`extensions/webui-artifacts`、bff-server artifact 路由（浏览器侧走 Traefik 新增 `/api/v1/openclaw/artifacts` 路由；internal init/complete 只在宿主机 `127.0.0.1:8303`，因为 Gateway 跑在宿主机而非容器）。
-- M2 只允许父 WebUI 会话发布；子 agent、外部 channel、CLI default deny——子 agent 产物需回到父 agent 再显式发布。
+- `webui_artifact_publish` 工具只允许父 WebUI 会话调用；子 agent、外部 channel、CLI default deny。自 2026-07-29 起，top-level unmanaged direct handoff 可由 WebUI channel adapter 发布已 stage 到 requester workspace 的文件，managed handoff 仍由父 agent 显式发布。交付所有权见 [ADR 0006](./0006-subagent-artifact-handoff-single-delivery-owner.md)。
 - 鉴权复用 `x-api-key`→`api_keys` 签发机制：新建非管理员 SERVICE `openclaw-artifact-extension`，raw key 只存扩展侧，BFF 仅按 DB HMAC hash + `service_id` 校验；轮换走 `auth rotate-api-key`、BFF 零改动。凭据、object key、预签名 URL 不进 WS 事件、history、日志和前端持久状态。
 - presigned PUT 协议层无法钉死 body size：用签名 `Content-MD5`（OSS 上传时校验内容）+ 扩展字节计数器 + complete HEAD 强校验 size/ETag-MD5/sha256 收口（单段 PutObject，ETag 即内容 MD5）；配额 `init` 硬拦 `409 ARTIFACT_SESSION_LIMIT_REACHED`（`pending+ready` 原子计数、`(sessionRef, sourceToolCallId)` 唯一约束）。
 - 未来若做"飞书同款文件发送"或 M4 下载鉴权，应评估复用本 artifact 通道，而不是给 `message` 工具加 WebUI 分支。

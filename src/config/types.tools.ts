@@ -162,12 +162,13 @@ export type ToolLoopDetectionConfig = {
 
 export type SessionsToolsVisibility = "self" | "tree" | "agent" | "all";
 
+/**
+ * @deprecated The artifact_jobs tool has been removed. Kept temporarily so older configs can
+ * validate and be written back without activating any runtime behavior.
+ */
 export type ArtifactJobsConfig = {
-  /** Root directory for artifact job state. Default: <stateDir>/artifacts/jobs. */
   root?: string;
-  /** Explicit source roots accepted by attach_file. Defaults to caller workspace, media, and artifact root. */
   allowedSourceRoots?: string[];
-  /** Relative directory under caller workspace used by finalize. Default: artifacts/imports. */
   exportDirName?: string;
 };
 
@@ -598,7 +599,10 @@ export type ToolsConfig = {
   fs?: FsToolsConfig;
   /** Runtime loop detection for repetitive/ stuck tool-call patterns. */
   loopDetection?: ToolLoopDetectionConfig;
-  /** Artifact job staging for cross-agent file exchange. */
+  /**
+   * @deprecated The artifact_jobs tool has been removed. This value is accepted for config
+   * compatibility and ignored at runtime.
+   */
   artifactJobs?: ArtifactJobsConfig;
   /** Sub-agent tool policy defaults (deny wins). */
   subagents?: {

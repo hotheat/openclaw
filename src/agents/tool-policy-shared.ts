@@ -33,7 +33,6 @@ export const TOOL_GROUPS: Record<string, string[]> = {
   "group:ui": ["browser", "canvas"],
   // Automation + infra
   "group:automation": ["cron", "gateway"],
-  "group:artifacts": ["artifact_jobs"],
   // Messaging surface
   "group:messaging": ["message"],
   // Nodes + device tools
@@ -47,7 +46,6 @@ export const TOOL_GROUPS: Record<string, string[]> = {
     "message",
     "gateway",
     "agents_list",
-    "artifact_jobs",
     "sessions_list",
     "sessions_history",
     "sessions_send",
@@ -68,14 +66,7 @@ const TOOL_PROFILES: Record<ToolProfileId, ToolProfilePolicy> = {
     allow: ["session_status"],
   },
   coding: {
-    allow: [
-      "group:fs",
-      "group:runtime",
-      "group:sessions",
-      "group:memory",
-      "artifact_jobs",
-      "image",
-    ],
+    allow: ["group:fs", "group:runtime", "group:sessions", "group:memory", "image"],
   },
   messaging: {
     allow: [
