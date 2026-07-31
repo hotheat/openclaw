@@ -39,13 +39,30 @@ x-i18n:
 
 ## 说明
 
-- 路径相对于工作区根目录解析。
+- 补丁路径支持相对于工作区的路径和绝对路径。
+- `tools.exec.applyPatch.workspaceOnly` 默认为 `true`，会拒绝工作区外路径、符号链接和硬链接别名。
 - 在 `*** Update File:` 段中使用 `*** Move to:` 可重命名文件。
 - 需要时使用 `*** End of File` 标记仅在文件末尾的插入。
 - 实验性功能，默认禁用。通过 `tools.exec.applyPatch.enabled` 启用。
-- 仅限 OpenAI（包括 OpenAI Codex）。可选通过
-  `tools.exec.applyPatch.allowModels` 按模型进行限制。
+- 未配置 `allowModels` 或配置为空数组时，所有 Provider/模型均可使用。
+- 如需收窄，请在 `tools.exec.applyPatch.allowModels` 中配置完整
+  `provider/model`。裸模型 ID 会匹配所有 Provider，并在启动时产生告警。
+- 工具 allow/deny 策略和只读 sandbox 仍优先生效。
 - 配置仅在 `tools.exec` 下。
+
+```json5
+{
+  tools: {
+    exec: {
+      applyPatch: {
+        enabled: true,
+        workspaceOnly: true,
+        // 可选：allowModels: ["otr/gpt-5.6-sol"],
+      },
+    },
+  },
+}
+```
 
 ## 示例
 

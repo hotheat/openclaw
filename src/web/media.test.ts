@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -137,6 +138,25 @@ describe("web media loading", () => {
     }
   });
 
+  it.runIf(process.platform !== "win32")("loads hardlinked local media", async () => {
+    const hardlink = path.join(fixtureRoot, "hardlink.png");
+    await fs.link(tinyPngFile, hardlink);
+
+    const result = await loadWebMedia(hardlink, 1024 * 1024);
+
+    expect(result.kind).toBe("image");
+    expect(result.buffer.length).toBeGreaterThan(0);
+  });
+
+  it.runIf(process.platform !== "win32")("rejects FIFO local media without blocking", async () => {
+    const fifo = path.join(fixtureRoot, "media.pipe");
+    execFileSync("mkfifo", [fifo]);
+
+    await expect(loadWebMedia(fifo, 1024 * 1024)).rejects.toMatchObject({
+      code: "not-file",
+    });
+  });
+
   it("compresses large local images under the provided cap", async () => {
     const { buffer, file } = await createLargeTestJpeg();
 
@@ -245,10 +265,12 @@ describe("web media loading", () => {
   });
 
   it("uses content-disposition filename when available", async () => {
+    const pdfBytes = Buffer.from("%PDF-1.4");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce({
       ok: true,
       body: true,
-      arrayBuffer: async () => Buffer.from("%PDF-1.4").buffer,
+      arrayBuffer: async () =>
+        pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength),
       headers: {
         get: (name: string) => {
           if (name === "content-disposition") {

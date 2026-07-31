@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { openFileWithinRoot } from "openclaw/plugin-sdk";
+import { root } from "openclaw/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFeishuSubagentHandoffDeliveryHandler } from "./subagent-handoff-delivery.js";
 
@@ -101,14 +102,76 @@ describe("Feishu subagent handoff delivery", () => {
     });
   });
 
+  it.runIf(process.platform !== "win32")("sends hardlinked requester artifacts", async () => {
+    const sourcePath = "artifacts/source.txt";
+    const relativePath = "artifacts/hardlink.txt";
+    const workspaceDir = await createWorkspaceArtifact(sourcePath);
+    await fs.link(path.join(workspaceDir, sourcePath), path.join(workspaceDir, relativePath));
+    const sendMedia = vi.fn(async () => ({ messageId: "om_sent", chatId: "ou_1" }));
+    const handler = createFeishuSubagentHandoffDeliveryHandler({
+      cfg: {} as never,
+      sendMedia,
+    });
+
+    const result = await handler(
+      createEvent({
+        workspaceDir,
+        channel: "feishu",
+        to: "ou_1",
+        relativePaths: [relativePath],
+      }),
+      {},
+    );
+
+    expect(sendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({ mediaBuffer: Buffer.from("artifact\n") }),
+    );
+    expect(result?.deliveredArtifacts).toEqual([relativePath]);
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "rejects FIFO requester artifacts without blocking",
+    async () => {
+      const relativePath = "artifacts/report.pipe";
+      const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "feishu-handoff-"));
+      temporaryDirectories.push(workspaceDir);
+      await fs.mkdir(path.dirname(path.join(workspaceDir, relativePath)), { recursive: true });
+      execFileSync("mkfifo", [path.join(workspaceDir, relativePath)]);
+      const sendMedia = vi.fn();
+      const handler = createFeishuSubagentHandoffDeliveryHandler({
+        cfg: {} as never,
+        sendMedia,
+      });
+
+      const result = await handler(
+        createEvent({
+          workspaceDir,
+          channel: "feishu",
+          to: "ou_1",
+          relativePaths: [relativePath],
+        }),
+        {},
+      );
+
+      expect(sendMedia).not.toHaveBeenCalled();
+      expect(result?.deliveredArtifacts).toEqual([]);
+      expect(result?.failures?.[0]?.message).toBe("not a file");
+    },
+  );
+
   it("reads from the verified handle when the artifact path is replaced", async () => {
     const relativePath = "artifacts/exports/feishu/run-1/report.md";
     const workspaceDir = await createWorkspaceArtifact(relativePath);
     const artifactPath = path.join(workspaceDir, relativePath);
     const movedPath = path.join(workspaceDir, "original.md");
     const sendMedia = vi.fn(async () => ({ messageId: "om_sent", chatId: "ou_1" }));
-    const openFile = vi.fn(async (params: Parameters<typeof openFileWithinRoot>[0]) => {
-      const opened = await openFileWithinRoot(params);
+    const openFile = vi.fn(async (params: { rootDir: string; relativePath: string }) => {
+      const opened = await (
+        await root(params.rootDir)
+      ).open(params.relativePath, {
+        hardlinks: "allow",
+        nonBlockingRead: true,
+      });
       await fs.rename(artifactPath, movedPath);
       await fs.writeFile(artifactPath, "replacement\n", "utf8");
       return opened;
@@ -159,6 +222,7 @@ describe("Feishu subagent handoff delivery", () => {
         handle: { readFile, close } as never,
         realPath: "/workspace-main/report.md",
         stat: { size: 2 * 1024 * 1024 } as never,
+        [Symbol.asyncDispose]: vi.fn(async () => {}),
       })),
     });
 

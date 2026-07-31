@@ -237,7 +237,13 @@ export type {
   PersistentDedupeOptions,
 } from "./persistent-dedupe.js";
 export { formatErrorMessage } from "../infra/errors.js";
-export { SafeOpenError, openFileWithinRoot, type SafeOpenResult } from "../infra/fs-safe.js";
+export { FsSafeError, root, type OpenResult } from "../infra/fs-safe.js";
+export {
+  SafeOpenError,
+  openFileWithinRoot,
+  type SafeOpenErrorCode,
+  type SafeOpenResult,
+} from "./fs-safe-compat.js";
 export {
   DEFAULT_WEBHOOK_BODY_TIMEOUT_MS,
   DEFAULT_WEBHOOK_MAX_BODY_BYTES,

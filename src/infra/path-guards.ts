@@ -33,3 +33,20 @@ export function isPathInside(root: string, target: string): boolean {
   const relative = path.relative(resolvedRoot, resolvedTarget);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
+
+/**
+ * Normalize a Windows path for boundary math whose result is handed back to callers.
+ *
+ * This preserves case because `path.win32.relative` already matches roots
+ * case-insensitively while Windows filesystems preserve the supplied case.
+ */
+export function normalizeWindowsPathPreservingCase(input: string): string {
+  const normalized = path.win32.normalize(input).trim();
+  if (!normalized.startsWith("\\\\?\\")) {
+    return normalized;
+  }
+  const withoutPrefix = normalized.slice(4);
+  return withoutPrefix.toUpperCase().startsWith("UNC\\")
+    ? `\\\\${withoutPrefix.slice(4)}`
+    : withoutPrefix;
+}

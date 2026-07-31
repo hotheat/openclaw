@@ -110,9 +110,16 @@ describe("tools.fs.workspaceOnly", () => {
     await withUnsafeMountedSandboxHarness(async ({ sandboxRoot, agentRoot, sandbox }) => {
       await fs.writeFile(path.join(agentRoot, "secret.txt"), "shh", "utf8");
 
-      const cfg = { tools: { fs: { workspaceOnly: true } } } as unknown as OpenClawConfig;
+      const cfg = {
+        tools: {
+          fs: { workspaceOnly: true },
+          exec: { applyPatch: { enabled: true } },
+        },
+      } as unknown as OpenClawConfig;
       const tools = createOpenClawCodingTools({ sandbox, workspaceDir: sandboxRoot, config: cfg });
       const { readTool, writeTool, editTool } = expectReadWriteEditTools(tools);
+      const applyPatchTool = tools.find((tool) => tool.name === "apply_patch");
+      expect(applyPatchTool).toBeDefined();
 
       await expect(readTool?.execute("t1", { path: "/agent/secret.txt" })).rejects.toThrow(
         /Path escapes sandbox root/i,
@@ -129,6 +136,17 @@ describe("tools.fs.workspaceOnly", () => {
         editTool?.execute("t3", { path: "/agent/secret.txt", oldText: "shh", newText: "nope" }),
       ).rejects.toThrow(/Path escapes sandbox root/i);
       expect(await fs.readFile(path.join(agentRoot, "secret.txt"), "utf8")).toBe("shh");
+
+      const patch = `*** Begin Patch
+*** Add File: /agent/patched.txt
++x
+*** End Patch`;
+      await expect(applyPatchTool?.execute("t4", { input: patch })).rejects.toThrow(
+        /Path escapes sandbox root/i,
+      );
+      await expect(fs.stat(path.join(agentRoot, "patched.txt"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     });
   });
 });

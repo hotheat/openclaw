@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
@@ -80,6 +81,29 @@ describe("media store", () => {
       await fs.utimes(saved.path, past / 1000, past / 1000);
       await store.cleanOldMedia(1);
       await expect(fs.stat(saved.path)).rejects.toThrow();
+    });
+  });
+
+  it.runIf(process.platform !== "win32")("copies hardlinked local files", async () => {
+    await withTempStore(async (store, home) => {
+      const source = path.join(home, "hardlink-source.txt");
+      const hardlink = path.join(home, "hardlink-input.txt");
+      await fs.writeFile(source, "local file");
+      await fs.link(source, hardlink);
+
+      const saved = await store.saveMediaSource(hardlink);
+
+      expect(saved.size).toBe(10);
+      await expect(fs.readFile(saved.path, "utf8")).resolves.toBe("local file");
+    });
+  });
+
+  it.runIf(process.platform !== "win32")("rejects FIFO sources without blocking", async () => {
+    await withTempStore(async (store, home) => {
+      const fifo = path.join(home, "source.pipe");
+      execFileSync("mkfifo", [fifo]);
+
+      await expect(store.saveMediaSource(fifo)).rejects.toMatchObject({ code: "not-file" });
     });
   });
 

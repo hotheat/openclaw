@@ -264,7 +264,7 @@ export type ExecToolConfig = {
   notifyOnExitEmptySuccess?: boolean;
   /** apply_patch subtool configuration (experimental). */
   applyPatch?: {
-    /** Enable apply_patch for OpenAI models (default: false). */
+    /** Enable apply_patch for allowed models (default: false). */
     enabled?: boolean;
     /**
      * Restrict apply_patch paths to the workspace directory.
@@ -273,7 +273,7 @@ export type ExecToolConfig = {
     workspaceOnly?: boolean;
     /**
      * Optional allowlist of model ids that can use apply_patch.
-     * Accepts either raw ids (e.g. "gpt-5.2") or full ids (e.g. "openai/gpt-5.2").
+     * Empty means all models. Bare ids match every provider; use provider/model to scope one.
      */
     allowModels?: string[];
   };

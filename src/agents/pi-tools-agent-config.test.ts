@@ -175,6 +175,60 @@ describe("Agent-specific tool filtering", () => {
     expect(toolNames).toContain("apply_patch");
   });
 
+  it("prefers agent-specific apply_patch config over global config", () => {
+    const cfg = createMainAgentConfig({
+      tools: {
+        allow: ["exec"],
+        exec: { applyPatch: { enabled: false } },
+      },
+      agentTools: {
+        allow: ["exec"],
+        exec: { applyPatch: { enabled: true } },
+      },
+    });
+
+    const tools = createMainSessionTools(cfg);
+
+    expect(tools.map((tool) => tool.name)).toContain("apply_patch");
+  });
+
+  it("does not register apply_patch in a read-only sandbox", () => {
+    const cfg: OpenClawConfig = {
+      tools: {
+        allow: ["read", "exec"],
+        exec: { applyPatch: { enabled: true } },
+      },
+    };
+
+    const tools = createOpenClawCodingTools({
+      config: cfg,
+      workspaceDir: "/tmp/test",
+      sandbox: {
+        enabled: true,
+        sessionKey: "agent:main:main",
+        workspaceDir: "/tmp/sandbox",
+        agentWorkspaceDir: "/tmp/test",
+        workspaceAccess: "ro",
+        containerName: "test-container",
+        containerWorkdir: "/workspace",
+        docker: {
+          image: "test-image",
+          containerPrefix: "test-",
+          workdir: "/workspace",
+          readOnlyRoot: true,
+          tmpfs: [],
+          network: "none",
+          capDrop: [],
+        },
+        tools: { allow: ["read", "exec"], deny: [] },
+        fsBridge: sandboxFsBridgeStub,
+        browserAllowHostControl: false,
+      },
+    });
+
+    expect(tools.map((tool) => tool.name)).not.toContain("apply_patch");
+  });
+
   it("defaults apply_patch to workspace-only (blocks traversal)", async () => {
     await withApplyPatchEscapeCase({}, async ({ applyPatchTool, escapedPath, patch }) => {
       await expect(applyPatchTool.execute("tc1", { input: patch })).rejects.toThrow(

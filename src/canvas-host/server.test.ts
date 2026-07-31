@@ -131,6 +131,29 @@ describe("canvas host", () => {
     }
   });
 
+  it.runIf(process.platform !== "win32")("serves hardlinked canvas files", async () => {
+    const dir = await createCaseDir();
+    const source = path.join(dir, "source.html");
+    await fs.writeFile(source, "<html><body>hardlink</body></html>", "utf8");
+    await fs.link(source, path.join(dir, "hardlink.html"));
+    const server = await startCanvasHost({
+      runtime: quietRuntime,
+      rootDir: dir,
+      port: 0,
+      listenHost: "127.0.0.1",
+      allowInTests: true,
+      liveReload: false,
+    });
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}${CANVAS_HOST_PATH}/hardlink.html`);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("hardlink");
+    } finally {
+      await server.close();
+    }
+  });
+
   it("serves canvas content from the mounted base path and reuses handlers without double close", async () => {
     const dir = await createCaseDir();
     await fs.writeFile(path.join(dir, "index.html"), "<html><body>v1</body></html>", "utf8");

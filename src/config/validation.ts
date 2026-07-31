@@ -78,6 +78,33 @@ function validateIdentityAvatar(config: OpenClawConfig): ConfigValidationIssue[]
   return issues;
 }
 
+function collectApplyPatchAllowModelWarnings(config: OpenClawConfig): ConfigValidationIssue[] {
+  const configs = [
+    {
+      path: "tools.exec.applyPatch.allowModels",
+      allowModels: config.tools?.exec?.applyPatch?.allowModels,
+    },
+    ...(config.agents?.list ?? []).map((agent, index) => ({
+      path: `agents.list.${index}.tools.exec.applyPatch.allowModels`,
+      allowModels: agent.tools?.exec?.applyPatch?.allowModels,
+    })),
+  ];
+  const warnings: ConfigValidationIssue[] = [];
+  for (const entry of configs) {
+    for (const [index, model] of (entry.allowModels ?? []).entries()) {
+      const normalized = model.trim();
+      if (!normalized || normalized.includes("/")) {
+        continue;
+      }
+      warnings.push({
+        path: `${entry.path}.${index}`,
+        message: `allowModels entry "${normalized}" has no provider prefix and matches this model on ALL providers; use "provider/model" to scope to one provider`,
+      });
+    }
+  }
+  return warnings;
+}
+
 /**
  * Validates config without applying runtime defaults.
  * Use this when you need the raw validated config (e.g., for writing back to file).
@@ -189,7 +216,7 @@ function validateConfigObjectWithPluginsBase(
 
   const config = base.config;
   const issues: ConfigValidationIssue[] = [];
-  const warnings: ConfigValidationIssue[] = [];
+  const warnings: ConfigValidationIssue[] = collectApplyPatchAllowModelWarnings(config);
   const hasExplicitPluginsConfig =
     isRecord(raw) && Object.prototype.hasOwnProperty.call(raw, "plugins");
 

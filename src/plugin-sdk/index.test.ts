@@ -1,4 +1,7 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { withTempDir } from "../test-utils/temp-dir.js";
 import * as sdk from "./index.js";
 
 describe("plugin-sdk exports", () => {
@@ -13,8 +16,34 @@ describe("plugin-sdk exports", () => {
   });
 
   it("exports safe file access for bundled plugins", () => {
-    expect(sdk.SafeOpenError).toBeTypeOf("function");
-    expect(sdk.openFileWithinRoot).toBeTypeOf("function");
+    expect(sdk.FsSafeError).toBeTypeOf("function");
+    expect(sdk.root).toBeTypeOf("function");
+  });
+
+  it("keeps legacy safe-open exports compatible for external plugins", async () => {
+    await withTempDir("openclaw-plugin-sdk-fs-safe-", async (rootDir) => {
+      await fs.writeFile(path.join(rootDir, "fixture.txt"), "fixture", "utf8");
+
+      const opened = await sdk.openFileWithinRoot({
+        rootDir,
+        relativePath: "fixture.txt",
+      });
+      try {
+        expect(await opened.handle.readFile("utf8")).toBe("fixture");
+      } finally {
+        await opened.handle.close();
+      }
+
+      await expect(
+        sdk.openFileWithinRoot({
+          rootDir,
+          relativePath: "../outside.txt",
+        }),
+      ).rejects.toMatchObject({
+        name: "SafeOpenError",
+        code: "invalid-path",
+      });
+    });
   });
 
   it("does not expose runtime modules", () => {

@@ -189,7 +189,8 @@ OpenClaw 为 browser、canvas、nodes 和 cron 暴露**一流的智能体工具*
 ### `apply_patch`
 
 跨一个或多个文件应用结构化补丁。用于多块编辑。
-实验性：通过 `tools.exec.applyPatch.enabled` 启用（仅 OpenAI 模型）。
+实验性：通过 `tools.exec.applyPatch.enabled` 启用。未配置 `allowModels` 或配置为空数组时，
+所有 Provider/模型均可使用；如需收窄，请配置完整 `provider/model`。
 
 ### `exec`
 

@@ -434,11 +434,11 @@ export const FIELD_HELP: Record<string, string> = {
   "diagnostics.cacheTrace.includePrompt": "Include prompt text in trace output (default: true).",
   "diagnostics.cacheTrace.includeSystem": "Include system prompt in trace output (default: true).",
   "tools.exec.applyPatch.enabled":
-    "Experimental. Enables apply_patch for OpenAI models when allowed by tool policy.",
+    "Experimental. Enables apply_patch for allowed models when permitted by tool policy.",
   "tools.exec.applyPatch.workspaceOnly":
     "Restrict apply_patch paths to the workspace directory (default: true). Set false to allow writing outside the workspace (dangerous).",
   "tools.exec.applyPatch.allowModels":
-    'Optional allowlist of model ids (e.g. "gpt-5.2" or "openai/gpt-5.2").',
+    'Optional model allowlist. Empty means all providers/models. Bare ids match every provider; use "provider/model" to scope one provider.',
   "tools.loopDetection.enabled":
     "Enable general repetitive tool-call loop detection for before-tool-call checks (default: false). Repeated schema validation error guard remains enabled unless detectors.schemaValidationError is false.",
   "tools.loopDetection.historySize": "Tool history window size for loop detection (default: 30).",

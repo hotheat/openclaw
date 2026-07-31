@@ -1,10 +1,11 @@
 import path from "node:path";
 import type {
   ClawdbotConfig,
+  OpenResult,
   PluginHookHandlerMap,
   PluginHookSubagentHandoffDeliveryResult,
 } from "openclaw/plugin-sdk";
-import { openFileWithinRoot } from "openclaw/plugin-sdk";
+import { root } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import {
   bytesToMbCeil,
@@ -14,7 +15,22 @@ import {
 import { isImageFileName, sendMediaFeishu } from "./media.js";
 
 type SendMedia = typeof sendMediaFeishu;
-type OpenFileWithinRoot = typeof openFileWithinRoot;
+type OpenRequesterArtifact = (params: {
+  rootDir: string;
+  relativePath: string;
+}) => Promise<OpenResult>;
+
+async function openRequesterArtifact(params: {
+  rootDir: string;
+  relativePath: string;
+}): Promise<OpenResult> {
+  return await (
+    await root(params.rootDir)
+  ).open(params.relativePath, {
+    hardlinks: "allow",
+    nonBlockingRead: true,
+  });
+}
 
 function normalizeTarget(value: string | undefined): string {
   const target = value?.trim() ?? "";
@@ -32,7 +48,7 @@ async function readRequesterArtifact(params: {
   relativePath: string;
   kind: "image" | "file";
   maxBytes: number;
-  openFile: OpenFileWithinRoot;
+  openFile: OpenRequesterArtifact;
 }): Promise<Buffer> {
   const opened = await params.openFile({
     rootDir: params.workspaceDir,
@@ -56,10 +72,10 @@ async function readRequesterArtifact(params: {
 export function createFeishuSubagentHandoffDeliveryHandler(params: {
   cfg: ClawdbotConfig;
   sendMedia?: SendMedia;
-  openFile?: OpenFileWithinRoot;
+  openFile?: OpenRequesterArtifact;
 }): PluginHookHandlerMap["subagent_handoff_delivery"] {
   const sendMedia = params.sendMedia ?? sendMediaFeishu;
-  const openFile = params.openFile ?? openFileWithinRoot;
+  const openFile = params.openFile ?? openRequesterArtifact;
   return async (event): Promise<PluginHookSubagentHandoffDeliveryResult | undefined> => {
     if (event.requesterOrigin?.channel?.trim().toLowerCase() !== "feishu") {
       return undefined;

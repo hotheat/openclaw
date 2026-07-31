@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import type { Server } from "node:http";
 import express, { type Express } from "express";
 import { danger } from "../globals.js";
-import { SafeOpenError, openFileWithinRoot } from "../infra/fs-safe.js";
+import { FsSafeError, root } from "../infra/fs-safe.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { detectMime } from "./mime.js";
 import { cleanOldMedia, getMediaDir, MEDIA_DEFAULT_TTL_MS, MEDIA_MAX_BYTES } from "./store.js";
@@ -38,10 +38,9 @@ export function attachMediaRoutes(
       return;
     }
     try {
-      const { handle, realPath, stat } = await openFileWithinRoot({
-        rootDir: mediaDir,
-        relativePath: id,
-      });
+      const { handle, realPath, stat } = await (
+        await root(mediaDir)
+      ).open(id, { hardlinks: "allow", nonBlockingRead: true });
       if (stat.size > MAX_MEDIA_BYTES) {
         await handle.close().catch(() => {});
         res.status(413).send("too large");
@@ -73,8 +72,13 @@ export function attachMediaRoutes(
         setTimeout(cleanup, 50);
       });
     } catch (err) {
-      if (err instanceof SafeOpenError) {
-        if (err.code === "invalid-path") {
+      if (err instanceof FsSafeError) {
+        if (
+          err.code === "invalid-path" ||
+          err.code === "symlink" ||
+          err.code === "path-alias" ||
+          err.code === "not-file"
+        ) {
           res.status(400).send("invalid path");
           return;
         }

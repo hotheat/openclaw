@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SafeOpenError, openFileWithinRoot, type SafeOpenResult } from "../infra/fs-safe.js";
+import { FsSafeError, root, type OpenResult } from "../infra/fs-safe.js";
 
 export function normalizeUrlPath(rawPath: string): string {
   const decoded = decodeURIComponent(rawPath || "/");
@@ -11,7 +11,7 @@ export function normalizeUrlPath(rawPath: string): string {
 export async function resolveFileWithinRoot(
   rootReal: string,
   urlPath: string,
-): Promise<SafeOpenResult | null> {
+): Promise<OpenResult | null> {
   const normalized = normalizeUrlPath(urlPath);
   const rel = normalized.replace(/^\/+/, "");
   if (rel.split("/").some((p) => p === "..")) {
@@ -20,9 +20,14 @@ export async function resolveFileWithinRoot(
 
   const tryOpen = async (relative: string) => {
     try {
-      return await openFileWithinRoot({ rootDir: rootReal, relativePath: relative });
+      return await (
+        await root(rootReal)
+      ).open(relative, {
+        hardlinks: "allow",
+        nonBlockingRead: true,
+      });
     } catch (err) {
-      if (err instanceof SafeOpenError) {
+      if (err instanceof FsSafeError) {
         return null;
       }
       throw err;

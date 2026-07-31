@@ -5,7 +5,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { SafeOpenError, readLocalFileSafely } from "../infra/fs-safe.js";
+import { FsSafeError, root } from "../infra/fs-safe.js";
 import { resolvePinnedHostname } from "../infra/net/ssrf.js";
 import { resolveConfigDir } from "../utils.js";
 import { detectMime, extensionForMime } from "./mime.js";
@@ -240,7 +240,7 @@ export class SaveMediaSourceError extends Error {
   }
 }
 
-function toSaveMediaSourceError(err: SafeOpenError): SaveMediaSourceError {
+function toSaveMediaSourceError(err: FsSafeError): SaveMediaSourceError {
   switch (err.code) {
     case "symlink":
       return new SaveMediaSourceError("invalid-path", "Media path must not be a symlink", {
@@ -290,7 +290,13 @@ export async function saveMediaSource(
   }
   // local path
   try {
-    const { buffer, stat } = await readLocalFileSafely({ filePath: source, maxBytes: MAX_BYTES });
+    const { buffer, stat } = await (
+      await root(path.dirname(source))
+    ).read(path.basename(source), {
+      hardlinks: "allow",
+      maxBytes: MAX_BYTES,
+      nonBlockingRead: true,
+    });
     const mime = await detectMime({ buffer, filePath: source });
     const ext = extensionForMime(mime) ?? path.extname(source);
     const id = ext ? `${baseId}${ext}` : baseId;
@@ -298,7 +304,7 @@ export async function saveMediaSource(
     await fs.writeFile(dest, buffer, { mode: 0o600 });
     return { id, path: dest, size: stat.size, contentType: mime };
   } catch (err) {
-    if (err instanceof SafeOpenError) {
+    if (err instanceof FsSafeError) {
       throw toSaveMediaSourceError(err);
     }
     throw err;

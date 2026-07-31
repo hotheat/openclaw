@@ -52,6 +52,18 @@ export type SandboxFsBridge = {
   }): Promise<SandboxFsStat | null>;
 };
 
+/**
+ * Narrow bridge contract for tools that can operate entirely through container
+ * paths. A bridge without hostPath must enforce its own boundary and path-alias
+ * policy before performing I/O.
+ */
+export type ContainerPathSandboxFsBridge = Omit<SandboxFsBridge, "resolvePath"> & {
+  resolvePath(params: {
+    filePath: string;
+    cwd?: string;
+  }): Omit<SandboxResolvedPath, "hostPath"> & { hostPath?: string };
+};
+
 export function createSandboxFsBridge(params: { sandbox: SandboxContext }): SandboxFsBridge {
   return new SandboxFsBridgeImpl(params.sandbox);
 }

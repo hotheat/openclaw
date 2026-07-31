@@ -37,9 +37,26 @@ The tool accepts a single `input` string that wraps one or more file operations:
 - Use `*** Move to:` within an `*** Update File:` hunk to rename files.
 - `*** End of File` marks an EOF-only insert when needed.
 - Experimental and disabled by default. Enable with `tools.exec.applyPatch.enabled`.
-- OpenAI-only (including OpenAI Codex). Optionally gate by model via
-  `tools.exec.applyPatch.allowModels`.
+- When `allowModels` is omitted or empty, every provider/model is eligible.
+- To narrow access, use full `provider/model` entries in
+  `tools.exec.applyPatch.allowModels`. Bare model IDs match that model on every provider and emit
+  a startup warning.
+- Tool allow/deny policy and read-only sandbox restrictions still take precedence.
 - Config is only under `tools.exec`.
+
+```json5
+{
+  tools: {
+    exec: {
+      applyPatch: {
+        enabled: true,
+        workspaceOnly: true,
+        // Optional: allowModels: ["otr/gpt-5.6-sol"],
+      },
+    },
+  },
+}
+```
 
 ## Example
 

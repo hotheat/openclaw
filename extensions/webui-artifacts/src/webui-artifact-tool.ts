@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Transform } from "node:stream";
 import { Type } from "@sinclair/typebox";
-import { SafeOpenError, openFileWithinRoot, type SafeOpenResult } from "openclaw/plugin-sdk";
+import { FsSafeError, root, type OpenResult } from "openclaw/plugin-sdk";
 import {
   ARTIFACT_SESSION_LIMIT_CODE,
   ArtifactApiError,
@@ -61,7 +61,7 @@ type ArtifactToolOptions = {
   client: ArtifactTransport;
   sessionKey: string;
   workspaceDir: string;
-  afterScan?: (opened: SafeOpenResult) => void | Promise<void>;
+  afterScan?: (opened: OpenResult) => void | Promise<void>;
 };
 
 function sameFileSnapshot(left: Stats, right: Stats): boolean {
@@ -112,7 +112,7 @@ function resolveFileName(value: string | undefined, realPath: string): string {
 }
 
 async function scanFile(
-  opened: SafeOpenResult,
+  opened: OpenResult,
   afterScan?: ArtifactToolOptions["afterScan"],
 ): Promise<FileDigest> {
   if (opened.stat.size > MAX_ARTIFACT_BYTES) {
@@ -178,7 +178,7 @@ export function createUploadCounter(declaredSize: number): Transform {
   return counter;
 }
 
-function createCountedUploadStream(opened: SafeOpenResult, declaredSize: number): Transform {
+function createCountedUploadStream(opened: OpenResult, declaredSize: number): Transform {
   const counter = createUploadCounter(declaredSize);
   const source = opened.handle.createReadStream({ autoClose: false, start: 0 });
   source.once("error", (error) => counter.destroy(error));
@@ -191,7 +191,7 @@ function createCountedUploadStream(opened: SafeOpenResult, declaredSize: number)
   return counter;
 }
 
-async function verifyCurrentPath(opened: SafeOpenResult): Promise<void> {
+async function verifyCurrentPath(opened: OpenResult): Promise<void> {
   const [handleStat, pathStat] = await Promise.all([
     opened.handle.stat(),
     fs.stat(opened.realPath),
@@ -206,7 +206,7 @@ async function verifyCurrentPath(opened: SafeOpenResult): Promise<void> {
 }
 
 function safeInputError(error: unknown): Error | null {
-  if (error instanceof SafeOpenError) {
+  if (error instanceof FsSafeError) {
     return new Error("Artifact file must be a regular file within the current workspace");
   }
   if (
@@ -244,7 +244,7 @@ export async function publishWorkspaceArtifact(params: {
   signal?: AbortSignal;
   afterScan?: ArtifactToolOptions["afterScan"];
 }): Promise<PublishedWorkspaceArtifact> {
-  let opened: SafeOpenResult | null = null;
+  let opened: OpenResult | null = null;
   let artifactId: string | undefined;
   let phase: "scan" | "init" | "upload" | "complete" = "scan";
   try {
@@ -252,9 +252,11 @@ export async function publishWorkspaceArtifact(params: {
     if (!filePath) {
       throw new Error("Artifact filePath is required");
     }
-    opened = await openFileWithinRoot({
-      rootDir: params.workspaceDir,
-      relativePath: filePath,
+    opened = await (
+      await root(params.workspaceDir)
+    ).open(filePath, {
+      hardlinks: "allow",
+      nonBlockingRead: true,
     });
     const digest = await scanFile(opened, params.afterScan);
     const fileName = resolveFileName(params.filename, opened.realPath);

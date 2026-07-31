@@ -56,7 +56,7 @@ describe("createOpenClawCodingTools", () => {
     expect(defaultTools.some((tool) => tool.name === "process")).toBe(true);
     expect(defaultTools.some((tool) => tool.name === "apply_patch")).toBe(false);
   });
-  it("gates apply_patch behind tools.exec.applyPatch for OpenAI models", () => {
+  it("enables apply_patch for any provider when enabled without allowModels", () => {
     const config: OpenClawConfig = {
       tools: {
         exec: {
@@ -64,39 +64,35 @@ describe("createOpenClawCodingTools", () => {
         },
       },
     };
-    const openAiTools = createOpenClawCodingTools({
-      config,
-      modelProvider: "openai",
-      modelId: "gpt-5.2",
-    });
-    expect(openAiTools.some((tool) => tool.name === "apply_patch")).toBe(true);
-
-    const anthropicTools = createOpenClawCodingTools({
-      config,
-      modelProvider: "anthropic",
-      modelId: "claude-opus-4-5",
-    });
-    expect(anthropicTools.some((tool) => tool.name === "apply_patch")).toBe(false);
+    for (const [modelProvider, modelId] of [
+      ["openai", "gpt-5.6-sol"],
+      ["otr", "gpt-5.6-sol"],
+      ["qwen-openai", "qwen/qwen3.6-27b"],
+      ["deepseek", "deepseek-v4-pro"],
+    ]) {
+      const tools = createOpenClawCodingTools({ config, modelProvider, modelId });
+      expect(tools.some((tool) => tool.name === "apply_patch")).toBe(true);
+    }
   });
-  it("respects apply_patch allowModels", () => {
+  it("narrows apply_patch with full provider/model allowModels entries", () => {
     const config: OpenClawConfig = {
       tools: {
         exec: {
-          applyPatch: { enabled: true, allowModels: ["gpt-5.2"] },
+          applyPatch: { enabled: true, allowModels: ["otr/gpt-5.6-sol"] },
         },
       },
     };
     const allowed = createOpenClawCodingTools({
       config,
-      modelProvider: "openai",
-      modelId: "gpt-5.2",
+      modelProvider: "otr",
+      modelId: "gpt-5.6-sol",
     });
     expect(allowed.some((tool) => tool.name === "apply_patch")).toBe(true);
 
     const denied = createOpenClawCodingTools({
       config,
-      modelProvider: "openai",
-      modelId: "gpt-5-mini",
+      modelProvider: "micu",
+      modelId: "gpt-5.6-sol",
     });
     expect(denied.some((tool) => tool.name === "apply_patch")).toBe(false);
   });

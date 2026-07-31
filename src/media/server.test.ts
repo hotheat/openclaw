@@ -65,6 +65,19 @@ describe("media server", () => {
     await waitForFileRemoval(file);
   });
 
+  it.runIf(process.platform !== "win32")("serves hardlinked media", async () => {
+    const source = await writeMediaFile("hardlink-source", "hello");
+    const hardlink = path.join(MEDIA_DIR, "hardlink-media");
+    await fs.link(source, hardlink);
+
+    const res = await fetch(mediaUrl("hardlink-media"));
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("hello");
+    await waitForFileRemoval(hardlink);
+    await expect(fs.readFile(source, "utf8")).resolves.toBe("hello");
+  });
+
   it("expires old media", async () => {
     const file = await writeMediaFile("old", "stale");
     const past = Date.now() - 10_000;

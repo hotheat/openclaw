@@ -101,3 +101,25 @@ _Avoid_: 文件消息、webchat 附件、media 中转
 **技能回显（Skill Invocation Display）**:
 从既有工具调用参数或 SKILL.md 路径派生的展示值（"使用技能：<name>"），纯展示层推断，无独立技能协议事件。
 _Avoid_: skill event、技能生命周期
+
+### apply_patch 与文件边界
+
+**workspace-only（工作区限定）**:
+`apply_patch` 的文件操作被约束在会话工作区根目录内的模式；边界检查与实际读写由同一可信根约束。
+_Avoid_: sandbox mode（另有所指）、只读模式
+
+**路径别名逃逸（path alias escape）**:
+通过符号链接、硬链接或父目录别名，把看似位于工作区内的路径解析到工作区外目标的逃逸方式。删除操作只允许作用于最终别名本身。
+_Avoid_: 仅说 symlink 逃逸（遗漏硬链接与父目录别名）
+
+**no-op patch**:
+应用后文件内容无实际变化的 patch；不写盘、不更新 mtime，并向模型返回明确的无变更文本。
+_Avoid_: 空 patch（指无 hunk，是错误而非 no-op）
+
+**完整模型标识（full model ref）**:
+`provider/model` 形式的白名单条目（如 `otr/gpt-5.6-sol`）。裸模型 ID 会被任何挂载同名模型的 Provider 命中，白名单只应使用完整标识。
+_Avoid_: 裸模型 ID、model name
+
+**活动配置（live config）**:
+Gateway 主机上被运行时实际读取的 `~/.openclaw/openclaw.json`。与之相对的是 workspace 仓库中的**仓库副本（repo copy）**，仅作变更记录，两者存在漂移。
+_Avoid_: 把仓库副本当作运行时配置

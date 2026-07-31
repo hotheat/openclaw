@@ -13,6 +13,7 @@ import { getPluginToolMeta } from "../plugins/tools.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { resolveAgentConfig } from "./agent-scope.js";
+import { isApplyPatchAllowedForModel } from "./apply-patch-model-policy.js";
 import { createApplyPatchTool } from "./apply-patch.js";
 import {
   createExecTool,
@@ -62,39 +63,6 @@ import {
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
-
-function isOpenAIProvider(provider?: string) {
-  const normalized = provider?.trim().toLowerCase();
-  return normalized === "openai" || normalized === "openai-codex";
-}
-
-function isApplyPatchAllowedForModel(params: {
-  modelProvider?: string;
-  modelId?: string;
-  allowModels?: string[];
-}) {
-  const allowModels = Array.isArray(params.allowModels) ? params.allowModels : [];
-  if (allowModels.length === 0) {
-    return true;
-  }
-  const modelId = params.modelId?.trim();
-  if (!modelId) {
-    return false;
-  }
-  const normalizedModelId = modelId.toLowerCase();
-  const provider = params.modelProvider?.trim().toLowerCase();
-  const normalizedFull =
-    provider && !normalizedModelId.includes("/")
-      ? `${provider}/${normalizedModelId}`
-      : normalizedModelId;
-  return allowModels.some((entry) => {
-    const normalized = entry.trim().toLowerCase();
-    if (!normalized) {
-      return false;
-    }
-    return normalized === normalizedModelId || normalized === normalizedFull;
-  });
-}
 
 function resolveCurrentRunModelSelection(params: {
   cfg?: OpenClawConfig;
@@ -331,7 +299,6 @@ export function createOpenClawCodingTools(options?: {
   const applyPatchWorkspaceOnly = workspaceOnly || applyPatchConfig?.workspaceOnly !== false;
   const applyPatchEnabled =
     !!applyPatchConfig?.enabled &&
-    isOpenAIProvider(options?.modelProvider) &&
     isApplyPatchAllowedForModel({
       modelProvider: options?.modelProvider,
       modelId: options?.modelId,

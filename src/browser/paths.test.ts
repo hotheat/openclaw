@@ -67,6 +67,25 @@ describe("resolveExistingPathsWithinRoot", () => {
     });
   });
 
+  it.runIf(process.platform !== "win32")(
+    "accepts hardlinked files under the upload root",
+    async () => {
+      await withFixtureRoot(async ({ uploadsDir }) => {
+        const source = path.join(uploadsDir, "source.txt");
+        const hardlink = path.join(uploadsDir, "hardlink.txt");
+        await fs.writeFile(source, "ok", "utf8");
+        await fs.link(source, hardlink);
+
+        const result = await resolveWithinUploads({
+          uploadsDir,
+          requestedPaths: ["hardlink.txt"],
+        });
+
+        expect(result).toEqual({ ok: true, paths: [await fs.realpath(hardlink)] });
+      });
+    },
+  );
+
   it("rejects traversal outside the upload root", async () => {
     await withFixtureRoot(async ({ baseDir, uploadsDir }) => {
       const outsidePath = path.join(baseDir, "outside.txt");

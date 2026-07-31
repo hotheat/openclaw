@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { SafeOpenError, openFileWithinRoot } from "../infra/fs-safe.js";
+import { FsSafeError, root, type OpenResult } from "../infra/fs-safe.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 
 export const DEFAULT_BROWSER_TMP_DIR = resolvePreferredOpenClawTmpDir();
@@ -60,7 +60,7 @@ export async function resolveExistingPathsWithinRoot(params: {
   try {
     rootRealPath = await fs.realpath(rootDir);
   } catch {
-    // Keep historical behavior for missing roots and rely on openFileWithinRoot for final checks.
+    // Keep historical behavior for missing roots and rely on fs-safe root.open for final checks.
     rootRealPath = undefined;
   }
 
@@ -111,15 +111,17 @@ export async function resolveExistingPathsWithinRoot(params: {
       return { ok: false, error: pathResult.error };
     }
 
-    let opened: Awaited<ReturnType<typeof openFileWithinRoot>> | undefined;
+    let opened: OpenResult | undefined;
     try {
-      opened = await openFileWithinRoot({
-        rootDir,
-        relativePath: pathResult.relativePath,
+      opened = await (
+        await root(rootDir)
+      ).open(pathResult.relativePath, {
+        hardlinks: "allow",
+        nonBlockingRead: true,
       });
       resolvedPaths.push(opened.realPath);
     } catch (err) {
-      if (err instanceof SafeOpenError && err.code === "not-found") {
+      if (err instanceof FsSafeError && err.code === "not-found") {
         // Preserve historical behavior for paths that do not exist yet.
         resolvedPaths.push(pathResult.fallbackPath);
         continue;

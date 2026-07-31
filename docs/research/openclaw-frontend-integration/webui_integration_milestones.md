@@ -122,7 +122,7 @@
 **后端（openclaw-integration，`extensions/workspace-files/`）**：
 
 - 插件注册网关方法 `files.list/stat/get/put`（`src/plugins/types.ts` 插件缝），大文件走一次性 HTTP 下载票据（复用 media 的 TTL/大小上限思路，指向 workspace）。
-- 路径安全复用 `openFileWithinRoot` 根约束（`src/infra/fs-safe.ts`）防穿越。
+- 路径安全复用 `openclaw/plugin-sdk` 的 `root(rootDir).open(relativePath)` 根约束防穿越。
 - extensions 测试套件覆盖（`vitest.extensions.config.ts`）。
 
 **BFF**：allowlist 扩 `files.*`，参数按当前连接 agentId/workspace 约束（防跨 agent 读文件）。

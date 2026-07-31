@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { resolveSandboxedMediaSource } from "./sandbox-paths.js";
+import { assertSandboxPath, resolveSandboxedMediaSource } from "./sandbox-paths.js";
 
 async function withSandboxRoot<T>(run: (sandboxDir: string) => Promise<T>) {
   const sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), "sandbox-media-"));
@@ -22,6 +22,57 @@ function isPathInside(root: string, target: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
+
+describe("assertSandboxPath", () => {
+  it("accepts in-root names that start with two dots", async () => {
+    await withSandboxRoot(async (sandboxDir) => {
+      const target = path.join(sandboxDir, "..notes.txt");
+      await fs.writeFile(target, "notes");
+
+      await expect(
+        assertSandboxPath({ filePath: target, cwd: sandboxDir, root: sandboxDir }),
+      ).resolves.toMatchObject({ resolved: target });
+    });
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "rejects aliases by default and allows only final unlink targets",
+    async () => {
+      await withSandboxRoot(async (sandboxDir) => {
+        const root = await fs.realpath(sandboxDir);
+        const hardlinkTarget = path.join(root, "hardlink-target.txt");
+        const symlink = path.join(root, "target-link.txt");
+        const hardlink = path.join(root, "target-hardlink.txt");
+        await fs.writeFile(hardlinkTarget, "hardlink target");
+        await fs.symlink(path.join(path.dirname(root), "missing-outside.txt"), symlink);
+        await fs.link(hardlinkTarget, hardlink);
+
+        await expect(assertSandboxPath({ filePath: symlink, cwd: root, root })).rejects.toThrow(
+          /symlink/i,
+        );
+        await expect(assertSandboxPath({ filePath: hardlink, cwd: root, root })).rejects.toThrow(
+          /hard.?link/i,
+        );
+        await expect(
+          assertSandboxPath({
+            filePath: symlink,
+            cwd: root,
+            root,
+            allowFinalSymlinkForUnlink: true,
+          }),
+        ).resolves.toMatchObject({ resolved: symlink });
+        await expect(
+          assertSandboxPath({
+            filePath: hardlink,
+            cwd: root,
+            root,
+            allowFinalHardlinkForUnlink: true,
+          }),
+        ).resolves.toMatchObject({ resolved: hardlink });
+      });
+    },
+  );
+});
 
 describe("resolveSandboxedMediaSource", () => {
   // Group 1: /tmp paths (the bug fix)

@@ -78,7 +78,7 @@ Control UI 的工具流聚合器 `ui/src/ui/app-tool-stream.ts`（按 `toolCallI
 - **上传**：`chat.send.attachments` 走 base64（≤5MB，`src/gateway/server-methods/chat.ts:722`），图片会解析成模型可见的 content block（`src/gateway/chat-attachments.ts`）；非图片文件当前没有"上传到工作区"的正式通道。
 - **下载**：`GET /media/:id` 是**一次性 + TTL + 大小上限**的临时媒体口（发完即删，`src/media/server.ts:34`），适合聊天内图片/语音，不适合"产物库"。
 - **浏览**：`agents.files.*` 只管 AGENTS.md/SOUL.md 等 workspace 引导文件（`src/gateway/server-methods/agents.ts:115`），不是通用文件树。
-- **补法（零 fork）**：插件系统允许注册自定义网关方法和 HTTP 路由（`src/plugins/types.ts:245`，`.codex/docs/plugin_system.md`）。写一个 `workspace-files` 插件提供 `files.list/files.stat/files.get`（小文件走 WS base64，大文件发临时 HTTP 下载票据），文件打开复用 `openFileWithinRoot` 的根约束（`src/infra/fs-safe.ts`）防穿越。预估 2~3 天工作量，是整个方案里唯一需要动后端的部分。
+- **补法（零 fork）**：插件系统允许注册自定义网关方法和 HTTP 路由（`src/plugins/types.ts:245`，`.codex/docs/plugin_system.md`）。写一个 `workspace-files` 插件提供 `files.list/files.stat/files.get`（小文件走 WS base64，大文件发临时 HTTP 下载票据），文件打开复用 `openclaw/plugin-sdk` 的 `root(rootDir).open(relativePath)` 根约束防穿越。预估 2~3 天工作量，是整个方案里唯一需要动后端的部分。
 - **富展示**：`hello-ok.canvasHostUrl` + canvas 能力（macOS 侧 `docs/platforms/mac/canvas.md`）说明"agent 写 HTML → 面板渲染"的模式在体系内已有先例，Web 端可后续对齐（iframe 沙箱渲染工作区 HTML 产物）。
 
 ### 2.7 已有的三个"开源协议出口"（重要：都已存在，但都不该当主通道）

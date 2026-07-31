@@ -269,6 +269,19 @@ describe("webui_artifact_publish", () => {
   });
 });
 
+it.skipIf(process.platform === "win32")("publishes a hardlinked workspace file", async () => {
+  const workspace = await makeWorkspace();
+  const source = path.join(workspace, "source.txt");
+  await fs.writeFile(source, "artifact");
+  await fs.link(source, path.join(workspace, "hardlink.txt"));
+  const client = new FakeArtifactTransport();
+
+  await createTool(workspace, client).execute("call_1", { filePath: "hardlink.txt" });
+
+  expect(client.uploaded.toString("utf8")).toBe("artifact");
+  expect(client.completed).toEqual(["artifact_1"]);
+});
+
 describe("artifact upload byte counter", () => {
   it("rejects bytes beyond the declared size", async () => {
     const counted = Readable.from([Buffer.from("ab"), Buffer.from("cd")]).pipe(

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
-import { SafeOpenError, readLocalFileSafely } from "../infra/fs-safe.js";
+import { FsSafeError, root } from "../infra/fs-safe.js";
 import type { SsrFPolicy } from "../infra/net/ssrf.js";
 import { type MediaKind, maxBytesForKind, mediaKindFromMime } from "../media/constants.js";
 import { fetchRemoteMedia } from "../media/fetch.js";
@@ -360,9 +360,16 @@ async function loadWebMediaInternal(
     data = await readFileOverride(mediaUrl);
   } else {
     try {
-      data = (await readLocalFileSafely({ filePath: mediaUrl })).buffer;
+      data = (
+        await (
+          await root(path.dirname(mediaUrl))
+        ).read(path.basename(mediaUrl), {
+          hardlinks: "allow",
+          nonBlockingRead: true,
+        })
+      ).buffer;
     } catch (err) {
-      if (err instanceof SafeOpenError) {
+      if (err instanceof FsSafeError) {
         if (err.code === "not-found") {
           throw new LocalMediaAccessError("not-found", `Local media file not found: ${mediaUrl}`, {
             cause: err,
