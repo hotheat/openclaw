@@ -238,6 +238,7 @@ describe("dispatchReplyFromConfig", () => {
       queuedFinal: false,
       counts: { final: 0, block: 0, tool: 0 },
       handled: true,
+      handledWithoutReplyReason: "messaging_tool",
     });
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
@@ -273,6 +274,7 @@ describe("dispatchReplyFromConfig", () => {
       queuedFinal: false,
       counts: { final: 0, block: 0, tool: 0 },
       handled: true,
+      handledWithoutReplyReason: "silent",
     });
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   });
@@ -310,6 +312,7 @@ describe("dispatchReplyFromConfig", () => {
       queuedFinal: false,
       counts: { final: 0, block: 0, tool: 0 },
       handled: true,
+      handledWithoutReplyReason: "queued",
     });
     expect(onHandledWithoutReply).toHaveBeenCalledWith("queued");
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();

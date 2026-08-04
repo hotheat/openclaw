@@ -2,6 +2,8 @@ import type { ToolLoopDetectionConfig } from "../config/types.tools.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { isPlainObject } from "../utils.js";
+import type { AgentToolMetadata } from "./pi-tools.types.js";
+import { resolveDeclaredToolSideEffect } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 import type { AnyAgentTool } from "./tools/common.js";
 
@@ -10,6 +12,13 @@ export type HookContext = {
   sessionKey?: string;
   runId?: string;
   loopDetection?: ToolLoopDetectionConfig;
+  allowMutatingTools?: boolean;
+  onToolParamsResolved?: (params: {
+    toolCallId?: string;
+    toolName: string;
+    toolParams: unknown;
+    toolMetadata?: AgentToolMetadata;
+  }) => void;
 };
 
 type HookOutcome = { blocked: true; reason: string } | { blocked: false; params: unknown };
@@ -55,9 +64,21 @@ export async function runBeforeToolCallHook(args: {
   params: unknown;
   toolCallId?: string;
   ctx?: HookContext;
+  toolMetadata?: AgentToolMetadata;
 }): Promise<HookOutcome> {
   const toolName = normalizeToolName(args.toolName || "tool");
   const params = args.params;
+
+  if (
+    args.ctx?.allowMutatingTools === false &&
+    resolveDeclaredToolSideEffect(params, args.toolMetadata) !== "read_only"
+  ) {
+    return {
+      blocked: true,
+      reason:
+        "Automatic recovery blocked a mutating tool call because a previous tool outcome is unresolved.",
+    };
+  }
 
   if (args.ctx?.sessionKey) {
     const { getDiagnosticSessionState } = await import("../logging/diagnostic-session-state.js");
@@ -112,9 +133,29 @@ export async function runBeforeToolCallHook(args: {
     recordToolCall(sessionState, toolName, params, args.toolCallId, args.ctx.loopDetection);
   }
 
+  const finalizeParams = (resolvedParams: unknown): HookOutcome => {
+    if (
+      args.ctx?.allowMutatingTools === false &&
+      resolveDeclaredToolSideEffect(resolvedParams, args.toolMetadata) !== "read_only"
+    ) {
+      return {
+        blocked: true,
+        reason:
+          "Automatic recovery blocked a mutating tool call because a previous tool outcome is unresolved.",
+      };
+    }
+    args.ctx?.onToolParamsResolved?.({
+      toolCallId: args.toolCallId,
+      toolName,
+      toolParams: resolvedParams,
+      toolMetadata: args.toolMetadata,
+    });
+    return { blocked: false, params: resolvedParams };
+  };
+
   const hookRunner = getGlobalHookRunner();
   if (!hookRunner?.hasHooks("before_tool_call")) {
-    return { blocked: false, params: args.params };
+    return finalizeParams(params);
   }
 
   try {
@@ -144,16 +185,16 @@ export async function runBeforeToolCallHook(args: {
 
     if (hookResult?.params && isPlainObject(hookResult.params)) {
       if (isPlainObject(params)) {
-        return { blocked: false, params: { ...params, ...hookResult.params } };
+        return finalizeParams({ ...params, ...hookResult.params });
       }
-      return { blocked: false, params: hookResult.params };
+      return finalizeParams(hookResult.params);
     }
   } catch (err) {
     const toolCallId = args.toolCallId ? ` toolCallId=${args.toolCallId}` : "";
     log.warn(`before_tool_call hook failed: tool=${toolName}${toolCallId} error=${String(err)}`);
   }
 
-  return { blocked: false, params };
+  return finalizeParams(params);
 }
 
 export function wrapToolWithBeforeToolCallHook(
@@ -173,6 +214,7 @@ export function wrapToolWithBeforeToolCallHook(
         params,
         toolCallId,
         ctx,
+        toolMetadata: tool,
       });
       if (outcome.blocked) {
         throw new Error(outcome.reason);

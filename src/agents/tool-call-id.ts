@@ -9,6 +9,7 @@ const TOOL_CALL_TYPES = new Set(["toolCall", "toolUse", "functionCall"]);
 export type ToolCallLike = {
   id: string;
   name?: string;
+  arguments?: unknown;
 };
 
 /**
@@ -54,7 +55,13 @@ export function extractToolCallsFromAssistant(
     if (!block || typeof block !== "object") {
       continue;
     }
-    const rec = block as { type?: unknown; id?: unknown; name?: unknown };
+    const rec = block as {
+      type?: unknown;
+      id?: unknown;
+      name?: unknown;
+      input?: unknown;
+      arguments?: unknown;
+    };
     if (typeof rec.id !== "string" || !rec.id) {
       continue;
     }
@@ -62,6 +69,7 @@ export function extractToolCallsFromAssistant(
       toolCalls.push({
         id: rec.id,
         name: typeof rec.name === "string" ? rec.name : undefined,
+        arguments: rec.arguments ?? rec.input,
       });
     }
   }

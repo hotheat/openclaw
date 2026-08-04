@@ -6,7 +6,9 @@ import type { PluginHookBeforeAgentStartResult } from "../../../plugins/types.js
 import type { ContextWindowSource } from "../../context-window-guard.js";
 import type { MessagingToolSend } from "../../pi-embedded-messaging.js";
 import type { AuthStorage, ModelRegistry } from "../../pi-model-discovery.js";
+import type { PendingToolCall } from "../../session-tool-result-guard.js";
 import type { NormalizedUsage } from "../../usage.js";
+import type { ToolWaitStatus } from "../wait-for-idle-before-flush.js";
 import type { RunEmbeddedPiAgentParams } from "./params.js";
 
 type EmbeddedRunAttemptBase = Omit<
@@ -25,7 +27,20 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   thinkLevel: ThinkLevel;
   legacyBeforeAgentStartResult?: PluginHookBeforeAgentStartResult;
   suppressLifecycleTerminal?: boolean;
+  /** Restrict automatic recovery attempts to read-only tool calls. */
+  recoveryToolPolicy?: "normal" | "read_only";
 };
+
+export type EmbeddedRunAttemptTermination =
+  | { kind: "completed" }
+  | {
+      kind: "incomplete_tool_loop";
+      cause: "awaiting_final_response" | "missing_tool_results";
+      lastStopReason?: string;
+      unresolvedToolCalls: PendingToolCall[];
+      syntheticToolResultsWritten: boolean;
+      toolWaitStatus: ToolWaitStatus;
+    };
 
 export type EmbeddedRunAttemptResult = {
   aborted: boolean;
@@ -40,6 +55,7 @@ export type EmbeddedRunAttemptResult = {
   toolMetas: Array<{ toolName: string; meta?: string }>;
   lastAssistant: AssistantMessage | undefined;
   assistantErrors: AssistantMessage[];
+  termination: EmbeddedRunAttemptTermination;
   lastToolError?: {
     toolName: string;
     meta?: string;
@@ -48,6 +64,7 @@ export type EmbeddedRunAttemptResult = {
     actionFingerprint?: string;
   };
   didSendViaMessagingTool: boolean;
+  didDeliverUserFacingToolResult: boolean;
   messagingToolSentTexts: string[];
   messagingToolSentMediaUrls: string[];
   messagingToolSentTargets: MessagingToolSend[];

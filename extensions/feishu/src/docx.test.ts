@@ -106,6 +106,14 @@ describe("feishu_doc image fetch hardening", () => {
       .map((call) => call[0])
       .find((tool) => tool.name === "feishu_doc");
     expect(feishuDocTool).toBeDefined();
+    expect(feishuDocTool).toMatchObject({
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        read: "read_only",
+        list_blocks: "read_only",
+        get_block: "read_only",
+      },
+    });
 
     const result = await feishuDocTool.execute("tool-call", {
       action: "write",

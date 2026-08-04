@@ -336,6 +336,8 @@ export function createWebuiArtifactTool(options: ArtifactToolOptions) {
   return {
     name: "webui_artifact_publish",
     label: "Publish WebUI Artifact",
+    sideEffect: "mutating" as const,
+    deliveryEffect: "user_facing" as const,
     description:
       "Publish a file from the current workspace to the current authenticated WebUI session. Use this for browser file delivery; use message only for explicit external channel targets such as Feishu.",
     parameters: Type.Object(

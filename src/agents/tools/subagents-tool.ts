@@ -343,6 +343,10 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
   return {
     label: "Subagents",
     name: "subagents",
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      list: "read_only",
+    },
     description:
       "List, kill, or steer spawned sub-agents for this requester session. Use this for sub-agent orchestration.",
     parameters: SubagentsToolSchema,

@@ -90,6 +90,24 @@ describe("resolvePluginTools optional tools", () => {
     });
 
     expect(tools.map((tool) => tool.name)).toEqual(["optional_tool"]);
+    expect(tools[0]?.sideEffect).toBe("mutating");
+  });
+
+  it("preserves an explicit plugin side-effect declaration", () => {
+    setRegistry([
+      {
+        pluginId: "optional-demo",
+        optional: false,
+        source: "/tmp/optional-demo.js",
+        factory: () => ({ ...makeTool("readonly_tool"), sideEffect: "read_only" }),
+      },
+    ]);
+
+    const tools = resolvePluginTools({
+      context: createContext() as never,
+    });
+
+    expect(tools[0]?.sideEffect).toBe("read_only");
   });
 
   it("allows optional tools via plugin-scoped allowlist entries", () => {

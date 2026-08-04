@@ -309,6 +309,7 @@ const memoryPlugin = {
         label: "Memory Recall",
         description:
           "Search through long-term memories. Use when you need context about user preferences, past decisions, or previously discussed topics.",
+        sideEffect: "read_only",
         parameters: Type.Object({
           query: Type.String({ description: "Search query" }),
           limit: Type.Optional(Type.Number({ description: "Max results (default: 5)" })),
@@ -357,6 +358,7 @@ const memoryPlugin = {
         label: "Memory Store",
         description:
           "Save important information in long-term memory. Use for preferences, facts, decisions.",
+        sideEffect: "mutating",
         parameters: Type.Object({
           text: Type.String({ description: "Information to remember" }),
           importance: Type.Optional(Type.Number({ description: "Importance 0-1 (default: 0.7)" })),
@@ -419,6 +421,7 @@ const memoryPlugin = {
         name: "memory_forget",
         label: "Memory Forget",
         description: "Delete specific memories. GDPR-compliant.",
+        sideEffect: "mutating",
         parameters: Type.Object({
           query: Type.Optional(Type.String({ description: "Search to find memory" })),
           memoryId: Type.Optional(Type.String({ description: "Specific memory ID" })),

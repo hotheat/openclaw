@@ -21,8 +21,10 @@ function makeAttemptResult(
     toolMetas: [],
     lastAssistant: undefined,
     assistantErrors: [],
+    termination: { kind: "completed" },
     lastToolError: undefined,
     didSendViaMessagingTool: false,
+    didDeliverUserFacingToolResult: false,
     messagingToolSentTexts: [],
     messagingToolSentMediaUrls: [],
     messagingToolSentTargets: [],
@@ -54,6 +56,102 @@ describe("run completion assessment", () => {
     );
 
     expect(assessment.classification).toBe("completed");
+  });
+
+  it("returns completed after a user-facing tool delivery without assistant follow-up", () => {
+    const assessment = assessRunCompletion(
+      makeAttemptResult({
+        didDeliverUserFacingToolResult: true,
+        termination: {
+          kind: "incomplete_tool_loop",
+          cause: "awaiting_final_response",
+          lastStopReason: "toolUse",
+          unresolvedToolCalls: [],
+          syntheticToolResultsWritten: false,
+          toolWaitStatus: "idle",
+        },
+      }),
+    );
+
+    expect(assessment.classification).toBe("completed");
+  });
+
+  it("returns incomplete_tool_loop even when progress text exists", () => {
+    const assessment = assessRunCompletion(
+      makeAttemptResult({
+        assistantTexts: ["我会继续整理这些结果。"],
+        termination: {
+          kind: "incomplete_tool_loop",
+          cause: "awaiting_final_response",
+          lastStopReason: "toolUse",
+          unresolvedToolCalls: [],
+          syntheticToolResultsWritten: false,
+          toolWaitStatus: "idle",
+        },
+      }),
+    );
+
+    expect(assessment).toMatchObject({
+      classification: "incomplete_tool_loop",
+      recoveryAction: "retry_same_step",
+      toolPolicy: "disabled",
+    });
+  });
+
+  it("disables recovery when read-only tool execution does not settle", () => {
+    const assessment = assessRunCompletion(
+      makeAttemptResult({
+        termination: {
+          kind: "incomplete_tool_loop",
+          cause: "missing_tool_results",
+          lastStopReason: "toolUse",
+          unresolvedToolCalls: [
+            {
+              toolCallId: "call-fetch",
+              toolName: "web_fetch",
+              mutatingAction: false,
+            },
+          ],
+          syntheticToolResultsWritten: true,
+          toolWaitStatus: "timeout",
+        },
+      }),
+    );
+
+    expect(assessment).toMatchObject({
+      classification: "incomplete_tool_loop",
+      recoveryAction: "finalize_partial",
+      toolPolicy: "disabled",
+      reason: "tool execution did not settle after timeout",
+    });
+  });
+
+  it("disables tools when a mutating tool result is missing", () => {
+    const assessment = assessRunCompletion(
+      makeAttemptResult({
+        termination: {
+          kind: "incomplete_tool_loop",
+          cause: "missing_tool_results",
+          lastStopReason: "toolUse",
+          unresolvedToolCalls: [
+            {
+              toolCallId: "call-send",
+              toolName: "message",
+              mutatingAction: true,
+              actionFingerprint: "tool=message|action=send|to=chat",
+            },
+          ],
+          syntheticToolResultsWritten: true,
+          toolWaitStatus: "timeout",
+        },
+      }),
+    );
+
+    expect(assessment).toMatchObject({
+      classification: "incomplete_tool_loop",
+      recoveryAction: "finalize_partial",
+      toolPolicy: "disabled",
+    });
   });
 
   it("returns empty_result when no user-facing reply exists", () => {
@@ -124,6 +222,7 @@ describe("run completion assessment", () => {
       assessment: {
         classification: "failed_but_incomplete",
         recoveryAction: "switch_strategy",
+        toolPolicy: "normal",
         reason: "tool failed and assistant only promised follow-up work",
       },
       attempt: makeAttemptResult({

@@ -43,6 +43,166 @@ describe("before_tool_call loop detection behavior", () => {
     hookRunner.hasHooks.mockReturnValue(false);
   });
 
+  it("blocks mutating tools during read-only recovery", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const tool = wrapToolWithBeforeToolCallHook(
+      { name: "message", execute } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+      },
+    );
+
+    await expect(
+      tool.execute(
+        "send-1",
+        { action: "send", to: "feishu:oc_1", content: "hello" },
+        undefined,
+        undefined,
+      ),
+    ).rejects.toThrow("Automatic recovery blocked a mutating tool call");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("allows read-only tools during read-only recovery", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const tool = wrapToolWithBeforeToolCallHook(
+      { name: "read", sideEffect: "read_only", execute } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+      },
+    );
+
+    await expect(
+      tool.execute("read-1", { path: "/tmp/report.txt" }, undefined, undefined),
+    ).resolves.toEqual({ content: [] });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks undeclared tools during read-only recovery", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const tool = wrapToolWithBeforeToolCallHook(
+      { name: "unknown_core_tool", execute } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+      },
+    );
+
+    await expect(
+      tool.execute("unknown-1", { action: "inspect" }, undefined, undefined),
+    ).rejects.toThrow("Automatic recovery blocked a mutating tool call");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("blocks tools whose metadata declares a mutating side effect", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const tool = wrapToolWithBeforeToolCallHook(
+      {
+        name: "webui_artifact_publish",
+        sideEffect: "mutating",
+        execute,
+      } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+      },
+    );
+
+    await expect(
+      tool.execute("artifact-1", { filePath: "report.pdf" }, undefined, undefined),
+    ).rejects.toThrow("Automatic recovery blocked a mutating tool call");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("allows only declared read-only actions for mixed-effect tools during recovery", async () => {
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const tool = wrapToolWithBeforeToolCallHook(
+      {
+        name: "feishu_doc",
+        sideEffect: "mutating",
+        sideEffectByAction: {
+          read: "read_only",
+        },
+        execute,
+      } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+      },
+    );
+
+    await expect(
+      tool.execute("doc-read-1", { action: "read", doc_token: "doc_1" }, undefined, undefined),
+    ).resolves.toEqual({ content: [] });
+    await expect(
+      tool.execute(
+        "doc-write-1",
+        { action: "write", doc_token: "doc_1", content: "updated" },
+        undefined,
+        undefined,
+      ),
+    ).rejects.toThrow("Automatic recovery blocked a mutating tool call");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("blocks a hook that changes a read-only call into a mutating action", async () => {
+    hookRunner.hasHooks.mockReturnValue(true);
+    hookRunner.runBeforeToolCall.mockResolvedValue({
+      params: { action: "send", to: "feishu:oc_1", content: "hello" },
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const onToolParamsResolved = vi.fn();
+    const tool = wrapToolWithBeforeToolCallHook(
+      {
+        name: "message",
+        sideEffect: "mutating",
+        sideEffectByAction: {
+          list: "read_only",
+        },
+        execute,
+      } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        allowMutatingTools: false,
+        onToolParamsResolved,
+      },
+    );
+
+    await expect(
+      tool.execute("message-1", { action: "list" }, undefined, undefined),
+    ).rejects.toThrow("Automatic recovery blocked a mutating tool call");
+    expect(execute).not.toHaveBeenCalled();
+    expect(onToolParamsResolved).not.toHaveBeenCalled();
+  });
+
+  it("reports hook-adjusted parameters before executing the tool", async () => {
+    hookRunner.hasHooks.mockReturnValue(true);
+    hookRunner.runBeforeToolCall.mockResolvedValue({ params: { mode: "safe" } });
+    const execute = vi.fn().mockResolvedValue({ content: [] });
+    const onToolParamsResolved = vi.fn();
+    const tool = wrapToolWithBeforeToolCallHook(
+      { name: "exec", execute } as unknown as AnyAgentTool,
+      {
+        ...enabledLoopDetectionContext,
+        onToolParamsResolved,
+      },
+    );
+
+    await tool.execute("exec-1", { cmd: "ls" }, undefined, undefined);
+
+    expect(onToolParamsResolved).toHaveBeenCalledWith({
+      toolCallId: "exec-1",
+      toolName: "exec",
+      toolParams: { cmd: "ls", mode: "safe" },
+      toolMetadata: expect.objectContaining({ name: "exec" }),
+    });
+    expect(onToolParamsResolved.mock.invocationCallOrder[0]).toBeLessThan(
+      execute.mock.invocationCallOrder[0],
+    );
+  });
+
   function createWrappedTool(
     name: string,
     execute: ReturnType<typeof vi.fn>,

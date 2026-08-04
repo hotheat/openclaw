@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { HookRunner } from "../plugins/hooks.js";
 import type { BlockReplyChunking } from "./pi-embedded-block-chunker.js";
 import type { BlockReplyPayload } from "./pi-embedded-payloads.js";
+import type { AgentToolMetadata } from "./pi-tools.types.js";
 
 export type ToolResultFormat = "markdown" | "plain";
 
@@ -33,6 +34,7 @@ export type SubscribeEmbeddedPiSessionParams = {
   enforceFinalTag?: boolean;
   config?: OpenClawConfig;
   sessionKey?: string;
+  toolMetadataByName?: ReadonlyMap<string, AgentToolMetadata>;
 };
 
 export type { BlockReplyChunking } from "./pi-embedded-block-chunker.js";

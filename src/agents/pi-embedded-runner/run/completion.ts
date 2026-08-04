@@ -3,6 +3,7 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 export type RunCompletionClass =
   | "completed"
   | "tool_calls"
+  | "incomplete_tool_loop"
   | "empty_result"
   | "non_terminal_text"
   | "failed_but_incomplete";
@@ -13,9 +14,12 @@ export type RunCompletionRecoveryAction =
   | "switch_strategy"
   | "finalize_partial";
 
+export type RunCompletionToolPolicy = "normal" | "read_only" | "disabled";
+
 export type RunCompletionAssessment = {
   classification: RunCompletionClass;
   recoveryAction: RunCompletionRecoveryAction;
+  toolPolicy: RunCompletionToolPolicy;
   reason: string;
 };
 
@@ -33,8 +37,12 @@ function normalizeText(text: string | undefined): string {
   return typeof text === "string" ? text.trim() : "";
 }
 
+function hasUserFacingToolDelivery(attempt: EmbeddedRunAttemptResult): boolean {
+  return attempt.didSendViaMessagingTool || attempt.didDeliverUserFacingToolResult;
+}
+
 function hasUserFacingReply(attempt: EmbeddedRunAttemptResult): boolean {
-  if (attempt.didSendViaMessagingTool) {
+  if (hasUserFacingToolDelivery(attempt)) {
     return true;
   }
   return attempt.assistantTexts.some((text) => normalizeText(text).length > 0);
@@ -91,6 +99,38 @@ export function buildCompletionContinuationPrompt(params: {
     lines.push(
       "Either switch strategy and continue, or provide a partial/failure handoff with concrete findings and the blocker.",
     );
+  } else if (params.assessment.classification === "incomplete_tool_loop") {
+    const termination =
+      params.attempt.termination.kind === "incomplete_tool_loop"
+        ? params.attempt.termination
+        : undefined;
+    const unresolvedNames = termination?.unresolvedToolCalls
+      .map((call) => call.toolName)
+      .filter(Boolean);
+    if (termination?.cause === "missing_tool_results") {
+      lines.push(
+        `Some tool calls ended without results${
+          unresolvedNames?.length ? `: ${unresolvedNames.join(", ")}` : ""
+        }.`,
+      );
+      if (params.assessment.toolPolicy === "read_only") {
+        lines.push(
+          "Synthetic error results were recorded. Retry only read-only work or switch to another read-only strategy.",
+        );
+      } else {
+        lines.push(
+          "A mutating tool may have executed with an unknown outcome. Do not repeat any write, send, delete, or command action.",
+        );
+        lines.push("Use existing results and return a concise partial or failure handoff.");
+      }
+    } else {
+      lines.push(
+        "All requested tool results are already present, but no final answer was produced.",
+      );
+      lines.push(
+        "Use the existing tool results and return the final answer without calling tools.",
+      );
+    }
   } else if (params.assessment.classification === "empty_result") {
     lines.push("Your previous turn ended without a user-facing result.");
     lines.push("Continue immediately and return the actual result in this turn.");
@@ -115,7 +155,48 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
     return {
       classification: "tool_calls",
       recoveryAction: "none",
+      toolPolicy: "normal",
       reason: "client tool call pending",
+    };
+  }
+
+  if (attempt.termination.kind === "incomplete_tool_loop") {
+    if (
+      attempt.termination.cause === "awaiting_final_response" &&
+      hasUserFacingToolDelivery(attempt)
+    ) {
+      return {
+        classification: "completed",
+        recoveryAction: "none",
+        toolPolicy: "normal",
+        reason: "user-facing tool delivery completed without an assistant follow-up",
+      };
+    }
+    const hasUnresolvedMutation = attempt.termination.unresolvedToolCalls.some(
+      (call) => call.mutatingAction,
+    );
+    const awaitingFinal = attempt.termination.cause === "awaiting_final_response";
+    const toolExecutionUnsettled =
+      attempt.termination.toolWaitStatus === "timeout" ||
+      attempt.termination.toolWaitStatus === "error";
+    return {
+      classification: "incomplete_tool_loop",
+      recoveryAction: toolExecutionUnsettled
+        ? "finalize_partial"
+        : awaitingFinal
+          ? "retry_same_step"
+          : hasUnresolvedMutation
+            ? "finalize_partial"
+            : "switch_strategy",
+      toolPolicy:
+        awaitingFinal || toolExecutionUnsettled || hasUnresolvedMutation ? "disabled" : "read_only",
+      reason: toolExecutionUnsettled
+        ? `tool execution did not settle after ${attempt.termination.toolWaitStatus}`
+        : awaitingFinal
+          ? "tool results completed but the assistant did not produce a final response"
+          : hasUnresolvedMutation
+            ? "mutating tool calls ended without results"
+            : "read-only tool calls ended without results",
     };
   }
 
@@ -126,6 +207,7 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
     return {
       classification: "failed_but_incomplete",
       recoveryAction: "switch_strategy",
+      toolPolicy: "normal",
       reason: "tool failed without any user-facing result",
     };
   }
@@ -134,6 +216,7 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
     return {
       classification: "empty_result",
       recoveryAction: "retry_same_step",
+      toolPolicy: "normal",
       reason: "assistant produced no user-facing result",
     };
   }
@@ -142,6 +225,7 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
     return {
       classification: "failed_but_incomplete",
       recoveryAction: "switch_strategy",
+      toolPolicy: "normal",
       reason: "tool failed and assistant only promised follow-up work",
     };
   }
@@ -150,6 +234,7 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
     return {
       classification: "non_terminal_text",
       recoveryAction: "retry_same_step",
+      toolPolicy: "normal",
       reason: "assistant reply looked like progress text, not a completed result",
     };
   }
@@ -157,6 +242,7 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
   return {
     classification: "completed",
     recoveryAction: "none",
+    toolPolicy: "normal",
     reason: hasReply ? "assistant produced a user-facing result" : "no completion contract trigger",
   };
 }

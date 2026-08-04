@@ -83,6 +83,42 @@ Enable optional tools in `agents.list[].tools.allow` (or global `tools.allow`):
 }
 ```
 
+## Side effects and user-facing delivery
+
+Declare whether a tool is safe to run during automatic read-only recovery:
+
+```ts
+api.registerTool({
+  name: "records",
+  description: "Read or update records",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["get", "update"] },
+    },
+    required: ["action"],
+  },
+  sideEffect: "mutating",
+  sideEffectByAction: {
+    get: "read_only",
+  },
+  async execute(_id, params) {
+    // ...
+  },
+});
+```
+
+- `sideEffect` sets the default to `read_only` or `mutating`.
+- `sideEffectByAction` overrides that default for a normalized `action` value. Action names
+  are trimmed, lowercased, and normalize spaces and hyphens to underscores.
+- Plugin tools without a `sideEffect` declaration default to `mutating`.
+- Only declare `read_only` when a call is safe to repeat after an unresolved tool outcome.
+
+Set `deliveryEffect: "user_facing"` only when a successful tool result confirms that the
+tool itself delivered the result to the current user. Successful user-facing delivery can
+satisfy run completion without a separate assistant reply. Generating data for later delivery
+does not qualify.
+
 Other config knobs that affect tool availability:
 
 - Allowlists that only name plugin tools are treated as plugin opt-ins; core tools remain

@@ -73,6 +73,11 @@ export function createGatewayTool(opts?: {
     label: "Gateway",
     name: "gateway",
     ownerOnly: true,
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      "config.get": "read_only",
+      "config.schema": "read_only",
+    },
     description:
       "Restart, apply config, or update the gateway in-place (SIGUSR1). Use config.patch for safe partial config updates (merges with existing). Use config.apply only when replacing entire config. Both trigger restart after writing. Always pass a human-readable completion message via the `note` parameter so the system can deliver it to the user after restart.",
     parameters: GatewayToolSchema,

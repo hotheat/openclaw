@@ -1,3 +1,5 @@
+import type { AgentToolMetadata } from "./pi-tools.types.js";
+
 const MUTATING_TOOL_NAMES = new Set([
   "write",
   "edit",
@@ -45,6 +47,8 @@ const MESSAGE_MUTATING_ACTIONS = new Set([
   "unpin",
 ]);
 
+const MESSAGE_DELIVERY_ACTIONS = new Set(["send", "reply", "thread_reply", "threadreply"]);
+
 export type ToolMutationState = {
   mutatingAction: boolean;
   actionFingerprint?: string;
@@ -71,6 +75,16 @@ function normalizeActionName(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
+export function resolveDeclaredToolSideEffect(
+  args: unknown,
+  toolMetadata?: AgentToolMetadata,
+): AgentToolMetadata["sideEffect"] {
+  const record = asRecord(args);
+  const action = normalizeActionName(record?.action);
+  const actionSideEffect = action ? toolMetadata?.sideEffectByAction?.[action] : undefined;
+  return actionSideEffect ?? toolMetadata?.sideEffect;
+}
+
 function normalizeFingerprintValue(value: unknown): string | undefined {
   if (typeof value === "string") {
     const normalized = value.trim();
@@ -80,6 +94,34 @@ function normalizeFingerprintValue(value: unknown): string | undefined {
     return String(value).toLowerCase();
   }
   return undefined;
+}
+
+function hasPayloadValue(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  return value != null && typeof value === "object";
+}
+
+function buildMessageDeliveryFingerprint(
+  record: Record<string, unknown> | undefined,
+  action: string,
+): string {
+  const parts = ["tool=message", `action=${action}`];
+  for (const key of ["channel", "accountId", "to", "target", "replyTo", "threadId", "messageId"]) {
+    const value = normalizeFingerprintValue(record?.[key]);
+    if (value) {
+      parts.push(`${key.toLowerCase()}=${value}`);
+    }
+  }
+  const hasMedia = ["filePath", "media", "mediaUrl", "mediaUrls", "attachments"].some((key) =>
+    hasPayloadValue(record?.[key]),
+  );
+  parts.push(`delivery=${hasMedia ? "media" : "text"}`);
+  return parts.join("|");
 }
 
 export function isLikelyMutatingToolName(toolName: string): boolean {
@@ -95,10 +137,22 @@ export function isLikelyMutatingToolName(toolName: string): boolean {
   );
 }
 
-export function isMutatingToolCall(toolName: string, args: unknown): boolean {
+export function isMutatingToolCall(
+  toolName: string,
+  args: unknown,
+  toolMetadata?: AgentToolMetadata,
+): boolean {
   const normalized = toolName.trim().toLowerCase();
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
+  const declaredSideEffect = resolveDeclaredToolSideEffect(args, toolMetadata);
+
+  if (declaredSideEffect === "mutating") {
+    return true;
+  }
+  if (declaredSideEffect === "read_only") {
+    return false;
+  }
 
   switch (normalized) {
     case "write":
@@ -140,13 +194,17 @@ export function buildToolActionFingerprint(
   toolName: string,
   args: unknown,
   meta?: string,
+  toolMetadata?: AgentToolMetadata,
 ): string | undefined {
-  if (!isMutatingToolCall(toolName, args)) {
+  if (!isMutatingToolCall(toolName, args, toolMetadata)) {
     return undefined;
   }
   const normalizedTool = toolName.trim().toLowerCase();
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
+  if (normalizedTool === "message" && action && MESSAGE_DELIVERY_ACTIONS.has(action)) {
+    return buildMessageDeliveryFingerprint(record, action);
+  }
   const parts = [`tool=${normalizedTool}`];
   if (action) {
     parts.push(`action=${action}`);
@@ -185,8 +243,9 @@ export function buildToolMutationState(
   toolName: string,
   args: unknown,
   meta?: string,
+  toolMetadata?: AgentToolMetadata,
 ): ToolMutationState {
-  const actionFingerprint = buildToolActionFingerprint(toolName, args, meta);
+  const actionFingerprint = buildToolActionFingerprint(toolName, args, meta, toolMetadata);
   return {
     mutatingAction: actionFingerprint != null,
     actionFingerprint,

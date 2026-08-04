@@ -284,6 +284,9 @@ describeLive("memory plugin live tests", () => {
     const storeTool = registeredTools.find((t) => t.opts?.name === "memory_store")?.tool;
     const recallTool = registeredTools.find((t) => t.opts?.name === "memory_recall")?.tool;
     const forgetTool = registeredTools.find((t) => t.opts?.name === "memory_forget")?.tool;
+    expect(storeTool.sideEffect).toBe("mutating");
+    expect(recallTool.sideEffect).toBe("read_only");
+    expect(forgetTool.sideEffect).toBe("mutating");
 
     // Test store
     const storeResult = await storeTool.execute("test-call-1", {

@@ -154,6 +154,7 @@ export function createTaskFlowUpdateTool(options: TaskFlowToolOptions): AnyAgent
   return {
     label: "TaskFlow",
     name: "taskflow_update",
+    sideEffect: "mutating",
     description:
       "Create or update the persistent TaskFlow for multi-step work. Use expectedRevision; on revision_conflict call taskflow_read, merge, then retry.",
     parameters: TaskFlowUpdateToolSchema,

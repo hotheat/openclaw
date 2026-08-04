@@ -41,8 +41,15 @@ export type EmbeddedPiRunMeta = {
       | "compaction_failure"
       | "role_ordering"
       | "image_size"
-      | "retry_limit";
+      | "retry_limit"
+      | "completion_contract"
+      | "incomplete_tool_loop";
     message: string;
+    unresolvedTools?: Array<{
+      toolCallId: string;
+      toolName: string;
+      mutatingAction: boolean;
+    }>;
   };
   /** Stop reason for the agent run (e.g., "completed", "tool_calls"). */
   stopReason?: string;
@@ -66,6 +73,8 @@ export type EmbeddedPiRunResult = {
   // True if a messaging tool (telegram, whatsapp, discord, slack, sessions_send)
   // successfully sent a message. Used to suppress agent's confirmation text.
   didSendViaMessagingTool?: boolean;
+  // True when a successful tool result was itself delivered to the user.
+  didDeliverUserFacingToolResult?: boolean;
   // Texts successfully sent via messaging tools during the run.
   messagingToolSentTexts?: string[];
   // Media URLs successfully sent via messaging tools during the run.

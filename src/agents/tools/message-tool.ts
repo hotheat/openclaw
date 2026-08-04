@@ -295,6 +295,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
   return {
     label: "Message",
     name: "message",
+    sideEffect: "mutating",
     description,
     parameters: schema,
     execute: async (_toolCallId, args, signal) => {

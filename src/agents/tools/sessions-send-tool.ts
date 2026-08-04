@@ -41,6 +41,7 @@ export function createSessionsSendTool(opts?: {
   return {
     label: "Session Send",
     name: "sessions_send",
+    sideEffect: "mutating",
     description:
       "Send a message into another session. Use sessionKey or label to identify the target.",
     parameters: SessionsSendToolSchema,

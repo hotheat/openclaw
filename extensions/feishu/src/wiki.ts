@@ -183,6 +183,13 @@ export function registerFeishuWikiTools(api: OpenClawPluginApi) {
       label: "Feishu Wiki",
       description:
         "Feishu knowledge base operations. Actions: spaces, nodes, get, create, move, rename",
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        spaces: "read_only",
+        nodes: "read_only",
+        get: "read_only",
+        search: "read_only",
+      },
       parameters: FeishuWikiSchema,
       async execute(_toolCallId, params) {
         const p = params as FeishuWikiParams;

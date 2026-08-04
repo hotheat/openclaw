@@ -1117,10 +1117,10 @@ export async function handleFeishuMessage(params: {
 
       if (
         !queuedFinal &&
-        !dispatchResult.handled &&
         (counts.final ?? 0) === 0 &&
         (counts.block ?? 0) === 0 &&
-        (counts.tool ?? 0) === 0
+        (!dispatchResult.handled ||
+          ((counts.tool ?? 0) > 0 && !dispatchResult.handledWithoutReplyReason))
       ) {
         const queuedFallback = dispatcher.sendFinalReply({
           text: "模型执行中断，请重试。",

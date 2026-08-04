@@ -44,6 +44,54 @@ describe("tool mutation helpers", () => {
     expect(buildToolMutationState("browser", { action: "list" }).mutatingAction).toBe(false);
   });
 
+  it("matches message media retries when only the local file path changes", () => {
+    const failed = buildToolActionFingerprint("message", {
+      action: "send",
+      channel: "feishu",
+      target: "oc_test",
+      filePath: "/tmp/report.html",
+    });
+    const recovered = buildToolActionFingerprint("message", {
+      action: "send",
+      channel: "feishu",
+      target: "oc_test",
+      filePath: "/workspace/.outbox/report.html",
+    });
+    const otherTarget = buildToolActionFingerprint("message", {
+      action: "send",
+      channel: "feishu",
+      target: "oc_other",
+      filePath: "/workspace/.outbox/report.html",
+    });
+    const textOnly = buildToolActionFingerprint("message", {
+      action: "send",
+      channel: "feishu",
+      target: "oc_test",
+      message: "report delivered",
+    });
+
+    expect(failed).toBe(recovered);
+    expect(failed).toContain("delivery=media");
+    expect(failed).not.toContain("filepath=");
+    expect(otherTarget).not.toBe(failed);
+    expect(textOnly).not.toBe(failed);
+  });
+
+  it("uses action-level metadata before the tool default", () => {
+    const metadata = {
+      sideEffect: "mutating" as const,
+      sideEffectByAction: {
+        read: "read_only" as const,
+        list_blocks: "read_only" as const,
+      },
+    };
+
+    expect(isMutatingToolCall("feishu_doc", { action: "read" }, metadata)).toBe(false);
+    expect(isMutatingToolCall("feishu_doc", { action: "list-blocks" }, metadata)).toBe(false);
+    expect(isMutatingToolCall("feishu_doc", { action: "write" }, metadata)).toBe(true);
+    expect(isMutatingToolCall("feishu_doc", { action: "unknown" }, metadata)).toBe(true);
+  });
+
   it("matches tool actions by fingerprint and fails closed on asymmetric data", () => {
     expect(
       isSameToolMutationAction(

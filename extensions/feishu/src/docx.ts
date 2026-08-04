@@ -471,6 +471,12 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
         label: "Feishu Doc",
         description:
           "Feishu document operations. Actions: read, write, append, create, list_blocks, get_block, update_block, delete_block",
+        sideEffect: "mutating",
+        sideEffectByAction: {
+          read: "read_only",
+          list_blocks: "read_only",
+          get_block: "read_only",
+        },
         parameters: FeishuDocSchema,
         async execute(_toolCallId, params) {
           const p = params as FeishuDocParams;
@@ -515,6 +521,7 @@ export function registerFeishuDocTools(api: OpenClawPluginApi) {
         label: "Feishu App Scopes",
         description:
           "List current app permissions (scopes). Use to debug permission issues or check available capabilities.",
+        sideEffect: "read_only",
         parameters: Type.Object({}),
         async execute() {
           try {

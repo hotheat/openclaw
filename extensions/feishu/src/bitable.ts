@@ -547,6 +547,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       label: "Feishu Bitable Get Meta",
       description:
         "Parse a Bitable URL and get app_token, table_id, and table list. Use this first when given a /wiki/ or /base/ URL.",
+      sideEffect: "read_only",
       parameters: GetMetaSchema,
       async execute(_toolCallId, params) {
         const { url } = params as { url: string };
@@ -567,6 +568,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_list_fields",
       label: "Feishu Bitable List Fields",
       description: "List all fields (columns) in a Bitable table with their types and properties",
+      sideEffect: "read_only",
       parameters: ListFieldsSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id } = params as { app_token: string; table_id: string };
@@ -587,6 +589,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_list_records",
       label: "Feishu Bitable List Records",
       description: "List records (rows) from a Bitable table with pagination support",
+      sideEffect: "read_only",
       parameters: ListRecordsSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id, page_size, page_token } = params as {
@@ -612,6 +615,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_get_record",
       label: "Feishu Bitable Get Record",
       description: "Get a single record by ID from a Bitable table",
+      sideEffect: "read_only",
       parameters: GetRecordSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id, record_id } = params as {
@@ -636,6 +640,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_create_record",
       label: "Feishu Bitable Create Record",
       description: "Create a new record (row) in a Bitable table",
+      sideEffect: "mutating",
       parameters: CreateRecordSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id, fields } = params as {
@@ -660,6 +665,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_update_record",
       label: "Feishu Bitable Update Record",
       description: "Update an existing record (row) in a Bitable table",
+      sideEffect: "mutating",
       parameters: UpdateRecordSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id, record_id, fields } = params as {
@@ -685,6 +691,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_create_app",
       label: "Feishu Bitable Create App",
       description: "Create a new Bitable (multidimensional table) application",
+      sideEffect: "mutating",
       parameters: CreateAppSchema,
       async execute(_toolCallId, params) {
         const { name, folder_token } = params as { name: string; folder_token?: string };
@@ -708,6 +715,7 @@ export function registerFeishuBitableTools(api: OpenClawPluginApi) {
       name: "feishu_bitable_create_field",
       label: "Feishu Bitable Create Field",
       description: "Create a new field (column) in a Bitable table",
+      sideEffect: "mutating",
       parameters: CreateFieldSchema,
       async execute(_toolCallId, params) {
         const { app_token, table_id, field_name, field_type, property } = params as {

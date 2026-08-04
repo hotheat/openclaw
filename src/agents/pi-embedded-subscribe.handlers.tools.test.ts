@@ -55,6 +55,7 @@ function createTestContext(): {
       messagingToolSentMediaUrls: [],
       messagingToolSentTargets: [],
       successfulCronAdds: 0,
+      successfulUserFacingDeliveries: 0,
     },
     shouldEmitToolResult: () => false,
     shouldEmitToolOutput: () => false,
@@ -374,6 +375,54 @@ describe("handleToolExecutionEnd cron.add commitment tracking", () => {
   });
 });
 
+describe("handleToolExecutionEnd user-facing delivery tracking", () => {
+  it("tracks successful tools declared as user-facing deliveries", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.toolMetadataByName = new Map([
+      ["webui_artifact_publish", { sideEffect: "mutating", deliveryEffect: "user_facing" }],
+    ]);
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "webui_artifact_publish",
+      toolCallId: "tool-artifact-1",
+      args: { filePath: "report.pdf" },
+    } as ToolExecutionStartEvent);
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "webui_artifact_publish",
+      toolCallId: "tool-artifact-1",
+      isError: false,
+      result: { details: { artifactId: "artifact-1" } },
+    } as ToolExecutionEndEvent);
+
+    expect(ctx.state.successfulUserFacingDeliveries).toBe(1);
+  });
+
+  it("does not track failed user-facing delivery tools", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.toolMetadataByName = new Map([
+      ["webui_artifact_publish", { sideEffect: "mutating", deliveryEffect: "user_facing" }],
+    ]);
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "webui_artifact_publish",
+      toolCallId: "tool-artifact-2",
+      args: { filePath: "report.pdf" },
+    } as ToolExecutionStartEvent);
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "webui_artifact_publish",
+      toolCallId: "tool-artifact-2",
+      isError: true,
+      result: { details: { status: "error" } },
+    } as ToolExecutionEndEvent);
+
+    expect(ctx.state.successfulUserFacingDeliveries).toBe(0);
+  });
+});
+
 describe("messaging tool media URL tracking", () => {
   it("tracks media arg from messaging tool as pending", async () => {
     const { ctx } = createTestContext();
@@ -544,6 +593,7 @@ describe("lastToolError retention", () => {
     ctx.state.toolMetaById.set("tool-keep", {
       meta: "query: ezh1/2",
       mutatingAction: false,
+      userFacingDelivery: false,
     });
 
     await handleToolExecutionEnd(ctx, {
@@ -575,6 +625,7 @@ describe("lastToolError retention", () => {
       meta: "/tmp/report.md",
       mutatingAction: true,
       actionFingerprint: "tool=write|path=/tmp/report.md",
+      userFacingDelivery: false,
     });
 
     await handleToolExecutionEnd(ctx, {
@@ -583,6 +634,60 @@ describe("lastToolError retention", () => {
       toolCallId: "tool-clear",
       isError: false,
       result: { details: { status: "ok" } },
+    });
+
+    expect(ctx.state.lastToolError).toBeUndefined();
+  });
+
+  it("clears a failed message media send after a corrected-path retry succeeds", async () => {
+    const { ctx } = createTestContext();
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "message",
+      toolCallId: "tool-message-failed",
+      args: {
+        action: "send",
+        channel: "feishu",
+        filePath: "/tmp/report.html",
+      },
+    });
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "message",
+      toolCallId: "tool-message-failed",
+      isError: true,
+      result: "Error: Feishu media send failed",
+    });
+
+    expect(ctx.state.lastToolError).toEqual(
+      expect.objectContaining({
+        toolName: "message",
+        mutatingAction: true,
+      }),
+    );
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "message",
+      toolCallId: "tool-message-recovered",
+      args: {
+        action: "send",
+        channel: "feishu",
+        filePath: "/workspace/.outbox/report.html",
+      },
+    });
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "message",
+      toolCallId: "tool-message-recovered",
+      isError: false,
+      result: {
+        channel: "feishu",
+        result: {
+          messageId: "om_test",
+        },
+      },
     });
 
     expect(ctx.state.lastToolError).toBeUndefined();

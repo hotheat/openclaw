@@ -1,13 +1,11 @@
 import fs from "node:fs/promises";
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { detectMime } from "../../media/mime.js";
 import type { ImageSanitizationLimits } from "../image-sanitization.js";
+import type { AnyAgentTool as CanonicalAnyAgentTool } from "../pi-tools.types.js";
 import { sanitizeToolResultImages } from "../tool-images.js";
 
-// oxlint-disable-next-line typescript/no-explicit-any
-export type AnyAgentTool = AgentTool<any, unknown> & {
-  ownerOnly?: boolean;
-};
+export type AnyAgentTool = CanonicalAnyAgentTool;
 
 export type StringParamOptions = {
   required?: boolean;

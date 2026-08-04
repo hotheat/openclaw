@@ -120,6 +120,14 @@ export function createNodesTool(options?: {
   return {
     label: "Nodes",
     name: "nodes",
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      status: "read_only",
+      describe: "read_only",
+      pending: "read_only",
+      camera_list: "read_only",
+      location_get: "read_only",
+    },
     description:
       "Discover and control paired nodes (status/describe/pairing/notify/camera/screen/location/run/invoke).",
     parameters: NodesToolSchema,

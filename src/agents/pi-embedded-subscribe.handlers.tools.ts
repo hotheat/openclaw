@@ -25,6 +25,7 @@ import {
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
 import { resolveToolLoopDetectionConfig } from "./pi-tools.js";
+import type { AgentToolMetadata } from "./pi-tools.types.js";
 import {
   detectSchemaValidationErrorLoop,
   extractSchemaValidationOutcomeSignature,
@@ -168,12 +169,18 @@ function isCronAddAction(args: unknown): boolean {
   return typeof action === "string" && action.trim().toLowerCase() === "add";
 }
 
-function buildToolCallSummary(toolName: string, args: unknown, meta?: string): ToolCallSummary {
-  const mutation = buildToolMutationState(toolName, args, meta);
+function buildToolCallSummary(
+  toolName: string,
+  args: unknown,
+  meta?: string,
+  toolMetadata?: AgentToolMetadata,
+): ToolCallSummary {
+  const mutation = buildToolMutationState(toolName, args, meta, toolMetadata);
   return {
     meta,
     mutatingAction: mutation.mutatingAction,
     actionFingerprint: mutation.actionFingerprint,
+    userFacingDelivery: toolMetadata?.deliveryEffect === "user_facing",
   };
 }
 
@@ -340,7 +347,10 @@ export async function handleToolExecutionStart(
   }
 
   const meta = extendExecMeta(toolName, args, inferToolMetaFromArgs(toolName, args));
-  ctx.state.toolMetaById.set(toolCallId, buildToolCallSummary(toolName, args, meta));
+  ctx.state.toolMetaById.set(
+    toolCallId,
+    buildToolCallSummary(toolName, args, meta, ctx.params.toolMetadataByName?.get(toolName)),
+  );
   ctx.log.debug(
     `embedded run tool start: runId=${ctx.params.runId} tool=${toolName} toolCallId=${toolCallId}`,
   );
@@ -529,6 +539,9 @@ export async function handleToolExecutionEnd(
   // Track committed reminders only when cron.add completed successfully.
   if (!isToolError && toolName === "cron" && isCronAddAction(startData?.args)) {
     ctx.state.successfulCronAdds += 1;
+  }
+  if (!isToolError && callSummary?.userFacingDelivery) {
+    ctx.state.successfulUserFacingDeliveries += 1;
   }
 
   emitAgentEvent({

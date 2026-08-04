@@ -253,6 +253,16 @@ export function createBrowserTool(opts?: {
   return {
     label: "Browser",
     name: "browser",
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      status: "read_only",
+      profiles: "read_only",
+      tabs: "read_only",
+      snapshot: "read_only",
+      screenshot: "read_only",
+      console: "read_only",
+      pdf: "read_only",
+    },
     description: [
       "Control the browser via OpenClaw's browser control server (status/start/stop/profiles/tabs/open/snapshot/screenshot/actions).",
       'Profiles: use profile="chrome" for Chrome extension relay takeover (your existing Chrome tabs). Use profile="openclaw" for the isolated openclaw-managed browser.',

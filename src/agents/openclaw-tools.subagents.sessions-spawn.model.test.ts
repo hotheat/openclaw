@@ -81,6 +81,7 @@ function createToolHandlerContext(): ToolHandlerContext {
       messagingToolSentMediaUrls: [],
       messagingToolSentTargets: [],
       successfulCronAdds: 0,
+      successfulUserFacingDeliveries: 0,
     },
     log: {
       debug: () => undefined,

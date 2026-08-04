@@ -348,6 +348,10 @@ const voiceCallPlugin = {
       name: "voice_call",
       label: "Voice Call",
       description: "Make phone calls and have voice conversations via the voice-call plugin.",
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        get_status: "read_only",
+      },
       parameters: VoiceCallToolSchema,
       async execute(_toolCallId, params) {
         const json = (payload: unknown) => ({

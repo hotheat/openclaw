@@ -195,6 +195,11 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
       label: "Feishu Drive",
       description:
         "Feishu cloud storage operations. Actions: list, info, create_folder, move, delete",
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        list: "read_only",
+        info: "read_only",
+      },
       parameters: FeishuDriveSchema,
       async execute(_toolCallId, params) {
         const p = params as FeishuDriveParams;

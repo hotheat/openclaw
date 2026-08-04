@@ -436,6 +436,7 @@ export function createImageTool(options?: {
   return {
     label: "Image",
     name: "image",
+    sideEffect: "read_only",
     description,
     parameters: Type.Object({
       prompt: Type.Optional(Type.String()),

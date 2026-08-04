@@ -87,7 +87,9 @@ const makeAttempt = (overrides: Partial<EmbeddedRunAttemptResult>): EmbeddedRunA
   toolMetas: [],
   lastAssistant: undefined,
   assistantErrors: [],
+  termination: { kind: "completed" },
   didSendViaMessagingTool: false,
+  didDeliverUserFacingToolResult: false,
   messagingToolSentTexts: [],
   messagingToolSentMediaUrls: [],
   messagingToolSentTargets: [],
@@ -691,7 +693,7 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
     });
   });
 
-  it("fails over after repeated assistant rate-limit errors even if the final error is generic", async () => {
+  it("fails over after current-attempt rate-limit errors even if the final error is generic", async () => {
     await withAgentWorkspace(async ({ agentDir, workspaceDir }) => {
       await writeAuthStore(agentDir, {
         usageStats: {
@@ -742,7 +744,6 @@ describe("runEmbeddedPiAgent auth profile rotation", () => {
         provider: "openrouter",
         model: "deepseek-r1",
       });
-
       expect(runEmbeddedAttemptMock).toHaveBeenCalledTimes(1);
     });
   });

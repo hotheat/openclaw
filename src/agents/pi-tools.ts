@@ -27,7 +27,7 @@ import type { ModelAuthMode } from "./model-auth.js";
 import { normalizeModelRefWithConfig } from "./model-selection.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { wrapToolWithAbortSignal } from "./pi-tools.abort.js";
-import { wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
+import { type HookContext, wrapToolWithBeforeToolCallHook } from "./pi-tools.before-tool-call.js";
 import {
   isToolAllowedByPolicies,
   resolveEffectiveToolPolicy,
@@ -48,7 +48,7 @@ import {
   wrapToolParamNormalization,
 } from "./pi-tools.read.js";
 import { cleanToolSchemaForGemini, normalizeToolParameters } from "./pi-tools.schema.js";
-import type { AnyAgentTool } from "./pi-tools.types.js";
+import type { AgentToolMetadata, AnyAgentTool } from "./pi-tools.types.js";
 import type { SandboxContext } from "./sandbox.js";
 import { isParentWebchatSessionContext } from "./session-surface.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
@@ -63,6 +63,10 @@ import {
   resolveToolProfilePolicy,
 } from "./tool-policy.js";
 import { resolveWorkspaceRoot } from "./workspace-dir.js";
+
+function withToolMetadata(tool: AnyAgentTool, metadata: AgentToolMetadata): AnyAgentTool {
+  return { ...tool, ...metadata };
+}
 
 function resolveCurrentRunModelSelection(params: {
   cfg?: OpenClawConfig;
@@ -217,6 +221,10 @@ export function createOpenClawCodingTools(options?: {
   disableMessageTool?: boolean;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
+  /** Used by automatic recovery attempts to block tools with side effects. */
+  allowMutatingTools?: boolean;
+  /** Synchronize transcript-derived pending state with the parameters actually executed. */
+  onToolParamsResolved?: HookContext["onToolParamsResolved"];
 }): AnyAgentTool[] {
   const execToolName = "exec";
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
@@ -320,11 +328,14 @@ export function createOpenClawCodingTools(options?: {
           imageSanitization,
         });
         return [
-          workspaceOnly
-            ? wrapToolWorkspaceRootGuardWithOptions(sandboxed, sandboxRoot, {
-                containerWorkdir: sandbox.containerWorkdir,
-              })
-            : sandboxed,
+          withToolMetadata(
+            workspaceOnly
+              ? wrapToolWorkspaceRootGuardWithOptions(sandboxed, sandboxRoot, {
+                  containerWorkdir: sandbox.containerWorkdir,
+                })
+              : sandboxed,
+            { sideEffect: "read_only" },
+          ),
         ];
       }
       const freshReadTool = createReadTool(workspaceRoot);
@@ -332,7 +343,12 @@ export function createOpenClawCodingTools(options?: {
         modelContextWindowTokens: options?.modelContextWindowTokens,
         imageSanitization,
       });
-      return [workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped];
+      return [
+        withToolMetadata(
+          workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped,
+          { sideEffect: "read_only" },
+        ),
+      ];
     }
     if (tool.name === "bash" || tool.name === execToolName) {
       return [];
@@ -346,7 +362,12 @@ export function createOpenClawCodingTools(options?: {
         createWriteTool(workspaceRoot),
         CLAUDE_PARAM_GROUPS.write,
       );
-      return [workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped];
+      return [
+        withToolMetadata(
+          workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped,
+          { sideEffect: "mutating" },
+        ),
+      ];
     }
     if (tool.name === "edit") {
       if (sandboxRoot) {
@@ -357,7 +378,12 @@ export function createOpenClawCodingTools(options?: {
         createEditTool(workspaceRoot),
         CLAUDE_PARAM_GROUPS.edit,
       );
-      return [workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped];
+      return [
+        withToolMetadata(
+          workspaceOnly ? wrapToolWorkspaceRootGuard(wrapped, workspaceRoot) : wrapped,
+          { sideEffect: "mutating" },
+        ),
+      ];
     }
     return [tool];
   });
@@ -435,9 +461,22 @@ export function createOpenClawCodingTools(options?: {
           ]
         : []
       : []),
-    ...(applyPatchTool ? [applyPatchTool as unknown as AnyAgentTool] : []),
-    execTool as unknown as AnyAgentTool,
-    processTool as unknown as AnyAgentTool,
+    ...(applyPatchTool
+      ? [
+          withToolMetadata(applyPatchTool as unknown as AnyAgentTool, {
+            sideEffect: "mutating",
+          }),
+        ]
+      : []),
+    withToolMetadata(execTool as unknown as AnyAgentTool, { sideEffect: "mutating" }),
+    withToolMetadata(processTool as unknown as AnyAgentTool, {
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        list: "read_only",
+        poll: "read_only",
+        log: "read_only",
+      },
+    }),
     // Channel docking: include channel-defined agent tools (login, etc.).
     ...listChannelAgentTools({ cfg: options?.config }),
     ...createOpenClawTools({
@@ -524,6 +563,8 @@ export function createOpenClawCodingTools(options?: {
       sessionKey: options?.sessionKey,
       runId: options?.runId,
       loopDetection: resolveToolLoopDetectionConfig({ cfg: options?.config, agentId }),
+      allowMutatingTools: options?.allowMutatingTools,
+      onToolParamsResolved: options?.onToolParamsResolved,
     }),
   );
   const withAbort = options?.abortSignal

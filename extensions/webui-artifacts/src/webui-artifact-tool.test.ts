@@ -90,6 +90,14 @@ afterEach(async () => {
 });
 
 describe("webui_artifact_publish", () => {
+  it("declares mutation and user-facing delivery metadata", async () => {
+    const workspace = await makeWorkspace();
+    const tool = createTool(workspace, new FakeArtifactTransport());
+
+    expect(tool.sideEffect).toBe("mutating");
+    expect(tool.deliveryEffect).toBe("user_facing");
+  });
+
   it("hashes and uploads the same file handle and passes toolCallId as sourceToolCallId", async () => {
     const workspace = await makeWorkspace();
     const content = Buffer.from("artifact content\n");

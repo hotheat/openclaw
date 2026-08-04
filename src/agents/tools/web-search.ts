@@ -280,6 +280,7 @@ export function createWebSearchTool(options?: {
   return {
     label: "Web Search",
     name: "web_search",
+    sideEffect: "read_only",
     description:
       'Search the web using Brave Search API. Returns structured results with titles, URLs, and snippets. Best for: finding documentation, official pages, API references, link discovery, region-specific search, and structured queries with operators like site:, intitle:, and filetype:. Examples: "React 19 server components docs", "Python requests library official site", "site:github.com openai cookbook", "intitle:TypeScript handbook"',
     parameters: WebSearchSchema,

@@ -64,9 +64,11 @@ import {
   assessRunCompletion,
   buildCompletionContinuationPrompt,
   isCompletionContractEnabled,
+  type RunCompletionClass,
 } from "./run/completion.js";
 import type { RunEmbeddedPiAgentParams } from "./run/params.js";
 import { buildEmbeddedRunPayloads } from "./run/payloads.js";
+import type { EmbeddedRunAttemptTermination } from "./run/types.js";
 import {
   clearPendingEmbeddedRun,
   getPendingEmbeddedRunAbortSignal,
@@ -130,7 +132,6 @@ const RUN_RETRY_ITERATIONS_PER_PROFILE = 8;
 const MIN_RUN_RETRY_ITERATIONS = 32;
 const MAX_RUN_RETRY_ITERATIONS = 160;
 const MAX_COMPLETION_CONTRACT_CONTINUATIONS = 2;
-const RATE_LIMIT_ASSISTANT_ERROR_FALLBACK_THRESHOLD = 2;
 
 function resolveMaxRunRetryIterations(profileCandidateCount: number): number {
   const scaled =
@@ -229,82 +230,6 @@ function findLatestFailoverAssistantError(params: {
   return null;
 }
 
-function hasAttemptDeliveredSideEffect(attempt: {
-  didSendViaMessagingTool?: boolean;
-  messagingToolSentTexts?: string[];
-  messagingToolSentMediaUrls?: string[];
-  successfulCronAdds?: number;
-}): boolean {
-  return (
-    Boolean(attempt.didSendViaMessagingTool) ||
-    Boolean(attempt.messagingToolSentTexts?.some((text) => text.trim().length > 0)) ||
-    Boolean(attempt.messagingToolSentMediaUrls?.length) ||
-    (attempt.successfulCronAdds ?? 0) > 0
-  );
-}
-
-function hasAttemptVisibleResultOrSideEffect(attempt: {
-  assistantTexts?: string[];
-  didSendViaMessagingTool?: boolean;
-  messagingToolSentTexts?: string[];
-  messagingToolSentMediaUrls?: string[];
-  successfulCronAdds?: number;
-}): boolean {
-  return (
-    hasAttemptDeliveredSideEffect(attempt) ||
-    Boolean(attempt.assistantTexts?.some((text) => text.trim().length > 0))
-  );
-}
-
-function hasPayloadVisibleResult(
-  payloads: Array<{ text?: string; mediaUrl?: string; mediaUrls?: string[] }>,
-): boolean {
-  return payloads.some(
-    (payload) =>
-      Boolean(payload.text?.trim()) ||
-      Boolean(payload.mediaUrl) ||
-      Boolean(payload.mediaUrls?.length),
-  );
-}
-
-async function finalizeForegroundTaskFlowIfNeeded(params: {
-  agentId: string;
-  agentDir: string;
-  sessionKey?: string;
-  aborted?: boolean;
-  timedOut?: boolean;
-  attempt: {
-    assistantTexts?: string[];
-    didSendViaMessagingTool?: boolean;
-  };
-}): Promise<void> {
-  const sessionKey = params.sessionKey?.trim();
-  if (!sessionKey) {
-    return;
-  }
-  if (params.aborted || params.timedOut) {
-    return;
-  }
-  if (!hasAttemptVisibleResultOrSideEffect(params.attempt)) {
-    return;
-  }
-  const result = await finalizeForegroundTaskFlow({
-    agentId: params.agentId,
-    agentDir: params.agentDir,
-    sessionKey,
-  });
-  if (result.status === "parked") {
-    log.warn(
-      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=park revision=${result.revision}`,
-    );
-  }
-  if (result.status === "exempt") {
-    log.info(
-      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=skip reason=${result.reason}`,
-    );
-  }
-}
-
 function createAssistantFailoverError(params: {
   assistant: AssistantMessage;
   reason: FailoverReason;
@@ -334,6 +259,92 @@ function createAssistantFailoverError(params: {
     profileId: params.profileId,
     status: status ?? resolveFailoverStatus(params.reason),
   });
+}
+
+function hasAttemptDeliveredSideEffect(attempt: {
+  didSendViaMessagingTool?: boolean;
+  didDeliverUserFacingToolResult?: boolean;
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  successfulCronAdds?: number;
+}): boolean {
+  return (
+    Boolean(attempt.didSendViaMessagingTool) ||
+    Boolean(attempt.didDeliverUserFacingToolResult) ||
+    Boolean(attempt.messagingToolSentTexts?.some((text) => text.trim().length > 0)) ||
+    Boolean(attempt.messagingToolSentMediaUrls?.length) ||
+    (attempt.successfulCronAdds ?? 0) > 0
+  );
+}
+
+function hasSuccessfulPayloadResult(
+  payloads: Array<{
+    text?: string;
+    mediaUrl?: string;
+    mediaUrls?: string[];
+    isError?: boolean;
+  }>,
+): boolean {
+  return payloads.some(
+    (payload) =>
+      !payload.isError &&
+      (Boolean(payload.text?.trim()) ||
+        Boolean(payload.mediaUrl) ||
+        Boolean(payload.mediaUrls?.length)),
+  );
+}
+
+function hasAttemptVisibleResultOrSideEffect(attempt: {
+  assistantTexts?: string[];
+  didSendViaMessagingTool?: boolean;
+  didDeliverUserFacingToolResult?: boolean;
+  messagingToolSentTexts?: string[];
+  messagingToolSentMediaUrls?: string[];
+  successfulCronAdds?: number;
+}): boolean {
+  return (
+    hasAttemptDeliveredSideEffect(attempt) ||
+    Boolean(attempt.assistantTexts?.some((text) => text.trim().length > 0))
+  );
+}
+
+async function finalizeForegroundTaskFlowIfNeeded(params: {
+  agentId: string;
+  agentDir: string;
+  sessionKey?: string;
+  aborted?: boolean;
+  timedOut?: boolean;
+  attempt: {
+    assistantTexts?: string[];
+    didSendViaMessagingTool?: boolean;
+    didDeliverUserFacingToolResult?: boolean;
+  };
+}): Promise<void> {
+  const sessionKey = params.sessionKey?.trim();
+  if (!sessionKey) {
+    return;
+  }
+  if (params.aborted || params.timedOut) {
+    return;
+  }
+  if (!hasAttemptVisibleResultOrSideEffect(params.attempt)) {
+    return;
+  }
+  const result = await finalizeForegroundTaskFlow({
+    agentId: params.agentId,
+    agentDir: params.agentDir,
+    sessionKey,
+  });
+  if (result.status === "parked") {
+    log.warn(
+      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=park revision=${result.revision}`,
+    );
+  }
+  if (result.status === "exempt") {
+    log.info(
+      `[taskflow-finalization] sessionKey=${sessionKey} taskFlowId=${result.taskFlowId} action=skip reason=${result.reason}`,
+    );
+  }
 }
 
 function combineAbortSignals(signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
@@ -873,15 +884,16 @@ export async function runEmbeddedPiAgent(
         let overflowCompactionAttempts = 0;
         let toolResultTruncationAttempted = false;
         let completionContinuationPrompt: string | undefined;
-        let completionContinuationCount = 0;
-        // Keep the latest failover-worthy provider error across completion-contract retries.
-        // If the provider fails first, then retries still end empty without a new error,
-        // the outer model fallback should see the original provider failure instead of
-        // treating the run as an empty success.
-        let stickyEmptyResultFailover: {
-          message: AssistantMessage;
-          reason: FailoverReason;
-        } | null = null;
+        const completionContinuationCounts = new Map<string, number>();
+        let completionContinuationTotal = 0;
+        let completionContinuationToolPolicy: "normal" | "read_only" | "disabled" = "normal";
+        let activeToolLoopRecovery:
+          | {
+              toolPolicy: "read_only" | "disabled";
+              reason: string;
+              termination: Extract<EmbeddedRunAttemptTermination, { kind: "incomplete_tool_loop" }>;
+            }
+          | undefined;
         const usageAccumulator = createUsageAccumulator();
         let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
         let autoCompactionCount = 0;
@@ -983,7 +995,9 @@ export async function runEmbeddedPiAgent(
               prompt,
               images: isContinuationAttempt ? undefined : params.images,
               inboundMediaPaths: isContinuationAttempt ? undefined : params.inboundMediaPaths,
-              disableTools: params.disableTools,
+              disableTools: params.disableTools || completionContinuationToolPolicy === "disabled",
+              recoveryToolPolicy:
+                completionContinuationToolPolicy === "read_only" ? "read_only" : "normal",
               provider,
               modelId,
               model,
@@ -1047,14 +1061,10 @@ export async function runEmbeddedPiAgent(
               provider,
               model: modelId,
             });
-            const latestAssistantFailover = findLatestFailoverAssistantError({
+            const latestAttemptFailover = findLatestFailoverAssistantError({
               lastAssistant,
               assistantErrors: attempt.assistantErrors,
             });
-            const attemptVisibleResultOrSideEffect = hasAttemptVisibleResultOrSideEffect(attempt);
-            if (!attemptVisibleResultOrSideEffect && latestAssistantFailover) {
-              stickyEmptyResultFailover = latestAssistantFailover;
-            }
             const formattedAssistantErrorText = lastAssistant
               ? formatAssistantErrorText(lastAssistant, {
                   cfg: params.config,
@@ -1384,33 +1394,11 @@ export async function runEmbeddedPiAgent(
             const rateLimitFailure = isRateLimitAssistantError(lastAssistant);
             const billingFailure = isBillingAssistantError(lastAssistant);
             const failoverFailure = isFailoverAssistantError(lastAssistant);
-            const hasUserFacingReply =
-              attempt.didSendViaMessagingTool ||
-              attempt.assistantTexts.some((text) => text.trim().length > 0);
-            const canUseAssistantErrorHistory =
-              lastAssistant?.stopReason === "error" || !hasUserFacingReply;
-            const rateLimitAssistantErrors = attempt.assistantErrors.filter((message) =>
-              isRateLimitAssistantError(message),
-            );
-            const shouldUseRateLimitHistory =
-              canUseAssistantErrorHistory &&
-              rateLimitAssistantErrors.length >= RATE_LIMIT_ASSISTANT_ERROR_FALLBACK_THRESHOLD;
             const directAssistantFailoverMessage = failoverFailure ? lastAssistant : undefined;
-            const emptyResultAssistantFailover =
-              !completionContractEnabled && !attemptVisibleResultOrSideEffect
-                ? latestAssistantFailover
-                : null;
-            const assistantFailoverMessage =
-              directAssistantFailoverMessage ??
-              emptyResultAssistantFailover?.message ??
-              (shouldUseRateLimitHistory
-                ? rateLimitAssistantErrors[rateLimitAssistantErrors.length - 1]
-                : undefined);
-            const assistantFailoverReason =
-              emptyResultAssistantFailover &&
-              assistantFailoverMessage === emptyResultAssistantFailover.message
-                ? emptyResultAssistantFailover.reason
-                : classifyFailoverReason(assistantFailoverMessage?.errorMessage ?? "");
+            const assistantFailoverMessage = directAssistantFailoverMessage;
+            const assistantFailoverReason = classifyFailoverReason(
+              assistantFailoverMessage?.errorMessage ?? "",
+            );
             const immediateModelFailoverHttpStatus = assistantFailoverMessage?.errorMessage
               ? resolveImmediateModelFailoverHttpStatus(assistantFailoverMessage.errorMessage)
               : undefined;
@@ -1549,61 +1537,140 @@ export async function runEmbeddedPiAgent(
 
             if (completionContractEnabled && !aborted && !timedOut) {
               const completionAssessment = assessRunCompletion(attempt);
+              const effectiveCompletionAssessment =
+                activeToolLoopRecovery &&
+                completionAssessment.classification !== "completed" &&
+                completionAssessment.classification !== "tool_calls"
+                  ? {
+                      classification: "incomplete_tool_loop" as const,
+                      recoveryAction: "finalize_partial" as const,
+                      toolPolicy: activeToolLoopRecovery.toolPolicy,
+                      reason: activeToolLoopRecovery.reason,
+                    }
+                  : completionAssessment;
               if (
-                completionAssessment.classification === "non_terminal_text" ||
-                completionAssessment.classification === "empty_result" ||
-                completionAssessment.classification === "failed_but_incomplete"
+                effectiveCompletionAssessment.classification === "incomplete_tool_loop" ||
+                effectiveCompletionAssessment.classification === "non_terminal_text" ||
+                effectiveCompletionAssessment.classification === "empty_result" ||
+                effectiveCompletionAssessment.classification === "failed_but_incomplete"
               ) {
-                if (completionContinuationCount >= MAX_COMPLETION_CONTRACT_CONTINUATIONS) {
+                const maxContinuations =
+                  effectiveCompletionAssessment.classification === "incomplete_tool_loop"
+                    ? 1
+                    : MAX_COMPLETION_CONTRACT_CONTINUATIONS;
+                const continuationBucket =
+                  `${effectiveCompletionAssessment.classification}:${effectiveCompletionAssessment.toolPolicy}` satisfies `${RunCompletionClass}:${string}`;
+                const continuationCount = completionContinuationCounts.get(continuationBucket) ?? 0;
+                const mustStopBeforeContinuation =
+                  effectiveCompletionAssessment.classification === "incomplete_tool_loop" &&
+                  effectiveCompletionAssessment.recoveryAction === "finalize_partial" &&
+                  attempt.termination.kind === "incomplete_tool_loop" &&
+                  (attempt.termination.toolWaitStatus === "timeout" ||
+                    attempt.termination.toolWaitStatus === "error");
+                const continuationLimitReached =
+                  continuationCount >= maxContinuations ||
+                  completionContinuationTotal >= MAX_COMPLETION_CONTRACT_CONTINUATIONS;
+                if (mustStopBeforeContinuation || continuationLimitReached) {
+                  const attemptCount = mustStopBeforeContinuation
+                    ? 1
+                    : completionContinuationTotal + 1;
                   const errorMessage =
-                    `Run completion contract violated after ${completionContinuationCount + 1} ` +
-                    `attempt(s): ${completionAssessment.reason}`;
+                    `Run completion contract violated after ${attemptCount} ` +
+                    `attempt(s): ${effectiveCompletionAssessment.reason}`;
+                  const unresolvedToolCalls =
+                    activeToolLoopRecovery?.termination.unresolvedToolCalls ??
+                    (attempt.termination.kind === "incomplete_tool_loop"
+                      ? attempt.termination.unresolvedToolCalls
+                      : []);
+                  const unresolvedTools = unresolvedToolCalls.map((call) => ({
+                    toolCallId: call.toolCallId,
+                    toolName: call.toolName,
+                    mutatingAction: call.mutatingAction,
+                  }));
                   log.error(
                     `[completion-contract] sessionKey=${params.sessionKey ?? params.sessionId} ` +
                       `runId=${params.runId} provider=${provider}/${modelId} ` +
-                      `classification=${completionAssessment.classification} ` +
-                      `reason=${completionAssessment.reason} action=fail`,
+                      `classification=${effectiveCompletionAssessment.classification} ` +
+                      `reason=${effectiveCompletionAssessment.reason} ` +
+                      `unresolvedTools=${unresolvedTools.map((tool) => tool.toolName).join(",") || "none"} ` +
+                      `action=fail`,
                   );
-                  if (
-                    fallbackConfigured &&
-                    !attemptVisibleResultOrSideEffect &&
-                    stickyEmptyResultFailover
-                  ) {
-                    const failoverErrorContext = resolveActiveErrorContext({
-                      lastAssistant: stickyEmptyResultFailover.message,
-                      provider: activeErrorContext.provider,
-                      model: activeErrorContext.model,
-                    });
-                    throw createAssistantFailoverError({
-                      assistant: stickyEmptyResultFailover.message,
-                      reason: stickyEmptyResultFailover.reason,
-                      provider: failoverErrorContext.provider,
-                      model: failoverErrorContext.model,
-                      profileId: lastProfileId,
-                      config: params.config,
-                      sessionKey: params.sessionKey ?? params.sessionId,
-                      fallbackMessage: "LLM request failed before producing a user-facing reply.",
-                    });
-                  }
-                  throw new Error(errorMessage);
+                  const unresolvedLabel = unresolvedTools.length
+                    ? ` Unfinished tools: ${unresolvedTools.map((tool) => tool.toolName).join(", ")}.`
+                    : "";
+                  const errorKind =
+                    effectiveCompletionAssessment.classification === "incomplete_tool_loop"
+                      ? "incomplete_tool_loop"
+                      : "completion_contract";
+                  return withCompletionContractTerminal({
+                    enabled: completionContractEnabled,
+                    emittedRef: completionContractTerminalEmitted,
+                    runId: params.runId,
+                    startedAt: started,
+                    phase: "error",
+                    error: errorMessage,
+                    onAgentEvent: params.onAgentEvent,
+                    result: {
+                      payloads: [
+                        {
+                          text:
+                            "Model execution stopped before producing a final response." +
+                            unresolvedLabel +
+                            " Please retry.",
+                          isError: true,
+                        },
+                      ],
+                      meta: {
+                        durationMs: Date.now() - started,
+                        agentMeta: {
+                          sessionId: sessionIdUsed,
+                          provider,
+                          model: model.id,
+                        },
+                        systemPromptReport: attempt.systemPromptReport,
+                        error: {
+                          kind: errorKind,
+                          message: errorMessage,
+                          unresolvedTools,
+                        },
+                      },
+                    },
+                  });
                 }
-                const retryIndex = completionContinuationCount;
-                completionContinuationCount += 1;
+                const retryIndex = continuationCount;
+                completionContinuationCounts.set(continuationBucket, continuationCount + 1);
+                completionContinuationTotal += 1;
                 completionContinuationPrompt = buildCompletionContinuationPrompt({
-                  assessment: completionAssessment,
+                  assessment: effectiveCompletionAssessment,
                   attempt,
                   retryIndex,
                 });
+                completionContinuationToolPolicy = effectiveCompletionAssessment.toolPolicy;
+                if (
+                  !activeToolLoopRecovery &&
+                  completionAssessment.classification === "incomplete_tool_loop" &&
+                  attempt.termination.kind === "incomplete_tool_loop"
+                ) {
+                  activeToolLoopRecovery = {
+                    toolPolicy:
+                      completionAssessment.toolPolicy === "read_only" ? "read_only" : "disabled",
+                    reason: completionAssessment.reason,
+                    termination: attempt.termination,
+                  };
+                }
                 log.warn(
                   `[completion-contract] sessionKey=${params.sessionKey ?? params.sessionId} ` +
                     `runId=${params.runId} provider=${provider}/${modelId} ` +
-                    `classification=${completionAssessment.classification} ` +
-                    `reason=${completionAssessment.reason} action=continue ` +
-                    `retry=${completionContinuationCount}/${MAX_COMPLETION_CONTRACT_CONTINUATIONS}`,
+                    `classification=${effectiveCompletionAssessment.classification} ` +
+                    `reason=${effectiveCompletionAssessment.reason} action=continue ` +
+                    `retry=${continuationCount + 1}/${maxContinuations} ` +
+                    `toolPolicy=${completionContinuationToolPolicy}`,
                 );
                 continue;
               }
               completionContinuationPrompt = undefined;
+              completionContinuationToolPolicy = "normal";
+              activeToolLoopRecovery = undefined;
             }
 
             const usage = toNormalizedUsage(usageAccumulator);
@@ -1672,6 +1739,7 @@ export async function runEmbeddedPiAgent(
                     systemPromptReport: attempt.systemPromptReport,
                   },
                   didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                  didDeliverUserFacingToolResult: attempt.didDeliverUserFacingToolResult,
                   messagingToolSentTexts: attempt.messagingToolSentTexts,
                   messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
                   messagingToolSentTargets: attempt.messagingToolSentTargets,
@@ -1682,22 +1750,20 @@ export async function runEmbeddedPiAgent(
 
             if (
               fallbackConfigured &&
+              !aborted &&
+              !timedOut &&
               !hasAttemptDeliveredSideEffect(attempt) &&
-              !hasPayloadVisibleResult(payloads) &&
-              (stickyEmptyResultFailover ?? latestAssistantFailover)
+              !hasSuccessfulPayloadResult(payloads) &&
+              latestAttemptFailover
             ) {
-              const failover = stickyEmptyResultFailover ?? latestAssistantFailover;
-              if (!failover) {
-                throw new Error("Empty-result failover missing assistant error.");
-              }
               const failoverErrorContext = resolveActiveErrorContext({
-                lastAssistant: failover.message,
+                lastAssistant: latestAttemptFailover.message,
                 provider: activeErrorContext.provider,
                 model: activeErrorContext.model,
               });
               throw createAssistantFailoverError({
-                assistant: failover.message,
-                reason: failover.reason,
+                assistant: latestAttemptFailover.message,
+                reason: latestAttemptFailover.reason,
                 provider: failoverErrorContext.provider,
                 model: failoverErrorContext.model,
                 profileId: lastProfileId,
@@ -1759,6 +1825,7 @@ export async function runEmbeddedPiAgent(
                     : undefined,
                 },
                 didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+                didDeliverUserFacingToolResult: attempt.didDeliverUserFacingToolResult,
                 messagingToolSentTexts: attempt.messagingToolSentTexts,
                 messagingToolSentMediaUrls: attempt.messagingToolSentMediaUrls,
                 messagingToolSentTargets: attempt.messagingToolSentTargets,

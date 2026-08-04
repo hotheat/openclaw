@@ -291,6 +291,10 @@ describe("createOpenClawCodingTools", () => {
   it("avoids anyOf/oneOf/allOf in tool schemas", () => {
     expect(findUnionKeywordOffenders(defaultTools)).toEqual([]);
   });
+  it("declares side effects for every assembled core tool", () => {
+    const tools = createOpenClawCodingTools({ senderIsOwner: true });
+    expect(tools.filter((tool) => tool.sideEffect == null).map((tool) => tool.name)).toEqual([]);
+  });
   it("keeps raw core tool schemas union-free", () => {
     const tools = createOpenClawTools();
     const coreTools = new Set([

@@ -6,6 +6,10 @@ export function createWhatsAppLoginTool(): ChannelAgentTool {
     label: "WhatsApp Login",
     name: "whatsapp_login",
     ownerOnly: true,
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      wait: "read_only",
+    },
     description: "Generate a WhatsApp QR code for linking, or wait for the scan to complete.",
     // NOTE: Using Type.Unsafe for action enum instead of Type.Union([Type.Literal(...)]
     // because Claude API on Vertex AI rejects nested anyOf schemas as invalid JSON Schema.

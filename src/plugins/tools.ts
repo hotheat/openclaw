@@ -108,9 +108,9 @@ export function resolvePluginTools(params: {
       continue;
     }
     const nameSet = new Set<string>();
-    for (const tool of list) {
-      if (nameSet.has(tool.name) || existing.has(tool.name)) {
-        const message = `plugin tool name conflict (${entry.pluginId}): ${tool.name}`;
+    for (const resolvedTool of list) {
+      if (nameSet.has(resolvedTool.name) || existing.has(resolvedTool.name)) {
+        const message = `plugin tool name conflict (${entry.pluginId}): ${resolvedTool.name}`;
         log.error(message);
         registry.diagnostics.push({
           level: "error",
@@ -120,6 +120,10 @@ export function resolvePluginTools(params: {
         });
         continue;
       }
+      const tool =
+        resolvedTool.sideEffect == null
+          ? { ...resolvedTool, sideEffect: "mutating" as const }
+          : resolvedTool;
       nameSet.add(tool.name);
       existing.add(tool.name);
       pluginToolMeta.set(tool, {

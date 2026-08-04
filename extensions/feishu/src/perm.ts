@@ -143,6 +143,10 @@ export function registerFeishuPermTools(api: OpenClawPluginApi) {
       name: "feishu_perm",
       label: "Feishu Perm",
       description: "Feishu permission management. Actions: list, add, remove",
+      sideEffect: "mutating",
+      sideEffectByAction: {
+        list: "read_only",
+      },
       parameters: FeishuPermSchema,
       async execute(_toolCallId, params) {
         const p = params as FeishuPermParams;

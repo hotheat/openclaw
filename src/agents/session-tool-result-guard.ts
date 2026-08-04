@@ -10,12 +10,22 @@ import {
   getToolResultToolName,
   truncateToolResultMessage,
 } from "./pi-embedded-runner/tool-result-truncation.js";
+import type { AgentToolMetadata } from "./pi-tools.types.js";
 import { makeMissingToolResult, sanitizeToolCallInputs } from "./session-transcript-repair.js";
 import { extractToolCallsFromAssistant, extractToolResultId } from "./tool-call-id.js";
+import { buildToolMutationState } from "./tool-mutation.js";
+import { normalizeToolName } from "./tool-policy.js";
 
 const GUARD_TRUNCATION_SUFFIX =
   "\n\n⚠️ [Content truncated during persistence — original exceeded size limit. " +
   "Use offset/limit parameters or request specific sections for large content.]";
+
+export type PendingToolCall = {
+  toolCallId: string;
+  toolName: string;
+  mutatingAction: boolean;
+  actionFingerprint?: string;
+};
 
 /**
  * Truncate oversized text content blocks in a tool result message.
@@ -59,6 +69,8 @@ export function installSessionToolResultGuard(
      * When set, tool calls with unknown names are dropped before persistence.
      */
     allowedToolNames?: Iterable<string>;
+    /** Structured metadata for tools available in this run. */
+    toolMetadataByName?: ReadonlyMap<string, AgentToolMetadata>;
     /**
      * Synchronous hook invoked before any message is written to the session JSONL.
      * If the hook returns { block: true }, the message is silently dropped.
@@ -69,11 +81,18 @@ export function installSessionToolResultGuard(
     ) => PluginHookBeforeMessageWriteResult | undefined;
   },
 ): {
-  flushPendingToolResults: () => void;
+  flushPendingToolResults: () => PendingToolCall[];
   getPendingIds: () => string[];
+  getPendingToolCalls: () => PendingToolCall[];
+  updatePendingToolCall: (params: {
+    toolCallId: string;
+    toolName: string;
+    toolParams: unknown;
+    toolMetadata?: AgentToolMetadata;
+  }) => void;
 } {
   const originalAppend = sessionManager.appendMessage.bind(sessionManager);
-  const pending = new Map<string, string | undefined>();
+  const pending = new Map<string, PendingToolCall>();
   const persistMessage = (message: AgentMessage) => {
     const transformer = opts?.transformMessageForPersistence;
     return transformer ? transformer(message) : message;
@@ -108,17 +127,21 @@ export function installSessionToolResultGuard(
     return msg;
   };
 
-  const flushPendingToolResults = () => {
+  const flushPendingToolResults = (): PendingToolCall[] => {
     if (pending.size === 0) {
-      return;
+      return [];
     }
+    const flushedCalls = Array.from(pending.values());
     if (allowSyntheticToolResults) {
-      for (const [id, name] of pending.entries()) {
-        const synthetic = makeMissingToolResult({ toolCallId: id, toolName: name });
+      for (const call of flushedCalls) {
+        const synthetic = makeMissingToolResult({
+          toolCallId: call.toolCallId,
+          toolName: call.toolName,
+        });
         const flushed = applyBeforeWriteHook(
           persistToolResult(persistMessage(synthetic), {
-            toolCallId: id,
-            toolName: name,
+            toolCallId: call.toolCallId,
+            toolName: call.toolName,
             isSynthetic: true,
           }),
         );
@@ -128,6 +151,30 @@ export function installSessionToolResultGuard(
       }
     }
     pending.clear();
+    return allowSyntheticToolResults ? flushedCalls : [];
+  };
+
+  const updatePendingToolCall = (params: {
+    toolCallId: string;
+    toolName: string;
+    toolParams: unknown;
+    toolMetadata?: AgentToolMetadata;
+  }) => {
+    if (!pending.has(params.toolCallId)) {
+      return;
+    }
+    const mutation = buildToolMutationState(
+      params.toolName,
+      params.toolParams,
+      undefined,
+      params.toolMetadata,
+    );
+    pending.set(params.toolCallId, {
+      toolCallId: params.toolCallId,
+      toolName: params.toolName,
+      mutatingAction: mutation.mutatingAction,
+      actionFingerprint: mutation.actionFingerprint,
+    });
   };
 
   const guardedAppend = (message: AgentMessage) => {
@@ -149,7 +196,8 @@ export function installSessionToolResultGuard(
 
     if (nextRole === "toolResult") {
       const id = extractToolResultId(nextMessage as Extract<AgentMessage, { role: "toolResult" }>);
-      const toolName = (id ? pending.get(id) : undefined) ?? getToolResultToolName(nextMessage);
+      const toolName =
+        (id ? pending.get(id)?.toolName : undefined) ?? getToolResultToolName(nextMessage);
       if (id) {
         pending.delete(id);
       }
@@ -201,7 +249,19 @@ export function installSessionToolResultGuard(
 
     if (toolCalls.length > 0) {
       for (const call of toolCalls) {
-        pending.set(call.id, call.name);
+        const toolName = call.name ?? "unknown";
+        const mutation = buildToolMutationState(
+          toolName,
+          call.arguments,
+          undefined,
+          opts?.toolMetadataByName?.get(normalizeToolName(toolName)),
+        );
+        pending.set(call.id, {
+          toolCallId: call.id,
+          toolName,
+          mutatingAction: mutation.mutatingAction,
+          actionFingerprint: mutation.actionFingerprint,
+        });
       }
     }
 
@@ -214,5 +274,7 @@ export function installSessionToolResultGuard(
   return {
     flushPendingToolResults,
     getPendingIds: () => Array.from(pending.keys()),
+    getPendingToolCalls: () => Array.from(pending.values()),
+    updatePendingToolCall,
   };
 }

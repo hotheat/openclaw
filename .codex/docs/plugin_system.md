@@ -17,6 +17,7 @@
 - Provider plugin example: `google-gemini-cli-auth` registers a model auth/provider surface. Refs: `extensions/google-gemini-cli-auth/index.ts:24`.
 - Rich feature plugin example: `voice-call` parses typed config, lazily creates runtime state, and adds gateway methods. Refs: `extensions/voice-call/index.ts:147`, `extensions/voice-call/index.ts:166`, `extensions/voice-call/index.ts:192`.
 - Full registration API surface lives in one place. Refs: `src/plugins/types.ts:245`, `src/plugins/registry.ts:172`.
+- Agent tools declare recovery safety through `sideEffect` and `sideEffectByAction`; action-level declarations take precedence, and undeclared plugin tools default to `mutating`. `deliveryEffect: "user_facing"` marks successful tool execution as a completed user-facing delivery. Refs: `src/agents/pi-tools.types.ts:3`, `src/agents/tool-mutation.ts:76`, `src/plugins/tools.ts:123`, `src/agents/pi-embedded-subscribe.handlers.tools.ts:172`.
 
 ## Conventions To Preserve
 

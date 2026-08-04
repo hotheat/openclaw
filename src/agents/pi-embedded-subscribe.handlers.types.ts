@@ -29,6 +29,7 @@ export type ToolCallSummary = {
   meta?: string;
   mutatingAction: boolean;
   actionFingerprint?: string;
+  userFacingDelivery: boolean;
 };
 
 export type EmbeddedPiSubscribeState = {
@@ -77,6 +78,7 @@ export type EmbeddedPiSubscribeState = {
   pendingMessagingTexts: Map<string, string>;
   pendingMessagingTargets: Map<string, MessagingToolSend>;
   successfulCronAdds: number;
+  successfulUserFacingDeliveries: number;
   pendingMessagingMediaUrls: Map<string, string[]>;
   lastAssistant?: AgentMessage;
 };
@@ -136,7 +138,13 @@ export type EmbeddedPiSubscribeContext = {
  */
 export type ToolHandlerParams = Pick<
   SubscribeEmbeddedPiSessionParams,
-  "runId" | "onBlockReplyFlush" | "onAgentEvent" | "onToolResult" | "config" | "sessionKey"
+  | "runId"
+  | "onBlockReplyFlush"
+  | "onAgentEvent"
+  | "onToolResult"
+  | "config"
+  | "sessionKey"
+  | "toolMetadataByName"
 > & {
   session?: SubscribeEmbeddedPiSessionParams["session"];
   abortRun?: SubscribeEmbeddedPiSessionParams["abortRun"];
@@ -156,6 +164,7 @@ export type ToolHandlerState = Pick<
   | "messagingToolSentMediaUrls"
   | "messagingToolSentTargets"
   | "successfulCronAdds"
+  | "successfulUserFacingDeliveries"
 >;
 
 export type ToolHandlerContext = {

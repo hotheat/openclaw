@@ -79,6 +79,7 @@ export type DispatchFromConfigResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
   handled?: boolean;
+  handledWithoutReplyReason?: "messaging_tool" | "silent" | "queued";
 };
 
 export async function dispatchReplyFromConfig(params: {
@@ -243,16 +244,17 @@ export async function dispatchReplyFromConfig(params: {
   const shouldRouteToOriginating =
     isRoutableChannel(originatingChannel) && originatingTo && originatingChannel !== currentSurface;
   const ttsChannel = shouldRouteToOriginating ? originatingChannel : currentSurface;
-  let handledWithoutReply = false;
+  let handledWithoutReplyReason: DispatchFromConfigResult["handledWithoutReplyReason"];
 
   const buildDispatchResult = (result: {
     queuedFinal: boolean;
     counts: Record<ReplyDispatchKind, number>;
   }): DispatchFromConfigResult => ({
     ...result,
+    handledWithoutReplyReason,
     handled:
       result.queuedFinal ||
-      handledWithoutReply ||
+      handledWithoutReplyReason != null ||
       (result.counts.final ?? 0) > 0 ||
       (result.counts.block ?? 0) > 0 ||
       (result.counts.tool ?? 0) > 0,
@@ -408,7 +410,7 @@ export async function dispatchReplyFromConfig(params: {
           return run();
         },
         onHandledWithoutReply: async (reason) => {
-          handledWithoutReply = true;
+          handledWithoutReplyReason = reason;
           await upstreamOnHandledWithoutReply?.(reason);
         },
       },

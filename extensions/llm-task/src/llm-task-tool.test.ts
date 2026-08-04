@@ -39,6 +39,7 @@ describe("llm-task tool (json-only)", () => {
       payloads: [{ text: JSON.stringify({ foo: "bar" }) }],
     });
     const tool = createLlmTaskTool(fakeApi());
+    expect(tool.sideEffect).toBe("read_only");
     const res = await tool.execute("id", { prompt: "return foo" });
     // oxlint-disable-next-line typescript/no-explicit-any
     expect((res as any).details.json).toEqual({ foo: "bar" });

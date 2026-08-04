@@ -69,7 +69,7 @@ describe("run completion contract", () => {
     expect(result.meta.error).toBeUndefined();
   });
 
-  it("fails the run after repeated incomplete replies", async () => {
+  it("returns an explicit terminal error after repeated incomplete replies", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(
         makeAttemptResult({
@@ -90,8 +90,11 @@ describe("run completion contract", () => {
         }),
       );
 
-    await expect(runEmbeddedPiAgent(baseParams)).rejects.toThrow(
-      /Run completion contract violated/,
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(result.meta.error?.kind).toBe("completion_contract");
+    expect(result.payloads?.[0]?.text).toContain(
+      "Model execution stopped before producing a final response.",
     );
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
     expect(mockedEmitAgentEvent).toHaveBeenCalledWith(
@@ -103,15 +106,15 @@ describe("run completion contract", () => {
     );
   });
 
-  it("fails the run after repeated empty terminal attempts", async () => {
+  it("returns an explicit terminal error after repeated empty terminal attempts", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }))
       .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }))
       .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }));
 
-    await expect(runEmbeddedPiAgent(baseParams)).rejects.toThrow(
-      /Run completion contract violated/,
-    );
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(result.meta.error?.kind).toBe("completion_contract");
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).toContain(
       "ended without a user-facing result",
@@ -125,7 +128,33 @@ describe("run completion contract", () => {
     );
   });
 
-  it("fails over when a hidden provider error leaves a normal IM run empty", async () => {
+  it("enforces the continuation cap across changing completion classifications", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["我会继续处理。"],
+        }),
+      )
+      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }))
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["我会换个方法继续。"],
+          lastToolError: { toolName: "web_fetch", error: "403" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["最终结论：已完成。"],
+        }),
+      );
+
+    const result = await runEmbeddedPiAgent(baseParams);
+
+    expect(result.meta.error?.kind).toBe("completion_contract");
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+  });
+
+  it("fails over when the current attempt has a provider error and no successful result", async () => {
     mockedRunEmbeddedAttempt.mockResolvedValueOnce(
       makeAttemptResult({
         assistantTexts: [],
@@ -156,42 +185,185 @@ describe("run completion contract", () => {
     expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
-  it("lets Feishu completion contract retry empty results before model fallback", async () => {
+  it("continues once without tools when tool results exist but final text is missing", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["我会继续整理结果。"],
+          lastAssistant: makeAssistantMessage({
+            stopReason: "toolUse",
+          }),
+          termination: {
+            kind: "incomplete_tool_loop",
+            cause: "awaiting_final_response",
+            lastStopReason: "toolUse",
+            unresolvedToolCalls: [],
+            syntheticToolResultsWritten: false,
+            toolWaitStatus: "idle",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["最终结论：已基于现有工具结果完成汇总。"],
+        }),
+      );
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+      hasModelFallbacks: true,
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]).toMatchObject({
+      disableTools: true,
+      recoveryToolPolicy: "normal",
+    });
+  });
+
+  it("uses read-only recovery when read-only tool results are missing", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(
         makeAttemptResult({
           assistantTexts: [],
-          lastAssistant: makeAssistantMessage({
-            stopReason: "toolUse",
-          }),
-          assistantErrors: [
-            makeAssistantMessage({
-              stopReason: "error",
-              errorMessage: "Our servers are currently overloaded. Please try again later.",
-            }),
+          termination: {
+            kind: "incomplete_tool_loop",
+            cause: "missing_tool_results",
+            lastStopReason: "toolUse",
+            unresolvedToolCalls: [
+              {
+                toolCallId: "fetch-1",
+                toolName: "web_fetch",
+                mutatingAction: false,
+              },
+            ],
+            syntheticToolResultsWritten: true,
+            toolWaitStatus: "idle_after_abort",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["已改用其他只读来源完成。"],
+        }),
+      );
+
+    await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+    });
+
+    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]).toMatchObject({
+      disableTools: false,
+      recoveryToolPolicy: "read_only",
+    });
+  });
+
+  it("does not continue the session when tool execution fails to settle", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        termination: {
+          kind: "incomplete_tool_loop",
+          cause: "missing_tool_results",
+          lastStopReason: "toolUse",
+          unresolvedToolCalls: [
+            {
+              toolCallId: "fetch-1",
+              toolName: "web_fetch",
+              mutatingAction: false,
+            },
           ],
+          syntheticToolResultsWritten: true,
+          toolWaitStatus: "timeout",
+        },
+      }),
+    );
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+    });
+
+    expect(result.meta.error).toMatchObject({
+      kind: "incomplete_tool_loop",
+      unresolvedTools: [
+        {
+          toolCallId: "fetch-1",
+          toolName: "web_fetch",
+          mutatingAction: false,
+        },
+      ],
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not reopen tools when mutating recovery still has no final reply", async () => {
+    const unresolvedMutation = {
+      kind: "incomplete_tool_loop" as const,
+      cause: "missing_tool_results" as const,
+      lastStopReason: "toolUse",
+      unresolvedToolCalls: [
+        {
+          toolCallId: "send-1",
+          toolName: "message",
+          mutatingAction: true,
+          actionFingerprint: "tool=message|action=send|to=feishu:oc_1",
+        },
+      ],
+      syntheticToolResultsWritten: true,
+      toolWaitStatus: "idle_after_abort" as const,
+    };
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          termination: unresolvedMutation,
         }),
       )
       .mockResolvedValueOnce(
         makeAttemptResult({
           assistantTexts: [],
-          lastAssistant: makeAssistantMessage({
-            stopReason: "toolUse",
-          }),
-          assistantErrors: [
-            makeAssistantMessage({
-              stopReason: "error",
-              errorMessage: "Our servers are currently overloaded. Please try again later.",
-            }),
-          ],
         }),
-      )
-      .mockResolvedValueOnce(makeAttemptResult({ assistantTexts: [] }));
+      );
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
+    });
+
+    expect(result.meta.error).toMatchObject({
+      kind: "incomplete_tool_loop",
+      unresolvedTools: [
+        {
+          toolCallId: "send-1",
+          toolName: "message",
+          mutatingAction: true,
+        },
+      ],
+    });
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]).toMatchObject({
+      disableTools: true,
+    });
+  });
+
+  it("fails over immediately on the current model overloaded error", async () => {
+    mockedRunEmbeddedAttempt.mockResolvedValueOnce(
+      makeAttemptResult({
+        assistantTexts: [],
+        lastAssistant: makeAssistantMessage({
+          stopReason: "error",
+          errorMessage: "Our servers are currently overloaded. Please try again later.",
+        }),
+      }),
+    );
 
     await expect(
       runEmbeddedPiAgent({
         ...baseParams,
-        sessionKey: "agent:feishu-ou_x:feishu:direct:ou_x",
         hasModelFallbacks: true,
       }),
     ).rejects.toMatchObject({
@@ -200,7 +372,7 @@ describe("run completion contract", () => {
       provider: "otr",
       model: "gpt-5.5",
     });
-    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(3);
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(1);
   });
 
   it("emits a terminal lifecycle event for completion-contract early returns", async () => {

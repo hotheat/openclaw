@@ -62,6 +62,7 @@ import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
 import { applyPiCompactionSettingsFromConfig } from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools, resolveToolLoopDetectionConfig } from "../../pi-tools.js";
+import type { AgentToolMetadata } from "../../pi-tools.types.js";
 import { resolveSandboxContext } from "../../sandbox.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { readRuntimeSecurityPolicy } from "../../security-policy.js";
@@ -85,6 +86,7 @@ import { buildSystemPromptReport } from "../../system-prompt-report.js";
 import { buildTaskFlowPromptContext } from "../../taskflow/prompt.js";
 import { sanitizeToolCallIdsForCloudCodeAssist } from "../../tool-call-id.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../tool-fs-policy.js";
+import { normalizeToolName } from "../../tool-policy.js";
 import {
   resolveCurrentAgentTraceParent,
   runWithAgentTraceParent,
@@ -155,6 +157,14 @@ type PromptBuildHookRunner = {
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookBeforeAgentStartResult | undefined>;
 };
+
+function isToolLoopStopReason(stopReason: unknown): boolean {
+  if (typeof stopReason !== "string") {
+    return false;
+  }
+  const normalized = stopReason.trim().toLowerCase().replace(/[_-]/g, "");
+  return normalized === "tooluse" || normalized === "toolcalls";
+}
 
 type PromptPreflightTokenEstimate = {
   historyTokens: number;
@@ -726,6 +736,7 @@ export async function runEmbeddedAttempt(
     });
     // Check if the model supports native image input
     const modelHasVision = params.model.input?.includes("image") ?? false;
+    let sessionManager: ReturnType<typeof guardSessionManager> | undefined;
     const toolsRaw = params.disableTools
       ? []
       : createOpenClawCodingTools({
@@ -768,6 +779,18 @@ export async function runEmbeddedAttempt(
           requireExplicitMessageTarget:
             params.requireExplicitMessageTarget ?? isSubagentSessionKey(params.sessionKey),
           disableMessageTool: params.disableMessageTool,
+          allowMutatingTools: params.recoveryToolPolicy !== "read_only",
+          onToolParamsResolved: ({ toolCallId, toolName, toolParams, toolMetadata }) => {
+            if (!toolCallId) {
+              return;
+            }
+            sessionManager?.updatePendingToolCall?.({
+              toolCallId,
+              toolName,
+              toolParams,
+              toolMetadata,
+            });
+          },
         });
     const tools = wrapToolsWithAgentTracing({
       tools: sanitizeToolsForGoogle({ tools: toolsRaw, provider: params.provider }),
@@ -775,6 +798,22 @@ export async function runEmbeddedAttempt(
       workspaceDir: effectiveWorkspace,
       skillFiles: traceSkillFiles,
     });
+    const toolMetadataByName = new Map<string, AgentToolMetadata>();
+    for (const tool of tools) {
+      if (
+        tool.sideEffect ||
+        tool.sideEffectByAction ||
+        tool.deliveryEffect ||
+        tool.ownerOnly != null
+      ) {
+        toolMetadataByName.set(normalizeToolName(tool.name), {
+          sideEffect: tool.sideEffect,
+          sideEffectByAction: tool.sideEffectByAction,
+          deliveryEffect: tool.deliveryEffect,
+          ownerOnly: tool.ownerOnly,
+        });
+      }
+    }
     const allowedToolNames = collectAllowedToolNames({
       tools,
       clientTools: params.clientTools,
@@ -946,7 +985,6 @@ export async function runEmbeddedAttempt(
       }),
     });
 
-    let sessionManager: ReturnType<typeof guardSessionManager> | undefined;
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
     let removeToolResultContextGuard: (() => void) | undefined;
     try {
@@ -972,6 +1010,7 @@ export async function runEmbeddedAttempt(
         inputProvenance: params.inputProvenance,
         allowSyntheticToolResults: transcriptPolicy.allowSyntheticToolResults,
         allowedToolNames,
+        toolMetadataByName,
       });
       trackSessionManagerAccess(params.sessionFile);
 
@@ -1346,6 +1385,7 @@ export async function runEmbeddedAttempt(
         enforceFinalTag: params.enforceFinalTag,
         config: params.config,
         sessionKey: params.sessionKey ?? params.sessionId,
+        toolMetadataByName,
         abortRun: (reason) => abortRun(false, reason),
       });
 
@@ -1358,6 +1398,7 @@ export async function runEmbeddedAttempt(
         getMessagingToolSentMediaUrls,
         getMessagingToolSentTargets,
         getSuccessfulCronAdds,
+        didDeliverUserFacingToolResult,
         didSendViaMessagingTool,
         getLastToolError,
         getUsageTotals,
@@ -2131,9 +2172,58 @@ export async function runEmbeddedAttempt(
           });
       }
 
+      /*
+       * ======== 步骤1：固化工具闭环状态 ========
+       * 目标：在 synthetic result 清空 pending 状态前，保存未完成工具。
+       * 1) 等待当前工具执行收敛。
+       * 2) 补写严格 provider 所需的错误 toolResult。
+       */
+      log.info(`embedded run tool settlement start: runId=${params.runId}`);
+      const toolFlushResult = await flushPendingToolResultsAfterIdle({
+        agent: session?.agent,
+        sessionManager,
+        abortAgent: () => session?.abort(),
+      });
+      log.info(
+        `embedded run tool settlement end: runId=${params.runId} ` +
+          `waitStatus=${toolFlushResult.waitStatus} ` +
+          `pending=${toolFlushResult.pendingBeforeFlush.length} ` +
+          `synthetic=${toolFlushResult.syntheticResults.length}`,
+      );
+
+      const lastStopReason =
+        typeof lastAssistant?.stopReason === "string" ? lastAssistant.stopReason : undefined;
+      const hasIncompleteToolLoop =
+        !aborted &&
+        !timedOut &&
+        !promptError &&
+        !clientToolCallDetected &&
+        (toolFlushResult.pendingBeforeFlush.length > 0 ||
+          isToolLoopStopReason(lastAssistant?.stopReason));
+      const termination = hasIncompleteToolLoop
+        ? ({
+            kind: "incomplete_tool_loop",
+            cause:
+              toolFlushResult.pendingBeforeFlush.length > 0
+                ? "missing_tool_results"
+                : "awaiting_final_response",
+            lastStopReason,
+            unresolvedToolCalls: toolFlushResult.pendingBeforeFlush,
+            syntheticToolResultsWritten: toolFlushResult.syntheticResults.length > 0,
+            toolWaitStatus: toolFlushResult.waitStatus,
+          } as const)
+        : ({ kind: "completed" } as const);
+
       await endTraceRunOnce({
-        success: !aborted && !promptError,
-        error: promptError ? describeUnknownError(promptError) : undefined,
+        success: !aborted && !promptError && termination.kind === "completed",
+        error:
+          termination.kind === "incomplete_tool_loop"
+            ? `${termination.cause}; unresolved=${
+                termination.unresolvedToolCalls.map((call) => call.toolName).join(",") || "none"
+              }`
+            : promptError
+              ? describeUnknownError(promptError)
+              : undefined,
         durationMs:
           traceRunStartedAt != null ? Math.max(0, Date.now() - traceRunStartedAt) : undefined,
         endedAt: Date.now(),
@@ -2151,8 +2241,10 @@ export async function runEmbeddedAttempt(
         toolMetas: toolMetasNormalized,
         lastAssistant,
         assistantErrors,
+        termination,
         lastToolError: getLastToolError?.(),
         didSendViaMessagingTool: didSendViaMessagingTool(),
+        didDeliverUserFacingToolResult: didDeliverUserFacingToolResult(),
         messagingToolSentTexts: getMessagingToolSentTexts(),
         messagingToolSentMediaUrls: getMessagingToolSentMediaUrls(),
         messagingToolSentTargets: getMessagingToolSentTargets(),

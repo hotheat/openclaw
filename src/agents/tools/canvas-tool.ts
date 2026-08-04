@@ -82,6 +82,10 @@ export function createCanvasTool(options?: { config?: OpenClawConfig }): AnyAgen
   return {
     label: "Canvas",
     name: "canvas",
+    sideEffect: "mutating",
+    sideEffectByAction: {
+      snapshot: "read_only",
+    },
     description:
       "Control node canvases (present/hide/navigate/eval/snapshot/A2UI). Use snapshot to capture the rendered UI.",
     parameters: CanvasToolSchema,

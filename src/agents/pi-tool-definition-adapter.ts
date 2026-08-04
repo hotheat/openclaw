@@ -1,8 +1,4 @@
-import type {
-  AgentTool,
-  AgentToolResult,
-  AgentToolUpdateCallback,
-} from "@mariozechner/pi-agent-core";
+import type { AgentToolResult, AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { logDebug, logError } from "../logger.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
@@ -14,10 +10,9 @@ import {
   isToolWrappedWithBeforeToolCallHook,
   runBeforeToolCallHook,
 } from "./pi-tools.before-tool-call.js";
+import type { AnyAgentTool } from "./pi-tools.types.js";
 import { normalizeToolName } from "./tool-policy.js";
 import { jsonResult } from "./tools/common.js";
-
-type AnyAgentTool = AgentTool;
 
 type ToolExecuteArgsCurrent = [
   string,
@@ -108,6 +103,7 @@ export function toToolDefinitions(
               toolName: name,
               params,
               toolCallId,
+              toolMetadata: tool,
             });
             if (hookOutcome.blocked) {
               throw new Error(hookOutcome.reason);

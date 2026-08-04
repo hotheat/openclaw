@@ -318,6 +318,88 @@ describe("handleFeishuMessage command authorization", () => {
     expect(mockFinalizeFeishuDispatcher).toHaveBeenCalledTimes(1);
   });
 
+  it("queues a fallback when Feishu dispatch only produced tool replies", async () => {
+    mockShouldComputeCommandAuthorized.mockReturnValue(false);
+    mockDispatchReplyFromConfig.mockResolvedValueOnce({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 2 },
+      handled: true,
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-sender",
+        },
+      },
+      message: {
+        message_id: "msg-tool-only-dispatch",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        content: JSON.stringify({ text: "search and summarize" }),
+      },
+    };
+
+    await dispatchMessage({ cfg, event });
+
+    expect(mockFeishuDispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: "模型执行中断，请重试。",
+      isError: true,
+    });
+  });
+
+  it.each(["messaging_tool", "silent", "queued"] as const)(
+    "does not queue fallback for tool replies handled by %s",
+    async (handledWithoutReplyReason) => {
+      mockShouldComputeCommandAuthorized.mockReturnValue(false);
+      mockDispatchReplyFromConfig.mockResolvedValueOnce({
+        queuedFinal: false,
+        counts: { final: 0, block: 0, tool: 2 },
+        handled: true,
+        handledWithoutReplyReason,
+      });
+
+      const cfg: ClawdbotConfig = {
+        channels: {
+          feishu: {
+            dmPolicy: "open",
+          },
+        },
+      } as ClawdbotConfig;
+
+      const event: FeishuMessageEvent = {
+        sender: {
+          sender_id: {
+            open_id: "ou-sender",
+          },
+        },
+        message: {
+          message_id: `msg-tool-${handledWithoutReplyReason}`,
+          chat_id: "oc-dm",
+          chat_type: "p2p",
+          message_type: "text",
+          content: JSON.stringify({ text: "search and summarize" }),
+        },
+      };
+
+      await dispatchMessage({ cfg, event });
+
+      expect(mockFeishuDispatcher.sendFinalReply).not.toHaveBeenCalledWith({
+        text: "模型执行中断，请重试。",
+        isError: true,
+      });
+    },
+  );
+
   it("completes the dispatcher on the happy path with queued replies", async () => {
     mockShouldComputeCommandAuthorized.mockReturnValue(false);
     mockDispatchReplyFromConfig.mockResolvedValueOnce({

@@ -85,6 +85,38 @@ export default function (api) {
 }
 ```
 
+## 副作用与用户可见交付
+
+声明工具在自动只读恢复期间是否可以安全运行：
+
+```ts
+api.registerTool({
+  name: "records",
+  description: "Read or update records",
+  parameters: {
+    type: "object",
+    properties: {
+      action: { type: "string", enum: ["get", "update"] },
+    },
+    required: ["action"],
+  },
+  sideEffect: "mutating",
+  sideEffectByAction: {
+    get: "read_only",
+  },
+  async execute(_id, params) {
+    // ...
+  },
+});
+```
+
+- `sideEffect` 将默认值设为 `read_only` 或 `mutating`。
+- `sideEffectByAction` 按规范化后的 `action` 值覆盖默认声明。Action 名称会去除首尾空格、转为小写，并将空格和连字符规范化为下划线。
+- 未声明 `sideEffect` 的插件工具默认按 `mutating` 处理。
+- 只有在上一次工具结果未决时仍可安全重试的调用，才能声明为 `read_only`。
+
+仅当工具成功返回即可确认结果已经交付给当前用户时，才设置 `deliveryEffect: "user_facing"`。成功的用户可见交付可以直接满足运行完成条件，无需额外的 assistant 回复。仅生成待后续交付的数据不符合该语义。
+
 其他影响工具可用性的配置选项：
 
 - 仅包含插件工具名称的允许列表被视为插件选择启用；核心工具保持启用，除非你在允许列表中也包含核心工具或组。

@@ -71,7 +71,7 @@ describe("flushPendingToolResultsAfterIdle", () => {
     );
   });
 
-  it("flushes pending tool call after timeout when idle never resolves", async () => {
+  it("does not flush pending tool calls when idle cannot be confirmed", async () => {
     const sm = guardSessionManager(SessionManager.inMemory());
     const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
     vi.useFakeTimers();
@@ -85,16 +85,64 @@ describe("flushPendingToolResultsAfterIdle", () => {
       timeoutMs: 30,
     });
     await vi.advanceTimersByTimeAsync(30);
-    await flushPromise;
+    const result = await flushPromise;
 
     const entries = getMessages(sm);
 
-    expect(entries.length).toBe(2);
-    expect(entries[1].role).toBe("toolResult");
-    expect((entries[1] as { isError?: boolean }).isError).toBe(true);
-    expect((entries[1] as { content?: Array<{ text?: string }> }).content?.[0]?.text).toContain(
-      "missing tool result",
-    );
+    expect(result.waitStatus).toBe("timeout");
+    expect(result.pendingBeforeFlush.map((call) => call.toolCallId)).toEqual(["call_orphan_1"]);
+    expect(result.syntheticResults).toEqual([]);
+    expect(entries.map((entry) => entry.role)).toEqual(["assistant"]);
+  });
+
+  it("aborts a stalled agent before writing synthetic tool results", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
+    vi.useFakeTimers();
+    let aborted = false;
+    const agent = {
+      waitForIdle: () => (aborted ? Promise.resolve() : new Promise<void>(() => {})),
+    };
+
+    appendMessage(assistantToolCall("call_orphan_abort"));
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 30,
+      abortAgent: async () => {
+        aborted = true;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    const result = await flushPromise;
+
+    expect(result.waitStatus).toBe("idle_after_abort");
+    expect(result.syntheticResults.map((call) => call.toolCallId)).toEqual(["call_orphan_abort"]);
+  });
+
+  it("returns after the settlement timeout when abort never resolves", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
+    vi.useFakeTimers();
+    const agent = { waitForIdle: () => new Promise<void>(() => {}) };
+
+    appendMessage(assistantToolCall("call_abort_hangs"));
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 30,
+      abortSettlementTimeoutMs: 20,
+      abortAgent: () => new Promise<void>(() => {}),
+    });
+
+    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(20);
+    const result = await flushPromise;
+
+    expect(result.waitStatus).toBe("timeout");
+    expect(result.pendingBeforeFlush.map((call) => call.toolCallId)).toEqual(["call_abort_hangs"]);
+    expect(result.syntheticResults).toEqual([]);
+    expect(getMessages(sm).map((entry) => entry.role)).toEqual(["assistant"]);
   });
 
   it("clears timeout handle when waitForIdle resolves first", async () => {

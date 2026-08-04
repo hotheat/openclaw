@@ -179,6 +179,7 @@ describe("lobster plugin tool", () => {
     });
 
     const tool = createLobsterTool(fakeApi());
+    expect(tool.sideEffect).toBe("mutating");
     const res = await tool.execute("call1", {
       action: "run",
       pipeline: "noop",

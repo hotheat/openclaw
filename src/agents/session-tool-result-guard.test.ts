@@ -85,9 +85,162 @@ describe("installSessionToolResultGuard", () => {
     const guard = installSessionToolResultGuard(sm);
 
     sm.appendMessage(toolCallMessage);
-    guard.flushPendingToolResults();
+    const flushed = guard.flushPendingToolResults();
 
     expectPersistedRoles(sm, ["assistant", "toolResult"]);
+    expect(flushed).toEqual([
+      {
+        toolCallId: "call_1",
+        toolName: "read",
+        mutatingAction: false,
+        actionFingerprint: undefined,
+      },
+    ]);
+  });
+
+  it("preserves mutation metadata for pending tool calls", () => {
+    const sm = SessionManager.inMemory();
+    const guard = installSessionToolResultGuard(sm);
+
+    sm.appendMessage(
+      asAppendMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_send",
+            name: "message",
+            arguments: { action: "send", to: "feishu:oc_1", content: "hello" },
+          },
+        ],
+      }),
+    );
+
+    expect(guard.getPendingToolCalls()).toEqual([
+      {
+        toolCallId: "call_send",
+        toolName: "message",
+        mutatingAction: true,
+        actionFingerprint: "tool=message|action=send|to=feishu:oc_1",
+      },
+    ]);
+  });
+
+  it("uses structured tool metadata for pending mutation state", () => {
+    const sm = SessionManager.inMemory();
+    const guard = installSessionToolResultGuard(sm, {
+      toolMetadataByName: new Map([
+        ["webui_artifact_publish", { sideEffect: "mutating", deliveryEffect: "user_facing" }],
+      ]),
+    });
+
+    sm.appendMessage(
+      asAppendMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_artifact",
+            name: "webui_artifact_publish",
+            arguments: { filePath: "report.pdf" },
+          },
+        ],
+      }),
+    );
+
+    expect(guard.getPendingToolCalls()).toEqual([
+      {
+        toolCallId: "call_artifact",
+        toolName: "webui_artifact_publish",
+        mutatingAction: true,
+        actionFingerprint: "tool=webui_artifact_publish|filepath=report.pdf",
+      },
+    ]);
+  });
+
+  it("uses action-level metadata for mixed plugin tools", () => {
+    const sm = SessionManager.inMemory();
+    const guard = installSessionToolResultGuard(sm, {
+      toolMetadataByName: new Map([
+        [
+          "feishu_doc",
+          {
+            sideEffect: "mutating",
+            sideEffectByAction: {
+              read: "read_only",
+            },
+          },
+        ],
+      ]),
+    });
+
+    sm.appendMessage(
+      asAppendMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_doc_read",
+            name: "feishu_doc",
+            arguments: { action: "read", doc_token: "doc_1" },
+          },
+          {
+            type: "toolCall",
+            id: "call_doc_write",
+            name: "feishu_doc",
+            arguments: { action: "write", doc_token: "doc_1", content: "updated" },
+          },
+        ],
+      }),
+    );
+
+    expect(guard.getPendingToolCalls()).toEqual([
+      {
+        toolCallId: "call_doc_read",
+        toolName: "feishu_doc",
+        mutatingAction: false,
+        actionFingerprint: undefined,
+      },
+      {
+        toolCallId: "call_doc_write",
+        toolName: "feishu_doc",
+        mutatingAction: true,
+        actionFingerprint: "tool=feishu_doc|action=write",
+      },
+    ]);
+  });
+
+  it("updates pending mutation state from the parameters actually executed", () => {
+    const sm = SessionManager.inMemory();
+    const guard = installSessionToolResultGuard(sm);
+
+    sm.appendMessage(
+      asAppendMessage({
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call_message",
+            name: "message",
+            arguments: { action: "list" },
+          },
+        ],
+      }),
+    );
+    guard.updatePendingToolCall({
+      toolCallId: "call_message",
+      toolName: "message",
+      toolParams: { action: "send", to: "feishu:oc_1", content: "hello" },
+    });
+
+    expect(guard.getPendingToolCalls()).toEqual([
+      {
+        toolCallId: "call_message",
+        toolName: "message",
+        mutatingAction: true,
+        actionFingerprint: "tool=message|action=send|to=feishu:oc_1",
+      },
+    ]);
   });
 
   it("does not add synthetic toolResult when a matching one exists", () => {

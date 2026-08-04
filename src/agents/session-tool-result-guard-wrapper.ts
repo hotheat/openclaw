@@ -6,11 +6,24 @@ import {
   type InputProvenance,
 } from "../sessions/input-provenance.js";
 import { materializeAssistantErrorMessage } from "./pi-embedded-helpers/images.js";
-import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
+import type { AgentToolMetadata } from "./pi-tools.types.js";
+import {
+  installSessionToolResultGuard,
+  type PendingToolCall,
+} from "./session-tool-result-guard.js";
 
 export type GuardedSessionManager = SessionManager & {
   /** Flush any synthetic tool results for pending tool calls. Idempotent. */
-  flushPendingToolResults?: () => void;
+  flushPendingToolResults?: () => PendingToolCall[];
+  /** Return pending calls before transcript repair clears them. */
+  getPendingToolCalls?: () => PendingToolCall[];
+  /** Replace transcript-derived mutation state with the parameters actually executed. */
+  updatePendingToolCall?: (params: {
+    toolCallId: string;
+    toolName: string;
+    toolParams: unknown;
+    toolMetadata?: AgentToolMetadata;
+  }) => void;
 };
 
 /**
@@ -25,6 +38,7 @@ export function guardSessionManager(
     inputProvenance?: InputProvenance;
     allowSyntheticToolResults?: boolean;
     allowedToolNames?: Iterable<string>;
+    toolMetadataByName?: ReadonlyMap<string, AgentToolMetadata>;
   },
 ): GuardedSessionManager {
   if (typeof (sessionManager as GuardedSessionManager).flushPendingToolResults === "function") {
@@ -73,8 +87,11 @@ export function guardSessionManager(
     transformToolResultForPersistence: transform,
     allowSyntheticToolResults: opts?.allowSyntheticToolResults,
     allowedToolNames: opts?.allowedToolNames,
+    toolMetadataByName: opts?.toolMetadataByName,
     beforeMessageWriteHook: beforeMessageWrite,
   });
   (sessionManager as GuardedSessionManager).flushPendingToolResults = guard.flushPendingToolResults;
+  (sessionManager as GuardedSessionManager).getPendingToolCalls = guard.getPendingToolCalls;
+  (sessionManager as GuardedSessionManager).updatePendingToolCall = guard.updatePendingToolCall;
   return sessionManager as GuardedSessionManager;
 }

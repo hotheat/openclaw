@@ -15,6 +15,7 @@ export function createTaskFlowReadTool(options: TaskFlowToolContextOptions): Any
   return {
     label: "TaskFlow",
     name: "taskflow_read",
+    sideEffect: "read_only",
     description:
       "Read the current foreground TaskFlow or a specific TaskFlow snapshot. Returns the JSON snapshot and Markdown checklist.",
     parameters: TaskFlowReadToolSchema,

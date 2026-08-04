@@ -108,6 +108,7 @@ export function createSessionsSpawnTool(opts?: {
   return {
     label: "Sessions",
     name: "sessions_spawn",
+    sideEffect: "mutating",
     description:
       "Spawn a sub-agent in its own isolated session for complex, long-running, parallelizable, or multi-step work. Use it for tasks with multiple deliverables, long runtimes, or delegated background execution.",
     parameters: SessionsSpawnToolSchema,

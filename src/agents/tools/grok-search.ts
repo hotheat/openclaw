@@ -712,6 +712,7 @@ export function createGrokSearchTool(options?: {
   return {
     label: "Grok Search",
     name: "grok_search",
+    sideEffect: "read_only",
     description:
       'Search the web using xAI Grok for synthesized answers with citations. Best for: recent news, live developments, public reaction, sentiment, trends, X/Twitter discussion, natural language queries. Note: does not support search operators like site:, intitle:, filetype:. Use source="x" to search X/Twitter posts specifically; default source is "web". Examples: "latest OpenAI announcements", "what are people saying about Tesla earnings", "news about AI regulation 2026"',
     parameters: GrokSearchSchema,
