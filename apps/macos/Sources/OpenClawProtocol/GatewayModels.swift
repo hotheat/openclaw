@@ -1322,6 +1322,7 @@ public enum SubagentRunStatus: String, Codable, Sendable {
 public struct SubagentRun: Codable, Sendable {
     public let runid: String
     public let childsessionkey: String
+    public let sourcetoolcallid: String?
     public let label: String?
     public let sessionlabel: String?
     public let model: String?
@@ -1334,6 +1335,7 @@ public struct SubagentRun: Codable, Sendable {
     public init(
         runid: String,
         childsessionkey: String,
+        sourcetoolcallid: String?,
         label: String?,
         sessionlabel: String?,
         model: String?,
@@ -1345,6 +1347,7 @@ public struct SubagentRun: Codable, Sendable {
     {
         self.runid = runid
         self.childsessionkey = childsessionkey
+        self.sourcetoolcallid = sourcetoolcallid
         self.label = label
         self.sessionlabel = sessionlabel
         self.model = model
@@ -1358,6 +1361,7 @@ public struct SubagentRun: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case runid = "runId"
         case childsessionkey = "childSessionKey"
+        case sourcetoolcallid = "sourceToolCallId"
         case label
         case sessionlabel = "sessionLabel"
         case model
@@ -3095,6 +3099,7 @@ public struct ChatEvent: Codable, Sendable {
     public let seq: Int
     public let state: AnyCodable
     public let message: AnyCodable?
+    public let silent: Bool?
     public let errormessage: String?
     public let usage: AnyCodable?
     public let stopreason: String?
@@ -3105,6 +3110,7 @@ public struct ChatEvent: Codable, Sendable {
         seq: Int,
         state: AnyCodable,
         message: AnyCodable?,
+        silent: Bool?,
         errormessage: String?,
         usage: AnyCodable?,
         stopreason: String?)
@@ -3114,6 +3120,7 @@ public struct ChatEvent: Codable, Sendable {
         self.seq = seq
         self.state = state
         self.message = message
+        self.silent = silent
         self.errormessage = errormessage
         self.usage = usage
         self.stopreason = stopreason
@@ -3125,6 +3132,7 @@ public struct ChatEvent: Codable, Sendable {
         case seq
         case state
         case message
+        case silent
         case errormessage = "errorMessage"
         case usage
         case stopreason = "stopReason"

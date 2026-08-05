@@ -14,6 +14,7 @@ export const SubagentRunSchema = Type.Object(
   {
     runId: NonEmptyString,
     childSessionKey: NonEmptyString,
+    sourceToolCallId: Type.Optional(NonEmptyString),
     label: Type.Optional(NonEmptyString),
     sessionLabel: Type.Optional(NonEmptyString),
     model: Type.Optional(NonEmptyString),

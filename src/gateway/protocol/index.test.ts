@@ -5,6 +5,7 @@ import {
   formatValidationErrors,
   ProtocolSchemas,
   validateAgentParams,
+  validateChatEvent,
   validateChatSendParams,
   validateChatSteerParams,
   validateChatSteerResult,
@@ -73,6 +74,20 @@ describe("formatValidationErrors", () => {
   });
 });
 
+describe("chat event protocol", () => {
+  it("accepts explicit silent terminal semantics", () => {
+    expect(
+      validateChatEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        seq: 1,
+        state: "final",
+        silent: true,
+      }),
+    ).toBe(true);
+  });
+});
+
 describe("subagents protocol", () => {
   it("registers strict params and result schemas", () => {
     expect(ProtocolSchemas.SubagentsListParams).toBeDefined();
@@ -90,6 +105,7 @@ describe("subagents protocol", () => {
         {
           runId: "run-1",
           childSessionKey: "agent:worker:subagent:child-1",
+          sourceToolCallId: "call_spawn_1",
           label: "worker",
           sessionLabel: "research",
           model: "provider/model",

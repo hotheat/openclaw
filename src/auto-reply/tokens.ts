@@ -26,15 +26,23 @@ export function isSilentReplyPrefixText(
   if (!text) {
     return false;
   }
-  const normalized = text.trimStart().toUpperCase();
-  if (!normalized) {
+  const trimmed = text.trimStart();
+  if (!trimmed || trimmed !== trimmed.toUpperCase()) {
     return false;
   }
-  if (!normalized.includes("_")) {
+  const normalized = trimmed.toUpperCase();
+  if (normalized.length < 2) {
     return false;
   }
   if (/[^A-Z_]/.test(normalized)) {
     return false;
   }
-  return token.toUpperCase().startsWith(normalized);
+  const tokenUpper = token.toUpperCase();
+  if (!tokenUpper.startsWith(normalized)) {
+    return false;
+  }
+  if (normalized.includes("_") || normalized === tokenUpper) {
+    return true;
+  }
+  return tokenUpper === SILENT_REPLY_TOKEN && normalized === "NO";
 }

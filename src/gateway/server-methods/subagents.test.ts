@@ -3,10 +3,12 @@ import type { SubagentRunRecord } from "../../agents/subagent-registry.js";
 import { ErrorCodes, type SubagentsListResult } from "../protocol/index.js";
 
 const mocks = vi.hoisted(() => ({
+  getSubagentSourceToolCallId: vi.fn(),
   listSubagentRunsForRequester: vi.fn(),
 }));
 
 vi.mock("../../agents/subagent-registry.js", () => ({
+  getSubagentSourceToolCallId: mocks.getSubagentSourceToolCallId,
   listSubagentRunsForRequester: mocks.listSubagentRunsForRequester,
 }));
 
@@ -61,6 +63,7 @@ function readSuccessPayload(respond: ReturnType<typeof vi.fn>): SubagentsListRes
 describe("subagents.list handler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getSubagentSourceToolCallId.mockReturnValue(undefined);
     mocks.listSubagentRunsForRequester.mockReturnValue([]);
   });
 
@@ -128,6 +131,9 @@ describe("subagents.list handler", () => {
         endedAt: 12,
       }),
     ]);
+    mocks.getSubagentSourceToolCallId.mockImplementation((run: SubagentRunRecord) =>
+      run.runId === "running" ? "call_spawn_running" : undefined,
+    );
 
     const { respond } = await invokeSubagentsList({});
     const payload = readSuccessPayload(respond);
@@ -143,6 +149,7 @@ describe("subagents.list handler", () => {
     expect(payload.runs[1]).toEqual({
       runId: "running",
       childSessionKey: "child-running",
+      sourceToolCallId: "call_spawn_running",
       label: "worker",
       sessionLabel: "session",
       model: "provider/model",

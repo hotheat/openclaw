@@ -43,6 +43,7 @@ export type { SubagentRunRecord } from "./subagent-registry.types.js";
 
 const FAST_TEST_MODE = process.env.OPENCLAW_TEST_FAST === "1";
 const subagentRuns = new Map<string, SubagentRunRecord>();
+const subagentSourceToolCallIds = new WeakMap<SubagentRunRecord, string>();
 let sweeper: NodeJS.Timeout | null = null;
 let listenerStarted = false;
 let listenerStop: (() => void) | null = null;
@@ -1330,6 +1331,10 @@ export function replaceSubagentRunAfterSteer(params: {
   };
 
   subagentRuns.set(nextRunId, next);
+  const sourceToolCallId = subagentSourceToolCallIds.get(source);
+  if (sourceToolCallId) {
+    subagentSourceToolCallIds.set(next, sourceToolCallId);
+  }
   ensureListener();
   persistSubagentRuns();
   if (archiveAtMs) {
@@ -1360,6 +1365,7 @@ export function registerSubagentRun(params: {
   spawnMode?: "run" | "session";
   taskFlowId?: string;
   trackingTaskFlowId?: string;
+  sourceToolCallId?: string;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -1370,7 +1376,7 @@ export function registerSubagentRun(params: {
   const runTimeoutSeconds = params.runTimeoutSeconds ?? 0;
   const waitTimeoutMs = resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
   const requesterOrigin = normalizeDeliveryContext(params.requesterOrigin);
-  subagentRuns.set(params.runId, {
+  const entry: SubagentRunRecord = {
     runId: params.runId,
     childSessionKey: params.childSessionKey,
     requesterSessionKey: params.requesterSessionKey,
@@ -1394,7 +1400,12 @@ export function registerSubagentRun(params: {
     startedAt: now,
     archiveAtMs,
     cleanupHandled: false,
-  });
+  };
+  subagentRuns.set(params.runId, entry);
+  const sourceToolCallId = params.sourceToolCallId?.trim();
+  if (sourceToolCallId) {
+    subagentSourceToolCallIds.set(entry, sourceToolCallId);
+  }
   ensureListener();
   persistSubagentRuns();
   if (archiveAtMs) {
@@ -1407,6 +1418,10 @@ export function registerSubagentRun(params: {
     waitTimeoutMs,
     resetDeadline: true,
   });
+}
+
+export function getSubagentSourceToolCallId(run: SubagentRunRecord): string | undefined {
+  return subagentSourceToolCallIds.get(run);
 }
 
 async function waitForSubagentCompletion(params: {

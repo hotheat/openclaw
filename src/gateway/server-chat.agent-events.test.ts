@@ -152,6 +152,7 @@ describe("agent event handler", () => {
     const payload = chatCalls[0]?.[1] as {
       state?: string;
       message?: unknown;
+      silent?: boolean;
     };
     expect(payload.state).toBe("final");
     return payload;
@@ -214,8 +215,60 @@ describe("agent event handler", () => {
     });
     emitLifecycleEnd(handler, "run-2");
 
-    const payload = expectSingleFinalChatPayload(broadcast) as { message?: unknown };
+    const payload = expectSingleFinalChatPayload(broadcast) as {
+      message?: unknown;
+      silent?: boolean;
+    };
     expect(payload.message).toBeUndefined();
+    expect(payload.silent).toBe(true);
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
+    nowSpy?.mockRestore();
+  });
+
+  it("suppresses cumulative NO_REPLY lead fragments and marks the final as silent", () => {
+    const { broadcast, nodeSendToSession, chatRunState, handler, nowSpy } = createHarness({
+      now: 2_100,
+    });
+    chatRunState.registry.add("run-silent", {
+      sessionKey: "session-silent",
+      clientRunId: "client-silent",
+    });
+
+    for (const [index, text] of ["NO", "NO_", "NO_RE", "NO_REPLY"].entries()) {
+      handler({
+        runId: "run-silent",
+        seq: index + 1,
+        stream: "assistant",
+        ts: Date.now(),
+        data: { text },
+      });
+    }
+    emitLifecycleEnd(handler, "run-silent", 5);
+
+    const payload = expectSingleFinalChatPayload(broadcast) as {
+      message?: unknown;
+      silent?: boolean;
+    };
+    expect(payload.message).toBeUndefined();
+    expect(payload.silent).toBe(true);
+    expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
+    nowSpy?.mockRestore();
+  });
+
+  it("keeps natural-language No-prefix assistant text visible", () => {
+    const { broadcast, nodeSendToSession, nowSpy } = emitRun1AssistantText(
+      createHarness({ now: 2_200 }),
+      "No, that is valid",
+    );
+
+    const chatCalls = chatBroadcastCalls(broadcast);
+    expect(chatCalls).toHaveLength(1);
+    expect(chatCalls[0]?.[1]).toMatchObject({
+      state: "delta",
+      message: {
+        content: [{ text: "No, that is valid" }],
+      },
+    });
     expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
     nowSpy?.mockRestore();
   });

@@ -1,6 +1,10 @@
 import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../auto-reply/heartbeat.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
-import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import {
+  isSilentReplyPrefixText,
+  isSilentReplyText,
+  SILENT_REPLY_TOKEN,
+} from "../auto-reply/tokens.js";
 import { loadConfig } from "../config/config.js";
 import { type AgentEventPayload, getAgentRunContext } from "../infra/agent-events.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
@@ -292,10 +296,13 @@ export function createAgentEventHandler({
     if (!cleaned) {
       return;
     }
-    if (isSilentReplyText(cleaned, SILENT_REPLY_TOKEN)) {
+    chatRunState.buffers.set(clientRunId, cleaned);
+    if (
+      isSilentReplyText(cleaned, SILENT_REPLY_TOKEN) ||
+      isSilentReplyPrefixText(cleaned, SILENT_REPLY_TOKEN)
+    ) {
       return;
     }
-    chatRunState.buffers.set(clientRunId, cleaned);
     if (shouldHideHeartbeatChatOutput(clientRunId, sourceRunId)) {
       return;
     }
@@ -347,6 +354,7 @@ export function createAgentEventHandler({
         sessionKey,
         seq,
         state: "final" as const,
+        ...(shouldSuppressSilent ? { silent: true as const } : {}),
         message:
           text && !shouldSuppressSilent
             ? {

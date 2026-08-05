@@ -1,4 +1,5 @@
 import {
+  getSubagentSourceToolCallId,
   listSubagentRunsForRequester,
   type SubagentRunRecord,
 } from "../../agents/subagent-registry.js";
@@ -36,6 +37,10 @@ function projectSubagentRun(run: SubagentRunRecord): SubagentRun {
     createdAt: run.createdAt,
     status: resolveSubagentRunStatus(run),
   };
+  const sourceToolCallId = optionalNonEmptyString(getSubagentSourceToolCallId(run));
+  if (sourceToolCallId) {
+    projected.sourceToolCallId = sourceToolCallId;
+  }
   const label = optionalNonEmptyString(run.label);
   const sessionLabel = optionalNonEmptyString(run.sessionLabel);
   const model = optionalNonEmptyString(run.model);

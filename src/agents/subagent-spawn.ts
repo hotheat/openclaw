@@ -714,6 +714,7 @@ export async function spawnSubagentDirect(
     spawnMode,
     taskFlowId: sharedTaskFlowId,
     trackingTaskFlowId,
+    sourceToolCallId: params.toolCallId,
   });
 
   if (hookRunner?.hasHooks("subagent_spawned")) {

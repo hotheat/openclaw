@@ -8,7 +8,11 @@ import {
   setupSessionsSpawnGatewayMock,
   setSessionsSpawnConfigOverride,
 } from "./openclaw-tools.subagents.sessions-spawn.test-harness.js";
-import { resetSubagentRegistryForTests } from "./subagent-registry.js";
+import {
+  getSubagentSourceToolCallId,
+  listSubagentRunsForRequester,
+  resetSubagentRegistryForTests,
+} from "./subagent-registry.js";
 
 vi.mock("./pi-embedded.js", () => ({
   isEmbeddedPiRunActive: () => false,
@@ -241,6 +245,12 @@ describe("openclaw-tools: subagents (sessions_spawn lifecycle)", () => {
     expect(sessionLabels[0]).toMatch(/^my-task:[a-f0-9]{8}$/i);
     expect(sessionLabels[1]).toMatch(/^my-task:[a-f0-9]{8}$/i);
     expect(sessionLabels[0]).not.toBe(sessionLabels[1]);
+
+    const runs = listSubagentRunsForRequester("main");
+    const sourceToolCallIds = runs
+      .map((run) => getSubagentSourceToolCallId(run))
+      .toSorted((left, right) => String(left).localeCompare(String(right)));
+    expect(sourceToolCallIds).toEqual(["call-label-a", "call-label-b"]);
   });
 
   it("sessions_spawn runs cleanup via lifecycle events", async () => {
