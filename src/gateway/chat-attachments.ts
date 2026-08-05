@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { estimateBase64DecodedBytes } from "../media/base64.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
+import type { WebchatAttachmentRef } from "../sessions/webchat-attachment-refs.js";
 import {
   MAX_CHAT_ATTACHMENTS,
   MAX_CHAT_WORKSPACE_ATTACHMENTS_TOTAL_BYTES,
@@ -17,7 +18,31 @@ export type ChatAttachment = {
   workspacePath?: string;
   sizeBytes?: number;
   sha256?: string;
+  attachmentId?: string;
 };
+
+const ATTACHMENT_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+export function extractWebchatAttachmentRefs(
+  attachments: readonly ChatAttachment[],
+): WebchatAttachmentRef[] | undefined {
+  const refs: WebchatAttachmentRef[] = [];
+  const seen = new Set<string>();
+  attachments.forEach((attachment, ordinal) => {
+    if (
+      attachment.type !== "workspace_file" ||
+      typeof attachment.attachmentId !== "string" ||
+      !ATTACHMENT_ID_PATTERN.test(attachment.attachmentId) ||
+      seen.has(attachment.attachmentId)
+    ) {
+      return;
+    }
+    seen.add(attachment.attachmentId);
+    refs.push({ attachmentId: attachment.attachmentId, ordinal });
+  });
+  return refs.length > 0 ? refs : undefined;
+}
 
 export type ChatImageContent = {
   type: "image";

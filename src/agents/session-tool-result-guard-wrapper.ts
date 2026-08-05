@@ -5,6 +5,11 @@ import {
   applyInputProvenanceToUserMessage,
   type InputProvenance,
 } from "../sessions/input-provenance.js";
+import {
+  applyWebchatAttachmentRefsToUserMessage,
+  normalizeWebchatAttachmentRefs,
+  type WebchatAttachmentRef,
+} from "../sessions/webchat-attachment-refs.js";
 import { materializeAssistantErrorMessage } from "./pi-embedded-helpers/images.js";
 import type { AgentToolMetadata } from "./pi-tools.types.js";
 import {
@@ -36,6 +41,7 @@ export function guardSessionManager(
     agentId?: string;
     sessionKey?: string;
     inputProvenance?: InputProvenance;
+    webchatAttachmentRefs?: readonly WebchatAttachmentRef[];
     allowSyntheticToolResults?: boolean;
     allowedToolNames?: Iterable<string>;
     toolMetadataByName?: ReadonlyMap<string, AgentToolMetadata>;
@@ -76,10 +82,26 @@ export function guardSessionManager(
       }
     : undefined;
 
+  let pendingWebchatAttachmentRefs: WebchatAttachmentRef[] | undefined;
+  try {
+    pendingWebchatAttachmentRefs = normalizeWebchatAttachmentRefs(opts?.webchatAttachmentRefs);
+  } catch {
+    pendingWebchatAttachmentRefs = undefined;
+  }
   const transformMessageForPersistence = (message: AgentMessage): AgentMessage => {
     const normalized =
       message.role === "assistant" ? materializeAssistantErrorMessage(message) : message;
-    return applyInputProvenanceToUserMessage(normalized, opts?.inputProvenance);
+    const withProvenance = applyInputProvenanceToUserMessage(normalized, opts?.inputProvenance);
+    if (withProvenance.role !== "user" || !pendingWebchatAttachmentRefs) {
+      return withProvenance;
+    }
+    const refs = pendingWebchatAttachmentRefs;
+    pendingWebchatAttachmentRefs = undefined;
+    try {
+      return applyWebchatAttachmentRefsToUserMessage(withProvenance, refs);
+    } catch {
+      return withProvenance;
+    }
   };
 
   const guard = installSessionToolResultGuard(sessionManager, {

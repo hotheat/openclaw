@@ -12,6 +12,7 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { normalizeWebchatAttachmentRefs } from "../../sessions/webchat-attachment-refs.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.js";
 import {
   stripInlineDirectiveTagsForDisplay,
@@ -27,8 +28,16 @@ import {
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
 import { materializeChatAttachment } from "../chat-attachment-materialize.js";
-import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
-import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
+import {
+  extractWebchatAttachmentRefs,
+  type ChatImageContent,
+  parseMessageWithAttachments,
+} from "../chat-attachments.js";
+import {
+  scanLeadingInboundMediaPrompt,
+  stripEnvelopeFromMessage,
+  stripEnvelopeFromMessages,
+} from "../chat-sanitize.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
 import {
   ErrorCodes,
@@ -92,6 +101,8 @@ function resolveWebchatClientSessionId(sessionKey: string): string | undefined {
 const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
 const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
 const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
+const CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE = 16;
+const CHAT_HISTORY_ATTACHMENTS_PER_RESPONSE = 256;
 const WEBCHAT_INPUT_ARTIFACT_PATH_RE =
   /[\\/]uploads[\\/]webchat[\\/][^\\/\s\]|]+[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([^\s\]|]+)(?:\s+\(([^)]+)\))?/gi;
 let chatHistoryPlaceholderEmitCount = 0;
@@ -225,82 +236,115 @@ function sanitizeChatHistoryMessages(messages: unknown[]): unknown[] {
   return changed ? next : messages;
 }
 
-type ChatHistoryImageAttachment = {
+type ChatHistoryAttachmentRef = {
   attachmentId: string;
-  fileName: string;
+  ordinal: number;
 };
 
-function extractChatHistoryImageAttachments(text: string): ChatHistoryImageAttachment[] {
-  const attachments: ChatHistoryImageAttachment[] = [];
+function extractChatHistoryMarkerAttachmentRefs(text: string): ChatHistoryAttachmentRef[] {
+  const refs: ChatHistoryAttachmentRef[] = [];
   const seen = new Set<string>();
+  const { mediaLines } = scanLeadingInboundMediaPrompt(text);
   WEBCHAT_INPUT_ARTIFACT_PATH_RE.lastIndex = 0;
-  for (const match of text.matchAll(WEBCHAT_INPUT_ARTIFACT_PATH_RE)) {
+  for (const match of mediaLines.join("\n").matchAll(WEBCHAT_INPUT_ARTIFACT_PATH_RE)) {
     const attachmentId = match[1];
-    const fileName = match[2];
-    const mimeType = match[3]?.trim().toLowerCase();
-    if (!attachmentId || !fileName || !mimeType?.startsWith("image/") || seen.has(attachmentId)) {
+    if (!attachmentId || seen.has(attachmentId)) {
       continue;
     }
     seen.add(attachmentId);
-    attachments.push({ attachmentId, fileName });
+    refs.push({ attachmentId, ordinal: refs.length });
+    if (refs.length >= CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE) {
+      break;
+    }
   }
-  return attachments;
+  return refs;
 }
 
-function annotateChatHistoryAttachmentReferences(messages: unknown[]): unknown[] {
-  let messagesChanged = false;
-  const annotatedMessages = messages.map((message) => {
+function extractMessageMarkerAttachmentRefs(message: Record<string, unknown>) {
+  const texts: string[] = [];
+  if (typeof message.content === "string") {
+    texts.push(message.content);
+  } else if (Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (
+        block &&
+        typeof block === "object" &&
+        typeof (block as { text?: unknown }).text === "string"
+      ) {
+        texts.push((block as { text: string }).text);
+      }
+    }
+  } else if (typeof message.text === "string") {
+    texts.push(message.text);
+  }
+  const seen = new Set<string>();
+  return texts
+    .flatMap((text) => extractChatHistoryMarkerAttachmentRefs(text))
+    .filter((ref) => {
+      if (seen.has(ref.attachmentId)) {
+        return false;
+      }
+      seen.add(ref.attachmentId);
+      return true;
+    })
+    .slice(0, CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE)
+    .map((ref, ordinal) => ({ ...ref, ordinal }));
+}
+
+function rebuildChatHistoryAttachmentReferences(messages: unknown[]): {
+  messages: unknown[];
+  structuredRefMessages: number;
+  markerFallbackMessages: number;
+} {
+  let structuredRefMessages = 0;
+  let markerFallbackMessages = 0;
+  const responseAttachmentIds = new Set<string>();
+  const rebuiltMessages = messages.map((message) => {
     if (!message || typeof message !== "object") {
       return message;
     }
-    const entry = message as Record<string, unknown>;
-    if (typeof entry.role !== "string" || entry.role.toLowerCase() !== "user") {
-      return message;
+    const source = message as Record<string, unknown>;
+    const entry = { ...source };
+    delete entry.attachments;
+    delete entry.__openclaw;
+    if (typeof source.role !== "string" || source.role.toLowerCase() !== "user") {
+      return entry;
     }
-    const content = entry.content;
-    if (!Array.isArray(content)) {
-      return message;
-    }
-    const attachmentReferences = content.flatMap((block) => {
-      if (!block || typeof block !== "object") {
-        return [];
+    const privateValue = source.__openclaw;
+    const structuredRefs =
+      privateValue && typeof privateValue === "object"
+        ? normalizeWebchatAttachmentRefs(
+            (privateValue as Record<string, unknown>).attachments,
+          )?.slice(0, CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE)
+        : undefined;
+    let refs = structuredRefs;
+    if (refs) {
+      structuredRefMessages += 1;
+    } else {
+      refs = extractMessageMarkerAttachmentRefs(source);
+      if (refs.length > 0) {
+        markerFallbackMessages += 1;
       }
-      const text = (block as Record<string, unknown>).text;
-      return typeof text === "string" ? extractChatHistoryImageAttachments(text) : [];
+    }
+    if (!refs || refs.length === 0) {
+      return entry;
+    }
+    const boundedRefs = refs.filter((ref) => {
+      if (responseAttachmentIds.has(ref.attachmentId)) {
+        return true;
+      }
+      if (responseAttachmentIds.size >= CHAT_HISTORY_ATTACHMENTS_PER_RESPONSE) {
+        return false;
+      }
+      responseAttachmentIds.add(ref.attachmentId);
+      return true;
     });
-    if (attachmentReferences.length === 0) {
-      return message;
+    if (boundedRefs.length === 0) {
+      return entry;
     }
-
-    let imageIndex = 0;
-    let contentChanged = false;
-    const annotatedContent = content.map((block) => {
-      if (!block || typeof block !== "object") {
-        return block;
-      }
-      const image = block as Record<string, unknown>;
-      if (image.type !== "image" || typeof image.data !== "string") {
-        return block;
-      }
-      const reference = attachmentReferences[imageIndex];
-      imageIndex += 1;
-      if (!reference) {
-        return block;
-      }
-      contentChanged = true;
-      return {
-        ...image,
-        attachmentId: reference.attachmentId,
-        fileName: reference.fileName,
-      };
-    });
-    if (!contentChanged) {
-      return message;
-    }
-    messagesChanged = true;
-    return { ...entry, content: annotatedContent };
+    return { ...entry, __openclaw: { attachments: boundedRefs } };
   });
-  return messagesChanged ? annotatedMessages : messages;
+  return { messages: rebuiltMessages, structuredRefMessages, markerFallbackMessages };
 }
 
 function jsonUtf8Bytes(value: unknown): number {
@@ -664,8 +708,8 @@ export const chatHandlers: GatewayRequestHandlers = {
     const requested = typeof limit === "number" ? limit : defaultLimit;
     const max = Math.min(hardMax, requested);
     const sliced = rawMessages.length > max ? rawMessages.slice(-max) : rawMessages;
-    const annotated = annotateChatHistoryAttachmentReferences(sliced);
-    const sanitized = stripEnvelopeFromMessages(annotated);
+    const rebuilt = rebuildChatHistoryAttachmentReferences(sliced);
+    const sanitized = stripEnvelopeFromMessages(rebuilt.messages);
     const normalized = sanitizeChatHistoryMessages(sanitized);
     const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
     const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
@@ -682,6 +726,10 @@ export const chatHandlers: GatewayRequestHandlers = {
         `chat.history omitted oversized payloads placeholders=${placeholderCount} total=${chatHistoryPlaceholderEmitCount}`,
       );
     }
+    context.logGateway.debug(
+      `chat.history attachment refs structured_ref_messages=${rebuilt.structuredRefMessages} ` +
+        `marker_fallback_messages=${rebuilt.markerFallbackMessages}`,
+    );
     let thinkingLevel = entry?.thinkingLevel;
     if (!thinkingLevel) {
       const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
@@ -927,6 +975,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         workspacePath?: string;
         sizeBytes?: number;
         sha256?: string;
+        attachmentId?: string;
       }>;
       timeoutMs?: number;
       idempotencyKey: string;
@@ -947,6 +996,7 @@ export const chatHandlers: GatewayRequestHandlers = {
     const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
     const workspaceDir = resolveAgentWorkspaceDir(cfg, sessionAgentId);
     const normalizedAttachments = normalizeRpcAttachmentsToChatAttachments(p.attachments);
+    const webchatAttachmentRefs = extractWebchatAttachmentRefs(normalizedAttachments);
     const rawMessage = inboundMessage.trim();
     if (!rawMessage && normalizedAttachments.length === 0) {
       respond(
@@ -1147,6 +1197,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           runId: clientRunId,
           abortSignal: abortController.signal,
           images: parsedImages.length > 0 ? parsedImages : undefined,
+          webchatAttachmentRefs,
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
             const connId = typeof client?.connId === "string" ? client.connId : undefined;

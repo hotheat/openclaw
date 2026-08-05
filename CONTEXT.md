@@ -98,6 +98,22 @@ _Avoid_: 裸 childSessionKey
 父 WebUI 会话的 agent 把 workspace 文件显式发布给当前浏览器会话的交付物，经私有存储与登录态鉴权下载。是"交付物发布"，不是渠道消息投递。
 _Avoid_: 文件消息、webchat 附件、media 中转
 
+**Input Artifact（输入工件）**:
+用户在 Composer 上传、随消息发给 agent 的附件（图片或文件），持久化为与 WebUI Artifact 同一存储与 ID 空间的 `direction=INPUT` artifact；`attachmentId` 即 `artifactId`，共用登录态 download 端点与 retention。Gateway 在发送时把有序私有引用写入对应 user transcript，历史回放优先读取结构化引用，缺失或不合法时再从 media marker 恢复；BFF 始终按现有 artifact 表校验会话归属并补全公开元数据。
+_Avoid_: 独立于 artifact 的 attachment、webchat 附件、临时 media
+
+**History Attachment Reference（历史附件引用）**:
+Gateway `chat.history` 从 user transcript 的私有 `__openclaw.attachments` 读取的有序 `attachmentId` 候选；旧消息或结构化字段异常时，从用户消息开头的既有 materialized media marker 回退恢复。它只在 Gateway→BFF 内部使用，不包含 workspace path、文件权威元数据或授权结论；BFF 校验后才生成浏览器可见的 `attachments[]`。
+_Avoid_: 把路径、safeName 或 marker MIME 当浏览器契约
+
+**Message-Artifact Link（消息工件关联）**:
+【备选，未实施】在 agent-server 持久记录消息/run 与有序 INPUT artifact 的关联。当前方案不需要该表；仅当 Gateway 不再保留可恢复引用、BFF 需要脱离 Gateway history 独立查询消息附件，或产品要求更强的消息级归属完整性时重新评估。
+_Avoid_: 把它当作当前 v1 前置迁移
+
+**Preview Rendition（预览态）**:
+【可选增强，未实施】从图片 artifact 派生的受限尺寸、安全、静态图，仅用于消息内联展示，区别于原文件下载。当前 v1 称为“原图内联展示”，直接复用登录态 download 端点；只有性能或产品要求成立时才新增 `/preview`。
+_Avoid_: 原文件直链、长期签名 URL
+
 **技能回显（Skill Invocation Display）**:
 从既有工具调用参数或 SKILL.md 路径派生的展示值（"使用技能：<name>"），纯展示层推断，无独立技能协议事件。
 _Avoid_: skill event、技能生命周期

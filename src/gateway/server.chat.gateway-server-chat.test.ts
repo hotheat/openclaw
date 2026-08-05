@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,6 +41,79 @@ async function waitFor(condition: () => boolean, timeoutMs = 400) {
 }
 
 describe("gateway server chat", () => {
+  test("forwards ordered WebChat attachment refs for pure, text, and mixed sends", async () => {
+    const clientSessionId = `gate_refs_${process.pid}`;
+    const sessionKey = `agent:main:webchat:scope:${clientSessionId}`;
+    const workspaceRoot = path.join(os.tmpdir(), "openclaw-gateway-test");
+    const uploadDir = path.join(workspaceRoot, "uploads", "webchat", clientSessionId);
+    const attachments = [
+      {
+        attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f",
+        fileName: "first.png",
+        mimeType: "image/png",
+        payload: "first attachment",
+      },
+      {
+        attachmentId: "4d840f03-eb9b-45a0-bab1-82ef0f47bef8",
+        fileName: "notes.md",
+        mimeType: "text/markdown",
+        payload: "second attachment",
+      },
+    ];
+    await fs.mkdir(uploadDir, { recursive: true });
+
+    try {
+      const descriptors = await Promise.all(
+        attachments.map(async (attachment) => {
+          const workspacePath = path.join(
+            "uploads",
+            "webchat",
+            clientSessionId,
+            `${attachment.attachmentId}-${attachment.fileName}`,
+          );
+          await fs.writeFile(path.join(workspaceRoot, workspacePath), attachment.payload);
+          return {
+            type: "workspace_file",
+            attachmentId: attachment.attachmentId,
+            fileName: attachment.fileName,
+            mimeType: attachment.mimeType,
+            workspacePath,
+            sizeBytes: Buffer.byteLength(attachment.payload),
+            sha256: createHash("sha256").update(attachment.payload).digest("hex"),
+          };
+        }),
+      );
+      const spy = vi.mocked(getReplyFromConfig);
+      spy.mockClear();
+
+      const cases = [
+        { message: "", descriptors: descriptors.slice(0, 1), id: "pure" },
+        { message: "read this", descriptors: descriptors.slice(0, 1), id: "text" },
+        { message: "compare", descriptors, id: "mixed" },
+      ];
+      for (const testCase of cases) {
+        const callsBefore = spy.mock.calls.length;
+        const response = await rpcReq(ws, "chat.send", {
+          sessionKey,
+          message: testCase.message,
+          idempotencyKey: `idem-webchat-refs-${testCase.id}`,
+          attachments: testCase.descriptors,
+        });
+        expect(response.ok).toBe(true);
+        await waitFor(() => spy.mock.calls.length > callsBefore);
+        const options = spy.mock.calls.at(-1)?.[1];
+        expect(options?.webchatAttachmentRefs).toEqual(
+          testCase.descriptors.map((attachment, ordinal) => ({
+            attachmentId: attachment.attachmentId,
+            ordinal,
+          })),
+        );
+      }
+    } finally {
+      await fs.rm(uploadDir, { recursive: true, force: true });
+    }
+  });
+
   test("sanitizes inbound chat.send message text and rejects null bytes", async () => {
     const nullByteRes = await rpcReq(ws, "chat.send", {
       sessionKey: "main",

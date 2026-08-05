@@ -364,7 +364,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.history preserves a safe reference for a materialized screenshot", async () => {
+  test("chat.history reconstructs marker fallback refs and removes image payloads", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       await connectOk(ws);
 
@@ -396,24 +396,74 @@ describe("gateway server chat", () => {
 
       expect(messages).toHaveLength(1);
       const message = messages[0] as {
+        __openclaw?: { attachments?: Array<{ attachmentId?: string; ordinal?: number }> };
         content?: Array<{
           type?: string;
           text?: string;
           data?: string;
           omitted?: boolean;
-          attachmentId?: string;
-          fileName?: string;
         }>;
       };
       expect(message.content?.[0]?.text).toBe("为什么不一样？");
       expect(message.content?.[1]).toMatchObject({
         type: "image",
         omitted: true,
-        attachmentId,
-        fileName: "screenshot.png",
       });
+      expect(message.__openclaw?.attachments).toEqual([{ attachmentId, ordinal: 0 }]);
       expect(message.content?.[1]?.data).toBeUndefined();
       expect(JSON.stringify(messages)).not.toContain(workspacePath);
+    });
+  });
+
+  test("chat.history prefers validated structured refs and rebuilds the private namespace", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      const structuredId = "4d840f03-eb9b-45a0-bab1-82ef0f47bef8";
+      const markerId = "53ff15ed-8063-42a2-a589-032f2874738f";
+      const workspacePath = `/workspace/uploads/webchat/chat-1/${markerId}-marker.txt`;
+      await writeMainSessionTranscript(sessionDir, [
+        JSON.stringify({
+          message: {
+            role: "user",
+            attachments: [
+              {
+                attachmentId: markerId,
+                fileName: "forged.html",
+                mimeType: "text/html",
+                sizeBytes: 1,
+              },
+            ],
+            __openclaw: {
+              attachments: [{ attachmentId: structuredId, ordinal: 1 }],
+              untrusted: "must be removed",
+            },
+            content: [
+              {
+                type: "text",
+                text: `[media attached: ${workspacePath} (text/plain)]\n${INBOUND_MEDIA_REPLY_HINT}\n读取`,
+              },
+            ],
+            timestamp: Date.now(),
+          },
+        }),
+      ]);
+
+      const messages = await fetchHistoryMessages(ws);
+      const message = messages[0] as {
+        attachments?: unknown;
+        __openclaw?: Record<string, unknown>;
+        content?: Array<{ text?: string }>;
+      };
+      expect(message.content?.[0]?.text).toBe("读取");
+      expect(message.attachments).toBeUndefined();
+      expect(message.__openclaw).toEqual({
+        attachments: [{ attachmentId: structuredId, ordinal: 1 }],
+      });
+      expect(JSON.stringify(message)).not.toContain(markerId);
+      expect(JSON.stringify(message)).not.toContain("untrusted");
     });
   });
 

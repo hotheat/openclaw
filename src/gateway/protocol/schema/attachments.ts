@@ -7,6 +7,9 @@ import {
 const AttachmentTypeSchema = Type.String({ minLength: 1, maxLength: 64 });
 const AttachmentMimeTypeSchema = Type.String({ minLength: 1, maxLength: 255 });
 const AttachmentFileNameSchema = Type.String({ minLength: 1, maxLength: 255 });
+const AttachmentIdSchema = Type.String({
+  pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+});
 
 export const InlineChatAttachmentSchema = Type.Object(
   {
@@ -26,6 +29,7 @@ export const WorkspaceFileChatAttachmentSchema = Type.Object(
     workspacePath: Type.String({ minLength: 1, maxLength: 1024 }),
     sizeBytes: Type.Integer({ minimum: 1, maximum: MAX_WEBCHAT_WORKSPACE_UPLOAD_BYTES }),
     sha256: Type.String({ pattern: "^[0-9a-fA-F]{64}$" }),
+    attachmentId: Type.Optional(AttachmentIdSchema),
   },
   { additionalProperties: false },
 );

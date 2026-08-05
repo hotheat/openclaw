@@ -9,12 +9,51 @@ import {
 } from "./chat-attachment-limits.js";
 import {
   buildMessageWithAttachments,
+  extractWebchatAttachmentRefs,
   type ChatAttachment,
   parseMessageWithAttachments,
 } from "./chat-attachments.js";
 
 const PNG_1x1 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=";
+
+describe("extractWebchatAttachmentRefs", () => {
+  it("keeps ordered IDs only for validated workspace descriptors", () => {
+    expect(
+      extractWebchatAttachmentRefs([
+        {
+          type: "workspace_file",
+          attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f",
+        },
+        { type: "image", attachmentId: "c1b389d4-a729-4c92-a627-51e9fc97e16b" },
+        {
+          type: "workspace_file",
+          attachmentId: "4d840f03-eb9b-45a0-bab1-82ef0f47bef8",
+        },
+      ]),
+    ).toEqual([
+      { attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f", ordinal: 0 },
+      { attachmentId: "4d840f03-eb9b-45a0-bab1-82ef0f47bef8", ordinal: 2 },
+    ]);
+  });
+
+  it("keeps the first ordinal for repeated workspace attachment IDs", () => {
+    const repeatedId = "53ff15ed-8063-42a2-a589-032f2874738f";
+    expect(
+      extractWebchatAttachmentRefs([
+        { type: "workspace_file", attachmentId: repeatedId },
+        { type: "workspace_file", attachmentId: repeatedId },
+        {
+          type: "workspace_file",
+          attachmentId: "4d840f03-eb9b-45a0-bab1-82ef0f47bef8",
+        },
+      ]),
+    ).toEqual([
+      { attachmentId: repeatedId, ordinal: 0 },
+      { attachmentId: "4d840f03-eb9b-45a0-bab1-82ef0f47bef8", ordinal: 2 },
+    ]);
+  });
+});
 
 async function parseWithWarnings(message: string, attachments: ChatAttachment[]) {
   const logs: string[] = [];

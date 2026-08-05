@@ -1008,6 +1008,7 @@ export async function runEmbeddedAttempt(
         agentId: sessionAgentId,
         sessionKey: params.sessionKey,
         inputProvenance: params.inputProvenance,
+        webchatAttachmentRefs: params.webchatAttachmentRefs,
         allowSyntheticToolResults: transcriptPolicy.allowSyntheticToolResults,
         allowedToolNames,
         toolMetadataByName,

@@ -8,6 +8,7 @@ import {
   hasInterSessionUserProvenance,
   normalizeInputProvenance,
 } from "../../sessions/input-provenance.js";
+import { stripOpenClawPrivateFields } from "../../sessions/webchat-attachment-refs.js";
 import { resolveImageSanitizationLimits } from "../image-sanitization.js";
 import {
   downgradeOpenAIReasoningBlocks,
@@ -538,7 +539,8 @@ export async function sanitizeSessionHistory(params: {
       provider: params.provider,
       modelId: params.modelId,
     });
-  const withInterSessionMarkers = annotateInterSessionUserMessages(params.messages);
+  const privateFieldsStripped = stripOpenClawPrivateFields(params.messages);
+  const withInterSessionMarkers = annotateInterSessionUserMessages(privateFieldsStripped);
   const sanitizedImages = await sanitizeSessionMessagesImages(
     withInterSessionMarkers,
     "session:history",

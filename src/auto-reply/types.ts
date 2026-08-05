@@ -1,4 +1,5 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
+import type { WebchatAttachmentRef } from "../sessions/webchat-attachment-refs.js";
 import type { TypingController } from "./reply/typing.js";
 
 export type BlockReplyContext = {
@@ -24,6 +25,8 @@ export type GetReplyOptions = {
   abortSignal?: AbortSignal;
   /** Optional inbound images (used for webchat attachments). */
   images?: ImageContent[];
+  /** Private references persisted with the initial WebChat user message only. */
+  webchatAttachmentRefs?: readonly WebchatAttachmentRef[];
   /** Notifies when an agent run actually starts (useful for webchat command handling). */
   onAgentRunStart?: (runId: string) => void;
   onReplyStart?: () => Promise<void> | void;

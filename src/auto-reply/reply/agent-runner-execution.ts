@@ -312,6 +312,7 @@ export async function runAgentTurnWithFallback(params: {
               return isMarkdownCapableMessageChannel(channel) ? "markdown" : "plain";
             })(),
             suppressToolErrorWarnings: params.opts?.suppressToolErrorWarnings,
+            webchatAttachmentRefs: params.opts?.webchatAttachmentRefs,
             images: params.opts?.images,
             abortSignal: params.opts?.abortSignal,
             onSessionLaneStart: params.opts?.onSessionLaneStart,

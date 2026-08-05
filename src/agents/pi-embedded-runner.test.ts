@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +12,7 @@ import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/run
 
 const embeddedSubscribeTestState = vi.hoisted(() => ({
   waitForCompactionRetryError: undefined as Error | undefined,
+  providerContexts: [] as unknown[],
 }));
 
 function createMockUsage(input: number, output: number) {
@@ -95,7 +97,8 @@ vi.mock("@mariozechner/pi-ai", async () => {
       }
       return buildAssistantMessage(model);
     },
-    streamSimple: (model: { api: string; provider: string; id: string }) => {
+    streamSimple: (model: { api: string; provider: string; id: string }, context: unknown) => {
+      embeddedSubscribeTestState.providerContexts.push(context);
       const stream = actual.createAssistantMessageEventStream();
       queueMicrotask(() => {
         stream.push({
@@ -273,6 +276,89 @@ const runDefaultEmbeddedTurn = async (sessionFile: string, prompt: string, sessi
 };
 
 describe("runEmbeddedPiAgent", () => {
+  it("persists WebChat refs through compaction without leaking them to trace or the next turn", async () => {
+    const sessionFile = nextSessionFile();
+    const sessionKey = nextSessionKey();
+    await runEmbeddedPiAgent({
+      sessionId: "session:webchat-refs",
+      sessionKey,
+      sessionFile,
+      workspaceDir,
+      config: makeOpenAiConfig(["mock-1"]),
+      prompt: "inspect attachment",
+      provider: "openai",
+      model: "mock-1",
+      timeoutMs: 5_000,
+      agentDir,
+      runId: nextRunId("webchat-refs"),
+      enqueue: immediateEnqueue,
+      webchatAttachmentRefs: [{ attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f", ordinal: 0 }],
+    });
+
+    const sessionManager = SessionManager.open(sessionFile);
+    const firstUserEntry = sessionManager
+      .getEntries()
+      .find((entry) => entry.type === "message" && entry.message.role === "user");
+    expect(firstUserEntry?.id).toEqual(expect.any(String));
+    sessionManager.appendCompaction("summary", firstUserEntry?.id as string, 1);
+    const restartedHistory = execFileSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        'import { SessionManager } from "@mariozechner/pi-coding-agent"; const messages = SessionManager.open(process.argv[1]).buildSessionContext().messages; process.stdout.write(JSON.stringify(messages));',
+        sessionFile,
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    expect(restartedHistory).toContain("__openclaw");
+    expect(restartedHistory).toContain("53ff15ed-8063-42a2-a589-032f2874738f");
+
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const tracedHistoryMessages: unknown[] = [];
+    registry.agentTraceSinks.push({
+      pluginId: "trace-test",
+      source: "trace-test",
+      sink: {
+        startRun: () => ({
+          startGeneration: (event) => {
+            tracedHistoryMessages.push(event.historyMessages);
+            return { end: () => {} };
+          },
+          end: () => {},
+        }),
+      },
+    });
+    setActivePluginRegistry(registry);
+    embeddedSubscribeTestState.providerContexts.length = 0;
+
+    try {
+      await runDefaultEmbeddedTurn(sessionFile, "next turn", sessionKey);
+    } finally {
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
+
+    const entries = await readSessionEntries(sessionFile);
+    const userMessages = entries
+      .filter((entry) => entry.type === "message")
+      .map((entry) => (entry as { message?: Record<string, unknown> }).message)
+      .filter((message) => message?.role === "user");
+    expect(userMessages[0]?.__openclaw).toEqual({
+      attachments: [{ attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f", ordinal: 0 }],
+    });
+    expect(userMessages[1]?.__openclaw).toBeUndefined();
+    expect(entries.some((entry) => entry.type === "compaction")).toBe(true);
+    expect(JSON.stringify(tracedHistoryMessages)).not.toContain("__openclaw");
+    expect(JSON.stringify(tracedHistoryMessages)).not.toContain(
+      "53ff15ed-8063-42a2-a589-032f2874738f",
+    );
+    expect(JSON.stringify(embeddedSubscribeTestState.providerContexts)).not.toContain("__openclaw");
+    expect(JSON.stringify(embeddedSubscribeTestState.providerContexts)).not.toContain(
+      "53ff15ed-8063-42a2-a589-032f2874738f",
+    );
+  });
+
   it("runs lifecycle callbacks before releasing the session lane", async () => {
     const sessionFile = nextSessionFile();
     const events: string[] = [];

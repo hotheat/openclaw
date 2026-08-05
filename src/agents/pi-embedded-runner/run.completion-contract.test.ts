@@ -19,6 +19,7 @@ const baseParams = {
   runId: "run-1",
   images: [{ type: "image" as const, mimeType: "image/png", data: "Zm9v" }],
   inboundMediaPaths: ["/tmp/input.png"],
+  webchatAttachmentRefs: [{ attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f", ordinal: 0 }],
 };
 
 const makeAssistantMessage = (overrides: Partial<AssistantMessage>): AssistantMessage =>
@@ -60,12 +61,14 @@ describe("run completion contract", () => {
       suppressLifecycleTerminal: true,
       images: baseParams.images,
       inboundMediaPaths: baseParams.inboundMediaPaths,
+      webchatAttachmentRefs: baseParams.webchatAttachmentRefs,
     });
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).toContain(
       "Your previous reply did not satisfy the run completion contract.",
     );
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.images).toBeUndefined();
     expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.inboundMediaPaths).toBeUndefined();
+    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.webchatAttachmentRefs).toBeUndefined();
     expect(result.meta.error).toBeUndefined();
   });
 

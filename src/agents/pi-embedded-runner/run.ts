@@ -1031,6 +1031,9 @@ export async function runEmbeddedPiAgent(
               lane: params.lane,
               extraSystemPrompt: params.extraSystemPrompt,
               inputProvenance: params.inputProvenance,
+              webchatAttachmentRefs: isContinuationAttempt
+                ? undefined
+                : params.webchatAttachmentRefs,
               traceParent: params.traceParent,
               streamParams: params.streamParams,
               ownerNumbers: params.ownerNumbers,

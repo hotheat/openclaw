@@ -308,6 +308,30 @@ describe("sanitizeSessionHistory", () => {
     expect(first.content as string).toContain("sourceSession=agent:main:req");
   });
 
+  it("removes private WebChat refs before provider and trace inputs are built", async () => {
+    setNonGoogleModelApi();
+    const messages = [
+      {
+        role: "user",
+        content: "inspect attachment",
+        __openclaw: {
+          attachments: [{ attachmentId: "53ff15ed-8063-42a2-a589-032f2874738f", ordinal: 0 }],
+        },
+      },
+    ] as unknown as AgentMessage[];
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-responses",
+      provider: "openai",
+      sessionManager: mockSessionManager,
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(JSON.stringify(result)).not.toContain("__openclaw");
+    expect(JSON.stringify(messages)).toContain("__openclaw");
+  });
+
   it("drops stale assistant usage snapshots kept before latest compaction summary", async () => {
     vi.mocked(helpers.isGoogleModelApi).mockReturnValue(false);
 

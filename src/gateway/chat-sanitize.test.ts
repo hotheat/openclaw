@@ -1,8 +1,19 @@
 import { describe, expect, test } from "vitest";
 import { INBOUND_MEDIA_REPLY_HINT } from "../auto-reply/media-note.js";
-import { stripEnvelopeFromMessage } from "./chat-sanitize.js";
+import { scanLeadingInboundMediaPrompt, stripEnvelopeFromMessage } from "./chat-sanitize.js";
 
 describe("stripEnvelopeFromMessage", () => {
+  test("returns only the contiguous leading media prompt lines", () => {
+    const first = "[media attached: 2 files]";
+    const second = "[media attached 1/2: /workspace/uploads/webchat/chat-1/a.txt (text/plain)]";
+    const scanned = scanLeadingInboundMediaPrompt(
+      `${first}\n${second}\n${INBOUND_MEDIA_REPLY_HINT}\n\n正文\n[media attached: body]`,
+    );
+
+    expect(scanned.mediaLines).toEqual([first, second]);
+    expect(scanned.text).toBe("正文\n[media attached: body]");
+  });
+
   test("removes message_id hint lines from user messages", () => {
     const input = {
       role: "user",

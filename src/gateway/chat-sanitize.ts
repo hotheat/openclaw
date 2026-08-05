@@ -6,23 +6,29 @@ export { stripEnvelope };
 
 const MEDIA_ATTACHED_LINE_RE = /^\[media attached(?::| \d+\/\d+:) .*\]$/;
 
-function stripLeadingInboundMediaPrompt(text: string): string {
+export type LeadingInboundMediaPrompt = {
+  mediaLines: string[];
+  text: string;
+};
+
+export function scanLeadingInboundMediaPrompt(text: string): LeadingInboundMediaPrompt {
   const lines = text.split(/\r?\n/);
   if (!MEDIA_ATTACHED_LINE_RE.test(lines[0] ?? "")) {
-    return text;
+    return { mediaLines: [], text };
   }
 
   let index = 0;
   while (index < lines.length && MEDIA_ATTACHED_LINE_RE.test(lines[index] ?? "")) {
     index += 1;
   }
+  const mediaLines = lines.slice(0, index);
   if (lines[index] === INBOUND_MEDIA_REPLY_HINT) {
     index += 1;
   }
   while (lines[index] === "") {
     index += 1;
   }
-  return lines.slice(index).join("\n");
+  return { mediaLines, text: lines.slice(index).join("\n") };
 }
 
 function stripTextForDisplay(text: string, stripUserEnvelope: boolean): string {
@@ -30,7 +36,7 @@ function stripTextForDisplay(text: string, stripUserEnvelope: boolean): string {
   if (!stripUserEnvelope) {
     return inboundStripped;
   }
-  const mediaStripped = stripLeadingInboundMediaPrompt(inboundStripped);
+  const mediaStripped = scanLeadingInboundMediaPrompt(inboundStripped).text;
   return stripMessageIdHints(stripEnvelope(mediaStripped));
 }
 
