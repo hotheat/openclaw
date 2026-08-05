@@ -1,0 +1,58 @@
+{
+  "id": "tool-request-guard",
+  "name": "Tool Request Guard",
+  "version": "0.1.0",
+  "description": "Normalizes common malformed tool arguments before execution. The initial rule-set repairs web_search language parameters to avoid provider validation failures.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "webSearch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable normalization for web_search requests."
+          },
+          "dropInvalidSearchLang": {
+            "type": "boolean",
+            "description": "Remove unsupported search_lang values instead of sending them upstream."
+          },
+          "dropInvalidUiLang": {
+            "type": "boolean",
+            "description": "Remove unsupported ui_lang values instead of sending them upstream."
+          },
+          "searchLangAliases": {
+            "type": "object",
+            "description": "Alias map applied before validating search_lang.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "uiLangAliases": {
+            "type": "object",
+            "description": "Alias map applied before validating ui_lang.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "execMessaging": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "When true, block feishu-* sessions from using exec to call openclaw message send directly."
+          },
+          "blockMessage": {
+            "type": "string",
+            "description": "Error message returned when a blocked exec openclaw message send command is detected."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/tool-error-latch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tracks tool failures per session and logs recovery transitions.",
+  "type": "commonjs",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

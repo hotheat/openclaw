@@ -511,6 +511,8 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/subagent-handoff-output-guard: {}
+
   extensions/synology-chat:
     dependencies:
       zod:
@@ -536,6 +538,10 @@ importers:
       openclaw:
         specifier: workspace:*
         version: link:../..
+
+  extensions/tool-error-latch: {}
+
+  extensions/tool-request-guard: {}
 
   extensions/twitch:
     dependencies:

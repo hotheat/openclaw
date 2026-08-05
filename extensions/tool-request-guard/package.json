@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/tool-request-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Normalizes malformed tool arguments before execution.",
+  "type": "commonjs",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

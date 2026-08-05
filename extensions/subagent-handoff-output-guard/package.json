@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/subagent-handoff-output-guard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Applies subagent artifact delivery policy and stages validated artifacts.",
+  "type": "commonjs",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "id": "subagent-handoff-output-guard",
+  "name": "Subagent Handoff Output Guard",
+  "version": "0.1.0",
+  "description": "Applies subagent artifact delivery policy, persists Feishu delivery state, blocks tombstoned artifacts, and sanitizes outward handoff text.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabledChannels": {
+        "type": "array",
+        "description": "Message channels where handoff trailers should be sanitized.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "confirmationPromptTemplate": {
+        "type": "string",
+        "description": "Deprecated compatibility setting. Confirmation prompts are now rendered by the requester-agent announce path."
+      },
+      "stagingPrefix": {
+        "type": "string",
+        "description": "Requester-workspace relative directory used for immutable subagent artifact copies. Defaults to artifacts/imports/subagent."
+      },
+      "maxArtifactsPerHandoff": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Maximum artifact count across the complete handoff. Defaults to 1."
+      },
+      "artifactProfiles": {
+        "type": "array",
+        "description": "Artifact handoff profiles. Built-in profiles can be overridden by id and new profiles can be added.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "prefix"],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "prefix": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "producerAgentIds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "requiredBasename": {
+              "type": "string"
+            },
+            "allowedExtensions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "allowedMimeTypes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "maxArtifacts": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "requireAsciiSlugBasename": {
+              "type": "boolean"
+            },
+            "requireFileNameMatchPath": {
+              "type": "boolean"
+            },
+            "deliveryPolicy": {
+              "type": "string",
+              "enum": ["auto", "confirmation"]
+            },
+            "channelPolicies": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "enum": ["auto", "confirmation"]
+              }
+            }
+          }
+        }
+      },
+      "removeExportPathFromBody": {
+        "type": "boolean",
+        "description": "Remove requester workspace paths and artifacts/... path fragments from visible message text."
+      },
+      "pendingStatePath": {
+        "type": "string",
+        "description": "Workspace-relative JSON file used to persist the latest subagent artifact delivery state. Defaults to .artifacts/state/pending-artifact-handoff.json."
+      },
+      "pendingTtlMs": {
+        "type": "number",
+        "minimum": 1,
+        "description": "Pending and tombstone state TTL in milliseconds. Defaults to 86400000."
+      },
+      "exportPrefix": {
+        "type": "string",
+        "description": "Single artifacts/-relative export prefix accepted for persisted export paths. Overrides the built-in researcher and PPTX prefixes."
+      },
+      "exportPrefixes": {
+        "type": "array",
+        "description": "Artifacts/-relative export prefixes accepted for persisted export paths. Overrides exportPrefix and the built-in researcher and PPTX prefixes.",
+        "items": {
+          "type": "string"
+        }
+      },
+      "openclawRoot": {
+        "type": "string",
+        "description": "OpenClaw state root used to derive workspace paths when the hook context does not include workspaceDir."
+      }
+    }
+  }
+}

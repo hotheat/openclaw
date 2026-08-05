@@ -1,0 +1,30 @@
+{
+  "id": "tool-error-latch",
+  "name": "Tool Error Latch",
+  "version": "0.1.0",
+  "description": "Tracks tool failures per session and logs failure and recovery transitions without modifying prompts or messages.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "description": "Master toggle for tool error latching behavior."
+      },
+      "ttlMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "description": "How long an unresolved latch stays active for a session before expiring."
+      },
+      "maxSessions": {
+        "type": "integer",
+        "minimum": 10,
+        "description": "Maximum number of sessions kept in latch memory."
+      },
+      "messageTemplate": {
+        "type": "string",
+        "description": "Deprecated compatibility option. It is ignored because this plugin no longer modifies messages."
+      }
+    }
+  }
+}

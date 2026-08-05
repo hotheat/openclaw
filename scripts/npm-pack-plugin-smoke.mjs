@@ -6,6 +6,12 @@ import path from "node:path";
 
 const rootDir = process.cwd();
 const tempDir = await fs.mkdtemp(path.join(rootDir, ".npm-pack-plugin-smoke-"));
+const expectedPluginIds = [
+  "subagent-handoff-output-guard",
+  "tool-error-latch",
+  "tool-request-guard",
+  "webui-artifacts",
+];
 
 function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -62,8 +68,17 @@ try {
     `${JSON.stringify(
       {
         plugins: {
-          allow: ["webui-artifacts"],
+          allow: expectedPluginIds,
           entries: {
+            "subagent-handoff-output-guard": {
+              enabled: true,
+            },
+            "tool-error-latch": {
+              enabled: true,
+            },
+            "tool-request-guard": {
+              enabled: true,
+            },
             "webui-artifacts": {
               enabled: true,
               config: {
@@ -96,17 +111,21 @@ try {
     },
   );
   const report = parseJsonReport(stdout);
-  const plugin = report.plugins?.find((entry) => entry.id === "webui-artifacts");
-  if (!plugin) {
-    throw new Error("packed package did not discover webui-artifacts");
-  }
-  if (plugin.status !== "loaded") {
-    throw new Error(
-      `packed webui-artifacts failed to load: ${plugin.error ?? plugin.status ?? "unknown error"}`,
-    );
+  for (const pluginId of expectedPluginIds) {
+    const plugin = report.plugins?.find((entry) => entry.id === pluginId);
+    if (!plugin) {
+      throw new Error(`packed package did not discover ${pluginId}`);
+    }
+    if (plugin.status !== "loaded" || plugin.origin !== "bundled") {
+      throw new Error(
+        `packed ${pluginId} failed bundled loading: ${plugin.error ?? plugin.status ?? plugin.origin ?? "unknown error"}`,
+      );
+    }
   }
 
-  console.log("[npm-pack-plugin-smoke] webui-artifacts loaded without src/");
+  console.log(
+    `[npm-pack-plugin-smoke] bundled plugins loaded without src/: ${expectedPluginIds.join(", ")}`,
+  );
 } finally {
   await fs.rm(tempDir, { recursive: true, force: true });
 }
