@@ -17,34 +17,63 @@ export async function loadPdfJsModule(): Promise<PdfJsModule> {
 export async function extractPdfTextFromBuffer(params: {
   buffer: Buffer;
   maxPages: number;
+  signal?: AbortSignal;
 }): Promise<{
   pageCount: number;
   text: string;
   totalPages: number;
 }> {
+  params.signal?.throwIfAborted();
   const { getDocument } = await loadPdfJsModule();
-  const pdf = await getDocument({
+  params.signal?.throwIfAborted();
+  const loadingTask = getDocument({
     data: new Uint8Array(params.buffer),
     disableWorker: true,
-  }).promise;
-  const pageCount = Math.max(1, Math.min(pdf.numPages, Math.floor(params.maxPages)));
-  const textParts: string[] = [];
-
-  for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      .map((item) => ("str" in item ? String(item.str) : ""))
-      .filter(Boolean)
-      .join(" ");
-    if (pageText) {
-      textParts.push(pageText);
-    }
+  });
+  let destroyPromise: Promise<void> | undefined;
+  const destroyLoadingTask = () =>
+    (destroyPromise ??= Promise.resolve().then(() => loadingTask.destroy()));
+  const onAbort = () => {
+    void destroyLoadingTask().catch(() => {});
+  };
+  if (params.signal?.aborted) {
+    onAbort();
+  } else {
+    params.signal?.addEventListener("abort", onAbort, { once: true });
   }
 
-  return {
-    pageCount,
-    text: textParts.join("\n\n"),
-    totalPages: pdf.numPages,
-  };
+  try {
+    params.signal?.throwIfAborted();
+    const pdf = await loadingTask.promise;
+    params.signal?.throwIfAborted();
+    const pageCount = Math.max(1, Math.min(pdf.numPages, Math.floor(params.maxPages)));
+    const textParts: string[] = [];
+
+    for (let pageNum = 1; pageNum <= pageCount; pageNum += 1) {
+      params.signal?.throwIfAborted();
+      const page = await pdf.getPage(pageNum);
+      params.signal?.throwIfAborted();
+      const textContent = await page.getTextContent();
+      params.signal?.throwIfAborted();
+      const pageText = textContent.items
+        .map((item) => ("str" in item ? String(item.str) : ""))
+        .filter(Boolean)
+        .join(" ");
+      if (pageText) {
+        textParts.push(pageText);
+      }
+    }
+
+    return {
+      pageCount,
+      text: textParts.join("\n\n"),
+      totalPages: pdf.numPages,
+    };
+  } catch (error) {
+    params.signal?.throwIfAborted();
+    throw error;
+  } finally {
+    params.signal?.removeEventListener("abort", onAbort);
+    await destroyLoadingTask().catch(() => {});
+  }
 }

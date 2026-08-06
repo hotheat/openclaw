@@ -506,6 +506,8 @@ export type ToolsConfig = {
       maxResponseBytes?: number;
       /** Timeout in seconds for fetch requests. */
       timeoutSeconds?: number;
+      /** Total timeout in seconds across the complete fetch and fallback chain. */
+      totalTimeoutSeconds?: number;
       /** Cache TTL in minutes for fetched content. */
       cacheTtlMinutes?: number;
       /** Maximum number of redirects to follow (default: 3). */

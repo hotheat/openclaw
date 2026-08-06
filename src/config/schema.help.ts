@@ -610,6 +610,8 @@ export const FIELD_HELP: Record<string, string> = {
     "Hard cap for web_fetch maxChars (applies to config and tool calls; when omitted, uses the larger of 20000 and configured maxChars).",
   "tools.web.fetch.maxResponseBytes": "Max download size before truncation.",
   "tools.web.fetch.timeoutSeconds": "Timeout in seconds for web_fetch requests.",
+  "tools.web.fetch.totalTimeoutSeconds":
+    "Total timeout in seconds across the complete web_fetch attempt, including serial fallbacks (default: at least 100 seconds and never below configured stage timeouts).",
   "tools.web.fetch.cacheTtlMinutes": "Cache TTL in minutes for web_fetch results.",
   "tools.web.fetch.maxRedirects": "Maximum redirects allowed for web_fetch (default: 3).",
   "tools.web.fetch.userAgent": "Override User-Agent header for web_fetch requests.",

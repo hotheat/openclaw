@@ -182,6 +182,8 @@ await grok_search({
 说明：
 
 - `web_fetch` 先尝试 Readability，再尝试 Firecrawl（如果已配置）
+- `tools.web.fetch.timeoutSeconds` 限制单个抓取阶段（默认 30 秒）
+- `tools.web.fetch.totalTimeoutSeconds` 限制包含串行回退在内的完整抓取；未配置时至少为 100 秒，且不会低于已配置的阶段超时
 - 不执行 JavaScript
 - 对重 JS 页面优先使用浏览器工具
 - 默认缓存 15 分钟

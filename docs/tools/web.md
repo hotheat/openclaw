@@ -186,6 +186,8 @@ Tool parameters:
 Notes:
 
 - `web_fetch` uses Readability first, then Firecrawl if configured
+- `tools.web.fetch.timeoutSeconds` limits each fetch stage (default: 30 seconds)
+- `tools.web.fetch.totalTimeoutSeconds` limits the complete attempt, including serial fallbacks; when omitted, it defaults to at least 100 seconds and never below configured stage timeouts
 - `web_fetch` does not execute JavaScript
 - for JS-heavy sites, prefer the browser tool
 - responses are cached by default for 15 minutes

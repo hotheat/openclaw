@@ -2010,6 +2010,7 @@ Z.AI 模型可通过 `zai/<model>` 使用（例如 `zai/glm-4.7`），需要环�
 - `tools.web.fetch.maxCharsCap`（默认 20000）
 - `tools.web.fetch.maxResponseBytes`（默认 750000 字节）
 - `tools.web.fetch.timeoutSeconds`（默认 30）
+- `tools.web.fetch.totalTimeoutSeconds`（完整抓取及串行回退的总超时；未配置时至少为 100 秒，且不低于已配置的阶段超时）
 - `tools.web.fetch.cacheTtlMinutes`（默认 15）
 - `tools.web.fetch.userAgent`（可选覆盖）
 - `tools.web.fetch.readability`（默认 true；禁用后仅使用基本 HTML 清理）

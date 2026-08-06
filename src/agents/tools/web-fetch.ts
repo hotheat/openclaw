@@ -43,6 +43,7 @@ const DEFAULT_FETCH_PDF_MIN_TEXT_CHARS = 200;
 const FETCH_MAX_RESPONSE_BYTES_MIN = 32_000;
 const FETCH_MAX_RESPONSE_BYTES_MAX = 10_000_000;
 const DEFAULT_FETCH_MAX_REDIRECTS = 3;
+const DEFAULT_FETCH_TOTAL_TIMEOUT_SECONDS = 100;
 const DEFAULT_ERROR_MAX_CHARS = 4_000;
 const DEFAULT_ERROR_MAX_BYTES = 64_000;
 const DEFAULT_FIRECRAWL_BASE_URL = "https://api.firecrawl.dev";
@@ -53,6 +54,152 @@ const DEFAULT_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const FETCH_CACHE = new Map<string, CacheEntry<Record<string, unknown>>>();
+
+type WebFetchDeadline = {
+  deadlineAt: number;
+  totalTimeoutMs: number;
+  signal: AbortSignal;
+};
+
+class WebFetchTimeoutError extends Error {
+  readonly code: "WEB_FETCH_TIMEOUT" | "WEB_FETCH_STAGE_TIMEOUT";
+
+  constructor(
+    readonly scope: "total" | "stage",
+    readonly timeoutMs: number,
+    stage?: string,
+  ) {
+    super(
+      scope === "total"
+        ? `Web fetch timed out after ${timeoutMs}ms.`
+        : `Web fetch stage "${stage ?? "unknown"}" timed out after ${timeoutMs}ms.`,
+    );
+    this.name = "TimeoutError";
+    this.code = scope === "total" ? "WEB_FETCH_TIMEOUT" : "WEB_FETCH_STAGE_TIMEOUT";
+  }
+}
+
+function abortReasonFromSignal(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) {
+    return signal.reason;
+  }
+  return new DOMException("This operation was aborted", "AbortError");
+}
+
+async function runWithWebFetchHardTimeout<T>(params: {
+  timeoutMs: number;
+  signal?: AbortSignal;
+  timeoutError: () => Error;
+  work: (signal: AbortSignal) => Promise<T>;
+  onLateResult?: (value: T) => void | Promise<void>;
+}): Promise<T> {
+  const timeoutMs = Math.max(1, Math.floor(params.timeoutMs));
+  if (params.signal?.aborted) {
+    throw abortReasonFromSignal(params.signal);
+  }
+
+  const controller = new AbortController();
+  let rejectAbort: (reason?: unknown) => void = () => {};
+  let discardLateResult = false;
+  const abortPromise = new Promise<never>((_, reject) => {
+    rejectAbort = reject;
+  });
+  const abort = (reason: unknown) => {
+    if (controller.signal.aborted) {
+      return;
+    }
+    rejectAbort(reason);
+    controller.abort(reason);
+  };
+  const onExternalAbort = () => abort(abortReasonFromSignal(params.signal as AbortSignal));
+  const timeoutHandle = setTimeout(() => abort(params.timeoutError()), timeoutMs);
+  params.signal?.addEventListener("abort", onExternalAbort, { once: true });
+
+  const workPromise = Promise.resolve()
+    .then(() => params.work(controller.signal))
+    .then((value) => {
+      if (discardLateResult && params.onLateResult) {
+        void Promise.resolve(params.onLateResult(value)).catch(() => {});
+      }
+      return value;
+    });
+
+  try {
+    return await Promise.race([workPromise, abortPromise]);
+  } catch (error) {
+    discardLateResult = true;
+    void workPromise.catch(() => {});
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+    params.signal?.removeEventListener("abort", onExternalAbort);
+  }
+}
+
+async function runWebFetchStage<T>(params: {
+  deadline: WebFetchDeadline;
+  label: string;
+  timeoutMs: number;
+  work: (signal: AbortSignal, timeoutMs: number) => Promise<T>;
+  onLateResult?: (value: T) => void | Promise<void>;
+}): Promise<T> {
+  params.deadline.signal.throwIfAborted();
+  const remainingMs = Math.floor(params.deadline.deadlineAt - Date.now());
+  if (remainingMs <= 0) {
+    throw new WebFetchTimeoutError("total", params.deadline.totalTimeoutMs);
+  }
+
+  const stageLimitMs = Math.max(1, Math.floor(params.timeoutMs));
+  const timeoutMs = Math.max(1, Math.min(stageLimitMs, remainingMs));
+  const limitedByDeadline = remainingMs <= stageLimitMs;
+  return await runWithWebFetchHardTimeout({
+    timeoutMs,
+    signal: params.deadline.signal,
+    timeoutError: () =>
+      limitedByDeadline
+        ? new WebFetchTimeoutError("total", params.deadline.totalTimeoutMs)
+        : new WebFetchTimeoutError("stage", timeoutMs, params.label),
+    work: (signal) => params.work(signal, timeoutMs),
+    onLateResult: params.onLateResult,
+  });
+}
+
+async function runWebFetchResponseStage<T>(params: {
+  deadline: WebFetchDeadline;
+  responseController: AbortController;
+  label: string;
+  timeoutMs: number;
+  work: () => Promise<T>;
+}): Promise<T> {
+  return await runWebFetchStage({
+    deadline: params.deadline,
+    label: params.label,
+    timeoutMs: params.timeoutMs,
+    work: async (signal) => {
+      const onAbort = () => {
+        if (!params.responseController.signal.aborted) {
+          params.responseController.abort(abortReasonFromSignal(signal));
+        }
+      };
+      if (signal.aborted) {
+        onAbort();
+      } else {
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      try {
+        return await params.work();
+      } finally {
+        signal.removeEventListener("abort", onAbort);
+      }
+    },
+  });
+}
+
+function throwIfWebFetchDeadlineError(error: unknown): void {
+  if (error instanceof WebFetchTimeoutError && error.scope === "total") {
+    throw error;
+  }
+}
 
 const WebFetchSchema = Type.Object({
   url: Type.String({ description: "HTTP or HTTPS URL to fetch." }),
@@ -141,6 +288,17 @@ function resolveFetchMaxResponseBytes(fetch?: WebFetchConfig): number {
   }
   const value = Math.floor(raw);
   return Math.min(FETCH_MAX_RESPONSE_BYTES_MAX, Math.max(FETCH_MAX_RESPONSE_BYTES_MIN, value));
+}
+
+function resolveFetchTotalTimeoutSeconds(params: {
+  fetch?: WebFetchConfig;
+  stageTimeoutSeconds: number[];
+}): number {
+  const configured = params.fetch?.totalTimeoutSeconds;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured);
+  }
+  return Math.max(DEFAULT_FETCH_TOTAL_TIMEOUT_SECONDS, ...params.stageTimeoutSeconds);
 }
 
 function resolveFirecrawlConfig(fetch?: WebFetchConfig): FirecrawlFetchConfig {
@@ -845,13 +1003,19 @@ type WebFetchRuntimeParams = FirecrawlRuntimeParams &
     maxResponseBytes: number;
     maxRedirects: number;
     timeoutSeconds: number;
+    totalTimeoutSeconds: number;
     cacheTtlMs: number;
     userAgent: string;
     readabilityEnabled: boolean;
     signal?: AbortSignal;
   };
 
-type RemoteFallbackRuntimeParams = WebFetchRuntimeParams & {
+type ActiveWebFetchRuntimeParams = WebFetchRuntimeParams & {
+  deadline: WebFetchDeadline;
+  signal: AbortSignal;
+};
+
+type RemoteFallbackRuntimeParams = ActiveWebFetchRuntimeParams & {
   urlToFetch: string;
   finalUrlFallback: string;
   statusFallback: number;
@@ -907,7 +1071,7 @@ function toJinaReaderContentParams(
 }
 
 async function maybeFetchJinaReaderWebFetchPayload(
-  params: WebFetchRuntimeParams & {
+  params: ActiveWebFetchRuntimeParams & {
     urlToFetch: string;
     finalUrlFallback: string;
     statusFallback: number;
@@ -924,7 +1088,17 @@ async function maybeFetchJinaReaderWebFetchPayload(
     return null;
   }
 
-  const jinaReader = await fetchJinaReaderContent(jinaReaderParams);
+  const jinaReader = await runWebFetchStage({
+    deadline: params.deadline,
+    label: "jina-reader",
+    timeoutMs: params.timeoutSeconds * 1000,
+    work: (signal, timeoutMs) =>
+      fetchJinaReaderContent({
+        ...jinaReaderParams,
+        timeoutSeconds: timeoutMs / 1000,
+        signal,
+      }),
+  });
   const payload = buildJinaReaderWebFetchPayload({
     jinaReader,
     rawUrl: params.url,
@@ -939,7 +1113,7 @@ async function maybeFetchJinaReaderWebFetchPayload(
 }
 
 async function maybeFetchFirecrawlWebFetchPayload(
-  params: WebFetchRuntimeParams & {
+  params: ActiveWebFetchRuntimeParams & {
     urlToFetch: string;
     finalUrlFallback: string;
     statusFallback: number;
@@ -956,7 +1130,17 @@ async function maybeFetchFirecrawlWebFetchPayload(
     return null;
   }
 
-  const firecrawl = await fetchFirecrawlContent(firecrawlParams);
+  const firecrawl = await runWebFetchStage({
+    deadline: params.deadline,
+    label: "firecrawl",
+    timeoutMs: params.firecrawlTimeoutSeconds * 1000,
+    work: (signal, timeoutMs) =>
+      fetchFirecrawlContent({
+        ...firecrawlParams,
+        timeoutSeconds: timeoutMs / 1000,
+        signal,
+      }),
+  });
   const payload = buildFirecrawlWebFetchPayload({
     firecrawl,
     rawUrl: params.url,
@@ -971,7 +1155,7 @@ async function maybeFetchFirecrawlWebFetchPayload(
 }
 
 async function maybeFetchScrapeWebFetchPayload(
-  params: WebFetchRuntimeParams & {
+  params: ActiveWebFetchRuntimeParams & {
     urlToFetch: string;
     finalUrlFallback: string;
     statusFallback: number;
@@ -983,12 +1167,18 @@ async function maybeFetchScrapeWebFetchPayload(
     return null;
   }
 
-  const scrape = await fetchScrapeContent({
-    url: params.urlToFetch,
-    extractMode: params.extractMode,
-    baseUrl: params.scrapeBaseUrl,
-    timeoutSeconds: params.timeoutSeconds,
-    signal: params.signal,
+  const scrape = await runWebFetchStage({
+    deadline: params.deadline,
+    label: "scraping-get",
+    timeoutMs: params.timeoutSeconds * 1000,
+    work: (signal, timeoutMs) =>
+      fetchScrapeContent({
+        url: params.urlToFetch,
+        extractMode: params.extractMode,
+        baseUrl: params.scrapeBaseUrl as string,
+        timeoutSeconds: timeoutMs / 1000,
+        signal,
+      }),
   });
   const payload = buildScrapeWebFetchPayload({
     scrape,
@@ -1020,6 +1210,7 @@ async function maybeFetchFallbackWebFetchPayload(
     }
   } catch (error) {
     params.signal?.throwIfAborted();
+    throwIfWebFetchDeadlineError(error);
     if (error instanceof SsrFBlockedError) {
       throw error;
     }
@@ -1038,6 +1229,7 @@ async function maybeFetchFallbackWebFetchPayload(
       }
     } catch (error) {
       params.signal?.throwIfAborted();
+      throwIfWebFetchDeadlineError(error);
       errors.push({ label: "firecrawl", message: toErrorMessage(error) });
       if (shouldTryJinaReaderAfterFirecrawlError(error)) {
         params.signal?.throwIfAborted();
@@ -1051,6 +1243,7 @@ async function maybeFetchFallbackWebFetchPayload(
           }
         } catch (jinaReaderError) {
           params.signal?.throwIfAborted();
+          throwIfWebFetchDeadlineError(jinaReaderError);
           errors.push({ label: "jina-reader", message: toErrorMessage(jinaReaderError) });
         }
       }
@@ -1061,8 +1254,9 @@ async function maybeFetchFallbackWebFetchPayload(
 }
 
 async function runPdfWebFetch(
-  params: WebFetchRuntimeParams & {
+  params: ActiveWebFetchRuntimeParams & {
     res: Response;
+    responseController: AbortController;
     finalUrl: string;
     status: number;
     normalizedContentType: string;
@@ -1071,13 +1265,27 @@ async function runPdfWebFetch(
   },
 ): Promise<Record<string, unknown>> {
   try {
-    const buffer = await readResponseWithLimit(
-      params.res,
-      Math.max(params.maxResponseBytes, DEFAULT_FETCH_PDF_MAX_RESPONSE_BYTES),
-    );
-    const extracted = await extractPdfTextFromBuffer({
-      buffer,
-      maxPages: DEFAULT_FETCH_PDF_MAX_PAGES,
+    const buffer = await runWebFetchResponseStage({
+      deadline: params.deadline,
+      responseController: params.responseController,
+      label: "pdf-response-body",
+      timeoutMs: params.timeoutSeconds * 1000,
+      work: async () =>
+        await readResponseWithLimit(
+          params.res,
+          Math.max(params.maxResponseBytes, DEFAULT_FETCH_PDF_MAX_RESPONSE_BYTES),
+        ),
+    });
+    const extracted = await runWebFetchStage({
+      deadline: params.deadline,
+      label: "pdf-extraction",
+      timeoutMs: params.timeoutSeconds * 1000,
+      work: async (signal) =>
+        await extractPdfTextFromBuffer({
+          buffer,
+          maxPages: DEFAULT_FETCH_PDF_MAX_PAGES,
+          signal,
+        }),
     });
     const text = extracted.text.trim();
     if (text.length < DEFAULT_FETCH_PDF_MIN_TEXT_CHARS) {
@@ -1099,6 +1307,11 @@ async function runPdfWebFetch(
     writeCache(FETCH_CACHE, params.cacheKey, payload, params.cacheTtlMs);
     return payload;
   } catch (error) {
+    params.signal.throwIfAborted();
+    if (error instanceof WebFetchTimeoutError) {
+      throw error;
+    }
+    throwIfWebFetchDeadlineError(error);
     const fallback = await maybeFetchFallbackWebFetchPayload(
       {
         ...params,
@@ -1120,7 +1333,9 @@ async function runPdfWebFetch(
   }
 }
 
-async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string, unknown>> {
+async function runWebFetchWithinDeadline(
+  params: ActiveWebFetchRuntimeParams,
+): Promise<Record<string, unknown>> {
   const cacheKey = normalizeCacheKey(
     `fetch:${params.url}:${params.extractMode}:${params.maxChars}`,
   );
@@ -1140,22 +1355,33 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
   }
 
   const start = Date.now();
+  const responseController = new AbortController();
   let res: Response;
   let release: (() => Promise<void>) | null = null;
   let finalUrl = params.url;
   try {
-    const result = await fetchWithSsrFGuard({
-      url: params.url,
-      fetchImpl: resolveWebFetch(),
-      maxRedirects: params.maxRedirects,
+    const result = await runWebFetchStage({
+      deadline: params.deadline,
+      label: "direct-fetch",
       timeoutMs: params.timeoutSeconds * 1000,
-      signal: params.signal,
-      init: {
-        headers: {
-          Accept: "text/markdown, text/html;q=0.9, */*;q=0.1",
-          "User-Agent": params.userAgent,
-          "Accept-Language": "en-US,en;q=0.9",
-        },
+      work: (signal, timeoutMs) =>
+        fetchWithSsrFGuard({
+          url: params.url,
+          fetchImpl: resolveWebFetch(),
+          maxRedirects: params.maxRedirects,
+          timeoutMs,
+          signal: AbortSignal.any([signal, params.deadline.signal, responseController.signal]),
+          init: {
+            headers: {
+              Accept: "text/markdown, text/html;q=0.9, */*;q=0.1",
+              "User-Agent": params.userAgent,
+              "Accept-Language": "en-US,en;q=0.9",
+            },
+          },
+        }),
+      onLateResult: async (lateResult) => {
+        void lateResult.response.body?.cancel().catch(() => {});
+        void lateResult.release().catch(() => {});
       },
     });
     res = result.response;
@@ -1171,6 +1397,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
     }
   } catch (error) {
     params.signal?.throwIfAborted();
+    throwIfWebFetchDeadlineError(error);
     if (error instanceof SsrFBlockedError) {
       throw error;
     }
@@ -1193,7 +1420,13 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
 
   try {
     if (!res.ok) {
-      const rawDetailResult = await readResponseText(res, { maxBytes: DEFAULT_ERROR_MAX_BYTES });
+      const rawDetailResult = await runWebFetchResponseStage({
+        deadline: params.deadline,
+        responseController,
+        label: "error-response-body",
+        timeoutMs: params.timeoutSeconds * 1000,
+        work: async () => await readResponseText(res, { maxBytes: DEFAULT_ERROR_MAX_BYTES }),
+      });
       const rawDetail = rawDetailResult.text;
       const detail = formatWebFetchErrorDetail({
         detail: rawDetail,
@@ -1225,6 +1458,7 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       return await runPdfWebFetch({
         ...params,
         res,
+        responseController,
         finalUrl,
         status: res.status,
         normalizedContentType,
@@ -1233,9 +1467,16 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       });
     }
 
-    const bodyResult = await readResponseText(res, {
-      maxBytes: params.maxResponseBytes,
-      throwOnError: true,
+    const bodyResult = await runWebFetchResponseStage({
+      deadline: params.deadline,
+      responseController,
+      label: "response-body",
+      timeoutMs: params.timeoutSeconds * 1000,
+      work: async () =>
+        await readResponseText(res, {
+          maxBytes: params.maxResponseBytes,
+          throwOnError: true,
+        }),
     });
     const body = bodyResult.text;
     const responseTruncatedWarning = bodyResult.truncated
@@ -1253,19 +1494,31 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
       }
     } else if (contentType.includes("text/html")) {
       if (params.readabilityEnabled) {
-        const readable = await extractReadableContent({
-          html: body,
-          url: finalUrl,
-          extractMode: params.extractMode,
+        const readable = await runWebFetchStage({
+          deadline: params.deadline,
+          label: "readability",
+          timeoutMs: params.timeoutSeconds * 1000,
+          work: async () =>
+            await extractReadableContent({
+              html: body,
+              url: finalUrl,
+              extractMode: params.extractMode,
+            }),
         });
         if (readable?.text) {
-          const validation = await validateHtmlExtractionResult({
-            html: body,
-            extractedText:
-              params.extractMode === "text" ? readable.text : markdownToText(readable.text),
-            title: readable.title,
-            contentType,
-            httpStatus: res.status,
+          const validation = await runWebFetchStage({
+            deadline: params.deadline,
+            label: "readability-validation",
+            timeoutMs: params.timeoutSeconds * 1000,
+            work: async () =>
+              await validateHtmlExtractionResult({
+                html: body,
+                extractedText:
+                  params.extractMode === "text" ? readable.text : markdownToText(readable.text),
+                title: readable.title,
+                contentType,
+                httpStatus: res.status,
+              }),
           });
           if (validation.failureClass) {
             logDebug(
@@ -1367,9 +1620,29 @@ async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string
     return payload;
   } finally {
     if (release) {
-      await release();
+      void release().catch(() => {});
     }
   }
+}
+
+async function runWebFetch(params: WebFetchRuntimeParams): Promise<Record<string, unknown>> {
+  const startedAt = Date.now();
+  const totalTimeoutMs = params.totalTimeoutSeconds * 1000;
+  const deadline: Omit<WebFetchDeadline, "signal"> = {
+    deadlineAt: startedAt + totalTimeoutMs,
+    totalTimeoutMs,
+  };
+  return await runWithWebFetchHardTimeout({
+    timeoutMs: totalTimeoutMs,
+    signal: params.signal,
+    timeoutError: () => new WebFetchTimeoutError("total", totalTimeoutMs),
+    work: (signal) =>
+      runWebFetchWithinDeadline({
+        ...params,
+        signal,
+        deadline: { ...deadline, signal },
+      }),
+  });
 }
 
 function resolveFirecrawlEndpoint(baseUrl: string): string {
@@ -1410,6 +1683,11 @@ export function createWebFetchTool(options?: {
     firecrawl?.timeoutSeconds ?? fetch?.timeoutSeconds,
     DEFAULT_TIMEOUT_SECONDS,
   );
+  const timeoutSeconds = resolveTimeoutSeconds(fetch?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS);
+  const totalTimeoutSeconds = resolveFetchTotalTimeoutSeconds({
+    fetch,
+    stageTimeoutSeconds: [timeoutSeconds, firecrawlTimeoutSeconds],
+  });
   const jinaReader = resolveJinaReaderConfig(fetch);
   const jinaReaderEnabled = resolveJinaReaderEnabled({ jinaReader });
   const jinaReaderApiKey = resolveJinaReaderApiKey(jinaReader);
@@ -1440,7 +1718,8 @@ export function createWebFetchTool(options?: {
         ),
         maxResponseBytes,
         maxRedirects: resolveMaxRedirects(fetch?.maxRedirects, DEFAULT_FETCH_MAX_REDIRECTS),
-        timeoutSeconds: resolveTimeoutSeconds(fetch?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS),
+        timeoutSeconds,
+        totalTimeoutSeconds,
         cacheTtlMs: resolveCacheTtlMs(fetch?.cacheTtlMinutes, DEFAULT_CACHE_TTL_MINUTES),
         userAgent,
         readabilityEnabled,

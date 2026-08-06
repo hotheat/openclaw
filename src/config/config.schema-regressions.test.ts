@@ -203,6 +203,7 @@ describe("config schema regressions", () => {
             maxChars: 20_000,
             maxCharsCap: 20_000,
             maxResponseBytes: 750_000,
+            totalTimeoutSeconds: 300,
           },
         },
       },
