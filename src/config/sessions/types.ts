@@ -123,6 +123,8 @@ export type SessionEntry = {
   dailyMemoryCapturePendingSessionId?: string;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
+  /** User-defined display title. Unlike label, this is not a routing alias. */
+  title?: string;
   label?: string;
   displayName?: string;
   channel?: string;

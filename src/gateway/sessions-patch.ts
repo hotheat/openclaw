@@ -27,6 +27,7 @@ import { applyVerboseOverride, parseVerboseOverride } from "../sessions/level-ov
 import { applyModelOverrideToSessionEntry } from "../sessions/model-overrides.js";
 import { normalizeSendPolicy } from "../sessions/send-policy.js";
 import { parseSessionLabel } from "../sessions/session-label.js";
+import { parseSessionTitle } from "../sessions/session-title.js";
 import {
   ErrorCodes,
   type ErrorShape,
@@ -156,6 +157,14 @@ export async function applySessionsPatchToStore(params: {
       }
       next.label = parsed.label;
     }
+  }
+
+  if ("title" in patch && patch.title !== undefined) {
+    const parsed = parseSessionTitle(patch.title);
+    if (!parsed.ok) {
+      return invalid(parsed.error);
+    }
+    next.title = parsed.title;
   }
 
   if ("thinkingLevel" in patch) {

@@ -49,8 +49,8 @@ _Avoid_: transparent proxy, gateway passthrough
 ### WebUI 桥接
 
 **WebChat Session（webchat 隔离会话）**:
-BFF 为浏览器聊天绑定的 Gateway 会话，key 形如 `agent:{agentId}:webchat:{clientInstanceId}:{clientSessionId}`；transcript 独立于其他渠道会话。
-_Avoid_: main 会话（有歧义，见下）
+BFF 为浏览器聊天绑定的 Gateway 会话，key 形如 `agent:{agentId}:webchat:{namespace}:{clientSessionId}`，第四段是 scope namespace（tenant + effective user + target 的 hash）；transcript 独立于其他渠道会话。
+_Avoid_: main 会话（有歧义，见下）、clientInstanceId（namespace 的旧称）
 
 **交付界面（Delivery Surface）**:
 一次运行实际面向的交付形态，由 channel 与会话身份**共同**决定，与单一 channel 值不等价。同一个 channel 值可以对应不同交付界面（后台运行与浏览器聊天都可能以 `internal` 执行），同一个交付界面也可能以多个 channel 值出现。决定该次运行加载哪些工具、以及提示词描述哪些能力。
@@ -117,6 +117,24 @@ _Avoid_: 原文件直链、长期签名 URL
 **技能回显（Skill Invocation Display）**:
 从既有工具调用参数或 SKILL.md 路径派生的展示值（"使用技能：<name>"），纯展示层推断，无独立技能协议事件。
 _Avoid_: skill event、技能生命周期
+
+### 会话管理
+
+**会话标题（Session Title）**:
+WebChat 用户为自己会话设置的展示名，存于 OpenClaw `SessionEntry.title`；自由字符串，不要求唯一，不参与会话寻址。
+_Avoid_: 写入 label、可寻址标题
+
+**会话别名（Session Label）**:
+CLI/admin 为会话设置的全局唯一寻址别名（`SessionEntry.label`），被 resolve、按 label 发送与搜索使用。
+_Avoid_: 用户标题、显示名
+
+**会话分组（Session Group）**:
+agent-server 持有的、按用户与 target 隔离的会话组织元数据（名称、颜色、排序）；OpenClaw 无对应领域模型。删除分组只解除归属，不删除会话。
+_Avoid_: OpenClaw 侧分组、跨 target 分组
+
+**删除协调状态（Delete Coordination State）**:
+agent-server 为跨存储会话删除维护的 active/deleting/deleted 三态；deleted 是永久 tombstone，拦截旧入口对已删会话的发送。Gateway 超时视为结果不确定，只能由对账收敛。
+_Avoid_: 把 Gateway 超时当删除失败
 
 ### apply_patch 与文件边界
 

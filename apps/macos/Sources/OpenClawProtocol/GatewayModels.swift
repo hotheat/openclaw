@@ -1142,6 +1142,7 @@ public struct SessionsResolveParams: Codable, Sendable {
 
 public struct SessionsPatchParams: Codable, Sendable {
     public let key: String
+    public let title: String?
     public let label: AnyCodable?
     public let thinkinglevel: AnyCodable?
     public let verboselevel: AnyCodable?
@@ -1160,6 +1161,7 @@ public struct SessionsPatchParams: Codable, Sendable {
 
     public init(
         key: String,
+        title: String?,
         label: AnyCodable?,
         thinkinglevel: AnyCodable?,
         verboselevel: AnyCodable?,
@@ -1177,6 +1179,7 @@ public struct SessionsPatchParams: Codable, Sendable {
         groupactivation: AnyCodable?)
     {
         self.key = key
+        self.title = title
         self.label = label
         self.thinkinglevel = thinkinglevel
         self.verboselevel = verboselevel
@@ -1196,6 +1199,7 @@ public struct SessionsPatchParams: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case key
+        case title
         case label
         case thinkinglevel = "thinkingLevel"
         case verboselevel = "verboseLevel"
@@ -1307,6 +1311,38 @@ public struct SessionsUsageParams: Codable, Sendable {
         case utcoffset = "utcOffset"
         case limit
         case includecontextweight = "includeContextWeight"
+    }
+}
+
+public struct WebchatSessionsRenameParams: Codable, Sendable {
+    public let key: String
+    public let title: String
+
+    public init(
+        key: String,
+        title: String)
+    {
+        self.key = key
+        self.title = title
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case title
+    }
+}
+
+public struct WebchatSessionsDeleteParams: Codable, Sendable {
+    public let key: String
+
+    public init(
+        key: String)
+    {
+        self.key = key
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
     }
 }
 

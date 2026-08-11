@@ -831,6 +831,7 @@ export function listSessionsFromStore(params: {
         key,
         entry,
         kind: classifySessionKey(key, entry),
+        title: entry?.title,
         label: entry?.label,
         displayName,
         channel,
@@ -866,7 +867,7 @@ export function listSessionsFromStore(params: {
 
   if (search) {
     sessions = sessions.filter((s) => {
-      const fields = [s.displayName, s.label, s.subject, s.sessionId, s.key];
+      const fields = [s.title, s.displayName, s.label, s.subject, s.sessionId, s.key];
       return fields.some((f) => typeof f === "string" && f.toLowerCase().includes(search));
     });
   }

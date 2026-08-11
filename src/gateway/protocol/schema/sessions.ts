@@ -52,6 +52,7 @@ export const SessionsResolveParamsSchema = Type.Object(
 export const SessionsPatchParamsSchema = Type.Object(
   {
     key: NonEmptyString,
+    title: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
     label: Type.Optional(Type.Union([SessionLabelString, Type.Null()])),
     thinkingLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     verboseLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
@@ -99,6 +100,19 @@ export const SessionsDeleteParamsSchema = Type.Object(
     // Internal control: when false, still unbind thread bindings but skip hook emission.
     emitLifecycleHooks: Type.Optional(Type.Boolean()),
   },
+  { additionalProperties: false },
+);
+
+export const WebchatSessionsRenameParamsSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    title: Type.String({ minLength: 1, maxLength: 64 }),
+  },
+  { additionalProperties: false },
+);
+
+export const WebchatSessionsDeleteParamsSchema = Type.Object(
+  { key: NonEmptyString },
   { additionalProperties: false },
 );
 

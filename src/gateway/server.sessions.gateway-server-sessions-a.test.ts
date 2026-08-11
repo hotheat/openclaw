@@ -1080,6 +1080,116 @@ describe("gateway server sessions", () => {
     ws.close();
   });
 
+  test("backend client can rename and idempotently delete only parent WebChat sessions", async () => {
+    const { dir } = await createSessionStoreDir();
+    const key = "agent:main:webchat:0123456789abcdef:chat_one";
+    await writeSingleLineSession(dir, "sess-webchat", "hello");
+    await writeSessionStore({
+      entries: {
+        [key]: { sessionId: "sess-webchat", updatedAt: Date.now() },
+        "agent:main:subagent:child": { sessionId: "sess-child", updatedAt: Date.now() },
+      },
+    });
+
+    const { ws } = await openClient({
+      client: {
+        id: GATEWAY_CLIENT_IDS.GATEWAY_CLIENT,
+        version: "1.0.0",
+        platform: "test",
+        mode: GATEWAY_CLIENT_MODES.BACKEND,
+      },
+      scopes: ["operator.write"],
+    });
+
+    const renamed = await rpcReq<{ title: string }>(ws, "webchat.sessions.rename", {
+      key,
+      title: "  Shared research title  ",
+    });
+    expect(renamed.ok).toBe(true);
+    expect(renamed.payload?.title).toBe("Shared research title");
+
+    const rejectedChild = await rpcReq(ws, "webchat.sessions.rename", {
+      key: "agent:main:subagent:child",
+      title: "private",
+    });
+    expect(rejectedChild.ok).toBe(false);
+    expect(rejectedChild.error?.message).toMatch(/parent WebChat session key/i);
+
+    const rejectedExtraDeleteField = await rpcReq(ws, "webchat.sessions.delete", {
+      key,
+      deleteTranscript: false,
+    });
+    expect(rejectedExtraDeleteField.ok).toBe(false);
+
+    const deleted = await rpcReq<{ deleted: boolean; archived: string[] }>(
+      ws,
+      "webchat.sessions.delete",
+      { key },
+    );
+    expect(deleted.ok).toBe(true);
+    expect(deleted.payload?.deleted).toBe(true);
+    expect(deleted.payload?.archived).toHaveLength(1);
+
+    const repeated = await rpcReq<{ deleted: boolean }>(ws, "webchat.sessions.delete", { key });
+    expect(repeated.ok).toBe(true);
+    expect(repeated.payload?.deleted).toBe(false);
+    ws.close();
+  });
+
+  test("narrow WebChat mutations reject non-backend clients", async () => {
+    const key = "agent:main:webchat:0123456789abcdef:chat_one";
+    await createSessionStoreDir();
+    await writeSessionStore({
+      entries: { [key]: { sessionId: "sess-webchat", updatedAt: Date.now() } },
+    });
+    const { ws } = await openClient({ scopes: ["operator.write"] });
+
+    const renamed = await rpcReq(ws, "webchat.sessions.rename", { key, title: "private" });
+    expect(renamed.ok).toBe(false);
+    expect(renamed.error?.message).toMatch(/backend Gateway client required/i);
+    ws.close();
+  });
+
+  test("sessions.reset preserves user title while label uniqueness remains unchanged", async () => {
+    const firstKey = "agent:main:webchat:0123456789abcdef:chat_one";
+    const secondKey = "agent:main:webchat:0123456789abcdef:chat_two";
+    await createSessionStoreDir();
+    await writeSessionStore({
+      entries: {
+        [firstKey]: {
+          sessionId: "sess-one",
+          updatedAt: Date.now(),
+          title: "Shared title",
+          label: "unique-one",
+        },
+        [secondKey]: {
+          sessionId: "sess-two",
+          updatedAt: Date.now(),
+          title: "Shared title",
+          label: "unique-two",
+        },
+      },
+    });
+    const { ws } = await openClient();
+
+    const duplicateLabel = await rpcReq(ws, "sessions.patch", {
+      key: secondKey,
+      label: "unique-one",
+    });
+    expect(duplicateLabel.ok).toBe(false);
+    expect(duplicateLabel.error?.message).toMatch(/label already in use/i);
+
+    const reset = await rpcReq<{ entry: { title?: string; label?: string } }>(
+      ws,
+      "sessions.reset",
+      { key: firstKey },
+    );
+    expect(reset.ok).toBe(true);
+    expect(reset.payload?.entry.title).toBe("Shared title");
+    expect(reset.payload?.entry.label).toBe("unique-one");
+    ws.close();
+  });
+
   test("Control UI clients cannot patch or delete sessions", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-webchat-"));
     const storePath = path.join(dir, "sessions.json");

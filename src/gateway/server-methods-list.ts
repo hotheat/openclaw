@@ -54,6 +54,8 @@ const BASE_METHODS = [
   "sessions.reset",
   "sessions.delete",
   "sessions.compact",
+  "webchat.sessions.rename",
+  "webchat.sessions.delete",
   "subagents.list",
   "last-heartbeat",
   "set-heartbeats",

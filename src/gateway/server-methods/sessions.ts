@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { abortEmbeddedPiRun, waitForEmbeddedPiRunEnd } from "../../agents/pi-embedded.js";
+import { isParentWebchatSessionKey } from "../../agents/session-surface.js";
 import { revokeTaskFlowAccessForSessionKey } from "../../agents/taskflow/lifecycle.js";
 import { stopSubagentsForRequester } from "../../auto-reply/reply/abort.js";
 import { clearSessionQueues } from "../../auto-reply/reply/queue.js";
@@ -21,6 +22,8 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
+import { abortChatRunsForSessionKey } from "../chat-abort.js";
+import { GATEWAY_CLIENT_MODES, normalizeGatewayClientMode } from "../protocol/client-info.js";
 import {
   ErrorCodes,
   errorShape,
@@ -31,6 +34,8 @@ import {
   validateSessionsPreviewParams,
   validateSessionsResetParams,
   validateSessionsResolveParams,
+  validateWebchatSessionsDeleteParams,
+  validateWebchatSessionsRenameParams,
 } from "../protocol/index.js";
 import {
   archiveFileOnDisk,
@@ -92,6 +97,31 @@ function rejectWebchatSessionMutation(params: {
       `gateway UI clients cannot ${params.action} sessions; use chat.send for session-scoped updates`,
     ),
   );
+  return true;
+}
+
+function requireBackendWebchatSessionMutation(params: {
+  client: GatewayClient | null;
+  key: string;
+  respond: RespondFn;
+}): boolean {
+  const mode = normalizeGatewayClientMode(params.client?.connect?.client?.mode);
+  if (mode !== GATEWAY_CLIENT_MODES.BACKEND) {
+    params.respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "backend Gateway client required"),
+    );
+    return false;
+  }
+  if (!isParentWebchatSessionKey(params.key)) {
+    params.respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "canonical parent WebChat session key required"),
+    );
+    return false;
+  }
   return true;
 }
 
@@ -209,6 +239,75 @@ async function ensureSessionRuntimeCleanup(params: {
     ErrorCodes.UNAVAILABLE,
     `Session ${params.key} is still active; try again in a moment.`,
   );
+}
+
+async function executeSessionDelete(params: {
+  key: string;
+  deleteTranscript: boolean;
+  emitLifecycleHooks: boolean;
+  respond: RespondFn;
+  context: Parameters<typeof abortChatRunsForSessionKey>[0];
+}) {
+  const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(params.key);
+  const mainKey = resolveMainSessionKey(cfg);
+  if (target.canonicalKey === mainKey) {
+    params.respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, `Cannot delete the main session (${mainKey}).`),
+    );
+    return;
+  }
+
+  const { entry } = loadSessionEntry(params.key);
+  const sessionId = entry?.sessionId;
+  abortChatRunsForSessionKey(params.context, {
+    sessionKey: target.canonicalKey ?? params.key,
+    stopReason: "session_deleted",
+  });
+  const cleanupError = await ensureSessionRuntimeCleanup({
+    cfg,
+    key: params.key,
+    target,
+    sessionId,
+  });
+  if (cleanupError) {
+    params.respond(false, undefined, cleanupError);
+    return;
+  }
+  const deleted = await updateSessionStore(storePath, (store) => {
+    const { primaryKey } = migrateAndPruneSessionStoreKey({
+      cfg,
+      key: params.key,
+      store,
+    });
+    const hadEntry = Boolean(store[primaryKey]);
+    if (hadEntry) {
+      delete store[primaryKey];
+    }
+    return hadEntry;
+  });
+
+  const archived =
+    deleted && params.deleteTranscript
+      ? archiveSessionTranscriptsForSession({
+          sessionId,
+          storePath,
+          sessionFile: entry?.sessionFile,
+          agentId: target.agentId,
+          reason: "deleted",
+        })
+      : [];
+  if (deleted) {
+    await emitSessionUnboundLifecycleEvent({
+      cfg,
+      targetSessionKey: target.canonicalKey ?? params.key,
+      reason: "session-delete",
+      emitHooks: params.emitLifecycleHooks,
+    });
+  }
+
+  params.respond(true, { ok: true, key: target.canonicalKey, deleted, archived }, undefined);
 }
 
 export const sessionsHandlers: GatewayRequestHandlers = {
@@ -395,6 +494,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         model: entry?.model,
         contextTokens: entry?.contextTokens,
         sendPolicy: entry?.sendPolicy,
+        title: entry?.title,
         label: entry?.label,
         origin: snapshotSessionOrigin(entry),
         lastChannel: entry?.lastChannel,
@@ -426,7 +526,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
     respond(true, { ok: true, key: target.canonicalKey, entry: next }, undefined);
   },
-  "sessions.delete": async ({ params, respond, client, isWebchatConnect }) => {
+  "sessions.delete": async ({ params, respond, client, isWebchatConnect, context }) => {
     if (!assertValidParams(params, validateSessionsDeleteParams, "sessions.delete", respond)) {
       return;
     }
@@ -439,56 +539,74 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(key);
-    const mainKey = resolveMainSessionKey(cfg);
-    if (target.canonicalKey === mainKey) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, `Cannot delete the main session (${mainKey}).`),
-      );
-      return;
-    }
-
     const deleteTranscript = typeof p.deleteTranscript === "boolean" ? p.deleteTranscript : true;
-
-    const { entry } = loadSessionEntry(key);
-    const sessionId = entry?.sessionId;
-    const cleanupError = await ensureSessionRuntimeCleanup({ cfg, key, target, sessionId });
-    if (cleanupError) {
-      respond(false, undefined, cleanupError);
+    await executeSessionDelete({
+      key,
+      deleteTranscript,
+      emitLifecycleHooks: p.emitLifecycleHooks !== false,
+      respond,
+      context,
+    });
+  },
+  "webchat.sessions.rename": async ({ params, respond, client, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateWebchatSessionsRenameParams,
+        "webchat.sessions.rename",
+        respond,
+      )
+    ) {
       return;
     }
-    const deleted = await updateSessionStore(storePath, (store) => {
-      const { primaryKey } = migrateAndPruneSessionStoreKey({ cfg, key, store });
-      const hadEntry = Boolean(store[primaryKey]);
-      if (hadEntry) {
-        delete store[primaryKey];
-      }
-      return hadEntry;
-    });
-
-    const archived =
-      deleted && deleteTranscript
-        ? archiveSessionTranscriptsForSession({
-            sessionId,
-            storePath,
-            sessionFile: entry?.sessionFile,
-            agentId: target.agentId,
-            reason: "deleted",
-          })
-        : [];
-    if (deleted) {
-      const emitLifecycleHooks = p.emitLifecycleHooks !== false;
-      await emitSessionUnboundLifecycleEvent({
-        cfg,
-        targetSessionKey: target.canonicalKey ?? key,
-        reason: "session-delete",
-        emitHooks: emitLifecycleHooks,
-      });
+    const key = requireSessionKey(params.key, respond);
+    if (!key || !requireBackendWebchatSessionMutation({ client, key, respond })) {
+      return;
     }
-
-    respond(true, { ok: true, key: target.canonicalKey, deleted, archived }, undefined);
+    const { entry } = loadSessionEntry(key);
+    if (!entry) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "session not found"));
+      return;
+    }
+    const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(key);
+    const applied = await updateSessionStore(storePath, async (store) => {
+      const { primaryKey } = migrateAndPruneSessionStoreKey({ cfg, key, store });
+      return await applySessionsPatchToStore({
+        cfg,
+        store,
+        storeKey: primaryKey,
+        patch: { key, title: params.title },
+        loadGatewayModelCatalog: context.loadGatewayModelCatalog,
+      });
+    });
+    if (!applied.ok) {
+      respond(false, undefined, applied.error);
+      return;
+    }
+    respond(true, { ok: true, key: target.canonicalKey, title: applied.entry.title }, undefined);
+  },
+  "webchat.sessions.delete": async ({ params, respond, client, context }) => {
+    if (
+      !assertValidParams(
+        params,
+        validateWebchatSessionsDeleteParams,
+        "webchat.sessions.delete",
+        respond,
+      )
+    ) {
+      return;
+    }
+    const key = requireSessionKey(params.key, respond);
+    if (!key || !requireBackendWebchatSessionMutation({ client, key, respond })) {
+      return;
+    }
+    await executeSessionDelete({
+      key,
+      deleteTranscript: true,
+      emitLifecycleHooks: true,
+      respond,
+      context,
+    });
   },
   "sessions.compact": async ({ params, respond }) => {
     if (!assertValidParams(params, validateSessionsCompactParams, "sessions.compact", respond)) {

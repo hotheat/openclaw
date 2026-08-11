@@ -55,6 +55,43 @@ function makeKimiSubagentCfg(params: {
 }
 
 describe("gateway sessions patch", () => {
+  test("stores trimmed titles without applying label uniqueness", async () => {
+    const store: Record<string, SessionEntry> = {
+      "agent:main:webchat:scope:first": {
+        sessionId: "first",
+        updatedAt: 1,
+        title: "Shared title",
+      },
+      "agent:main:webchat:scope:second": { sessionId: "second", updatedAt: 1 },
+    };
+    const res = await applySessionsPatchToStore({
+      cfg: {} as OpenClawConfig,
+      store,
+      storeKey: "agent:main:webchat:scope:second",
+      patch: { key: "agent:main:webchat:scope:second", title: "  Shared title  " },
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) {
+      return;
+    }
+    expect(res.entry.title).toBe("Shared title");
+  });
+
+  test.each(["   ", "x".repeat(65)])("rejects invalid session title %j", async (title) => {
+    const res = await applySessionsPatchToStore({
+      cfg: {} as OpenClawConfig,
+      store: {},
+      storeKey: "agent:main:webchat:scope:session",
+      patch: { key: "agent:main:webchat:scope:session", title },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.message).toContain("invalid title");
+    }
+  });
+
   test("persists thinkingLevel=off (does not clear)", async () => {
     const store: Record<string, SessionEntry> = {};
     const res = await applySessionsPatchToStore({

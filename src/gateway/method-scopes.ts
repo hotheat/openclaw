@@ -92,6 +92,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "chat.steer",
     "chat.abort",
     "chat.attachment.materialize",
+    "webchat.sessions.rename",
+    "webchat.sessions.delete",
     "browser.request",
     "push.test",
   ],

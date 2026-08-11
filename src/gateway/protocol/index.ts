@@ -190,6 +190,10 @@ import {
   SessionsResolveParamsSchema,
   type SessionsUsageParams,
   SessionsUsageParamsSchema,
+  type WebchatSessionsDeleteParams,
+  WebchatSessionsDeleteParamsSchema,
+  type WebchatSessionsRenameParams,
+  WebchatSessionsRenameParamsSchema,
   type SubagentRun,
   SubagentRunSchema,
   type SubagentRunStatus,
@@ -314,6 +318,12 @@ export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
 );
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
+export const validateWebchatSessionsRenameParams = ajv.compile<WebchatSessionsRenameParams>(
+  WebchatSessionsRenameParamsSchema,
+);
+export const validateWebchatSessionsDeleteParams = ajv.compile<WebchatSessionsDeleteParams>(
+  WebchatSessionsDeleteParamsSchema,
+);
 export const validateSubagentsListParams =
   ajv.compile<SubagentsListParams>(SubagentsListParamsSchema);
 export const validateSubagentsListResult =
@@ -471,6 +481,8 @@ export {
   SessionsDeleteParamsSchema,
   SessionsCompactParamsSchema,
   SessionsUsageParamsSchema,
+  WebchatSessionsRenameParamsSchema,
+  WebchatSessionsDeleteParamsSchema,
   SubagentRunStatusSchema,
   SubagentRunSchema,
   SubagentsListParamsSchema,
@@ -624,6 +636,8 @@ export type {
   SessionsDeleteParams,
   SessionsCompactParams,
   SessionsUsageParams,
+  WebchatSessionsRenameParams,
+  WebchatSessionsDeleteParams,
   SubagentRunStatus,
   SubagentRun,
   SubagentsListParams,

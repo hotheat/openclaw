@@ -131,6 +131,8 @@ import {
   SessionsResetParamsSchema,
   SessionsResolveParamsSchema,
   SessionsUsageParamsSchema,
+  WebchatSessionsDeleteParamsSchema,
+  WebchatSessionsRenameParamsSchema,
 } from "./sessions.js";
 import { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
 import {
@@ -191,6 +193,8 @@ export const ProtocolSchemas: Record<string, TSchema> = {
   SessionsDeleteParams: SessionsDeleteParamsSchema,
   SessionsCompactParams: SessionsCompactParamsSchema,
   SessionsUsageParams: SessionsUsageParamsSchema,
+  WebchatSessionsRenameParams: WebchatSessionsRenameParamsSchema,
+  WebchatSessionsDeleteParams: WebchatSessionsDeleteParamsSchema,
   SubagentRunStatus: SubagentRunStatusSchema,
   SubagentRun: SubagentRunSchema,
   SubagentsListParams: SubagentsListParamsSchema,

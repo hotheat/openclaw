@@ -124,6 +124,8 @@ import type {
   SessionsResetParamsSchema,
   SessionsResolveParamsSchema,
   SessionsUsageParamsSchema,
+  WebchatSessionsDeleteParamsSchema,
+  WebchatSessionsRenameParamsSchema,
 } from "./sessions.js";
 import type { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
 import type {
@@ -180,6 +182,8 @@ export type SessionsResetParams = Static<typeof SessionsResetParamsSchema>;
 export type SessionsDeleteParams = Static<typeof SessionsDeleteParamsSchema>;
 export type SessionsCompactParams = Static<typeof SessionsCompactParamsSchema>;
 export type SessionsUsageParams = Static<typeof SessionsUsageParamsSchema>;
+export type WebchatSessionsRenameParams = Static<typeof WebchatSessionsRenameParamsSchema>;
+export type WebchatSessionsDeleteParams = Static<typeof WebchatSessionsDeleteParamsSchema>;
 export type SubagentRunStatus = Static<typeof SubagentRunStatusSchema>;
 export type SubagentRun = Static<typeof SubagentRunSchema>;
 export type SubagentsListParams = Static<typeof SubagentsListParamsSchema>;

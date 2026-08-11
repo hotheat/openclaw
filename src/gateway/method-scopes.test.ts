@@ -37,6 +37,14 @@ describe("method scope resolution", () => {
     expect(resolveLeastPrivilegeOperatorScopesForMethod("chat.steer")).toEqual(["operator.write"]);
   });
 
+  it("exposes backend WebChat mutations with operator.write", () => {
+    for (const method of ["webchat.sessions.rename", "webchat.sessions.delete"]) {
+      expect(listGatewayMethods()).toContain(method);
+      expect(coreGatewayHandlers[method]).toBeDefined();
+      expect(resolveLeastPrivilegeOperatorScopesForMethod(method)).toEqual(["operator.write"]);
+    }
+  });
+
   it("returns empty scopes for unknown methods", () => {
     expect(resolveLeastPrivilegeOperatorScopesForMethod("totally.unknown.method")).toEqual([]);
   });
