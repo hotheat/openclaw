@@ -578,11 +578,12 @@ const sqlTag = vi.hoisted(() => {
 });
 
 const createPostgresMemoryClient = vi.hoisted(() => vi.fn(() => sqlTag));
-const ensurePostgresMemorySchema = vi.hoisted(() => vi.fn(async () => {}));
+const verifyPostgresMemorySchema = vi.hoisted(() => vi.fn(async () => {}));
 
 vi.mock("./postgres-client.js", () => {
   return {
     createPostgresMemoryClient,
+    formatPostgresMemoryLocation: () => "localhost:5432/agent_server/agent_memory",
     requirePostgresStoreConfig: (config: {
       store: { driver: string; postgres?: Record<string, unknown> };
     }) => {
@@ -598,7 +599,7 @@ vi.mock("./postgres-schema.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./postgres-schema.js")>();
   return {
     ...actual,
-    ensurePostgresMemorySchema,
+    verifyPostgresMemorySchema,
   };
 });
 
@@ -634,13 +635,8 @@ function createConfig(): OpenClawConfig {
           store: {
             driver: "postgres",
             postgres: {
-              host: "localhost",
-              port: 5432,
-              database: "agent_server",
-              user: "postgres",
-              password: "secret",
+              url: "postgresql://postgres:secret@localhost:5432/agent_server",
               schema: "agent_memory",
-              ssl: false,
               poolMax: 10,
               echo: false,
             },
@@ -678,7 +674,7 @@ describe("PostgresMemoryManager", () => {
     sqlTag.reset();
     watchMock.mockClear();
     createPostgresMemoryClient.mockClear();
-    ensurePostgresMemorySchema.mockClear();
+    verifyPostgresMemorySchema.mockClear();
     embeddingBatchVectors.value = null;
     embeddingDims.value = 1024;
   });
@@ -701,7 +697,7 @@ describe("PostgresMemoryManager", () => {
     await manager?.initStore?.();
 
     expect(createPostgresMemoryClient).toHaveBeenCalledTimes(1);
-    expect(ensurePostgresMemorySchema).toHaveBeenCalledTimes(1);
+    expect(verifyPostgresMemorySchema).toHaveBeenCalledTimes(1);
     expect(manager?.status().custom).toMatchObject({
       driver: "postgres",
       schema: "agent_memory",
@@ -810,16 +806,18 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
-  it("repairs postgres memory store in place", async () => {
+  it("requires the explicit migration CLI for postgres store repair", async () => {
     const manager = await PostgresMemoryManager.get({
       cfg: createConfig(),
       agentId: "main",
     });
 
     expect(manager).toBeTruthy();
-    await manager?.repairStore?.();
+    await expect(manager?.repairStore?.()).rejects.toThrow(
+      "openclaw memory postgres migrate --schema agent_memory",
+    );
 
-    expect(ensurePostgresMemorySchema).toHaveBeenCalledTimes(1);
+    expect(verifyPostgresMemorySchema).not.toHaveBeenCalled();
     await manager?.close?.();
   });
 
@@ -988,7 +986,7 @@ describe("PostgresMemoryManager", () => {
     await manager?.close?.();
   });
 
-  it("creates a compatible hnsw index when no postgres index exists", async () => {
+  it("does not create a missing hnsw index during runtime embedding migration", async () => {
     embeddingDims.value = 3;
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-pg-memory-migrate-no-index-"));
     const workspaceDir = path.join(tmpRoot, "workspace");
@@ -1021,23 +1019,10 @@ describe("PostgresMemoryManager", () => {
       enabled: true,
       available: true,
       dims: 3,
-      indexAvailable: true,
+      indexAvailable: false,
     });
     expect(sqlTag.calls.some((query) => query.includes("FROM pg_indexes"))).toBe(true);
-    expect(
-      sqlTag.calls.some(
-        (query) =>
-          query.includes("CREATE INDEX IF NOT EXISTS") &&
-          query.includes("chunks_embedding_vec_3_hnsw_idx"),
-      ),
-    ).toBe(true);
-    expect(
-      sqlTag.calls.some((query) =>
-        query.includes(
-          'CREATE INDEX IF NOT EXISTS "agent_memory"."chunks_embedding_vec_3_hnsw_idx"',
-        ),
-      ),
-    ).toBe(false);
+    expect(sqlTag.calls.some((query) => query.includes("CREATE INDEX"))).toBe(false);
 
     await manager?.close?.();
   });
@@ -1106,7 +1091,7 @@ describe("PostgresMemoryManager", () => {
     await manager?.initStore?.();
     await manager?.sync?.({ force: true });
 
-    expect(ensurePostgresMemorySchema).toHaveBeenCalledWith(
+    expect(verifyPostgresMemorySchema).toHaveBeenCalledWith(
       expect.objectContaining({ requireVector: false }),
     );
     expect(

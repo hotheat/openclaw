@@ -2,7 +2,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Command } from "commander";
+import { InvalidArgumentError, type Command } from "commander";
 import { resolveDefaultAgentId } from "../agents/agent-scope.js";
 import { resolveMemorySearchConfig } from "../agents/memory-search.js";
 import { loadConfig } from "../config/config.js";
@@ -11,6 +11,12 @@ import { resolveSessionTranscriptsDirForAgent } from "../config/sessions/paths.j
 import { setVerbose } from "../globals.js";
 import { getMemorySearchManager, type MemorySearchManagerResult } from "../memory/index.js";
 import { listMemoryFiles, normalizeExtraMemoryPaths } from "../memory/internal.js";
+import {
+  createPostgresMemoryClient,
+  requirePostgresStoreConfig,
+} from "../memory/postgres-client.js";
+import { runPostgresMemoryMigration } from "../memory/postgres-migration.js";
+import { inspectPostgresMemorySchema } from "../memory/postgres-schema.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatDocsLink } from "../terminal/links.js";
 import { colorize, isRich, theme } from "../terminal/theme.js";
@@ -26,6 +32,9 @@ type MemoryCommandOptions = {
   index?: boolean;
   force?: boolean;
   verbose?: boolean;
+  schema?: string;
+  dryRun?: boolean;
+  vectorDims?: number;
 };
 
 type MemoryManager = NonNullable<MemorySearchManagerResult["manager"]>;
@@ -68,6 +77,14 @@ function resolveAgent(cfg: ReturnType<typeof loadConfig>, agent?: string) {
   return resolveDefaultAgentId(cfg);
 }
 
+function parsePositiveIntegerOption(value: string, optionName: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new InvalidArgumentError(`${optionName} must be a positive integer.`);
+  }
+  return parsed;
+}
+
 function resolveAgentIds(cfg: ReturnType<typeof loadConfig>, agent?: string): string[] {
   const trimmed = agent?.trim();
   if (trimmed) {
@@ -78,6 +95,23 @@ function resolveAgentIds(cfg: ReturnType<typeof loadConfig>, agent?: string): st
     return list.map((entry) => entry.id).filter(Boolean);
   }
   return [resolveDefaultAgentId(cfg)];
+}
+
+function resolvePostgresStoreForAgent(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  agentId: string;
+  schema?: string;
+}) {
+  const resolved = resolveMemorySearchConfig(params.cfg, params.agentId);
+  if (!resolved) {
+    throw new Error(`Memory search is disabled for agent "${params.agentId}".`);
+  }
+  const store = requirePostgresStoreConfig(resolved);
+  const schema = params.schema?.trim();
+  return {
+    store: schema ? { ...store, schema } : store,
+    requireVector: resolved.store.vector.enabled,
+  };
 }
 
 function formatExtraPaths(workspaceDir: string, extraPaths: string[]): string[] {
@@ -695,7 +729,8 @@ export function registerMemoryCli(program: Command) {
       () =>
         `\n${theme.heading("Examples:")}\n${formatHelpExamples([
           ["openclaw memory status", "Show index and provider status."],
-          ["openclaw memory repair-store", "Repair pgvector columns and metadata in place."],
+          ["openclaw memory postgres status", "Validate PostgreSQL memory schema."],
+          ["openclaw memory postgres migrate", "Run explicit PostgreSQL schema migration."],
           ["openclaw memory migrate-embeddings", "Re-embed existing chunks without re-chunking."],
           [
             "openclaw memory migrate-search-tokens",
@@ -706,6 +741,126 @@ export function registerMemoryCli(program: Command) {
           ["openclaw memory status --json", "Output machine-readable JSON."],
         ])}\n\n${theme.muted("Docs:")} ${formatDocsLink("/cli/memory", "docs.openclaw.ai/cli/memory")}\n`,
     );
+
+  const postgresMemory = memory
+    .command("postgres")
+    .description("Inspect or migrate the PostgreSQL memory store");
+
+  postgresMemory
+    .command("status")
+    .description("Validate the configured PostgreSQL memory schema without modifying it")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--schema <name>", "Override the configured PostgreSQL schema")
+    .option("--json", "Output machine-readable JSON", false)
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const cfg = loadConfig();
+      const agentId = resolveAgent(cfg, opts.agent);
+      let sql: ReturnType<typeof createPostgresMemoryClient> | undefined;
+      try {
+        const { store, requireVector } = resolvePostgresStoreForAgent({
+          cfg,
+          agentId,
+          schema: opts.schema,
+        });
+        sql = createPostgresMemoryClient(store);
+        const inspection = await inspectPostgresMemorySchema({
+          sql,
+          config: store,
+          requireVector,
+        });
+        if (opts.json) {
+          defaultRuntime.log(
+            JSON.stringify(
+              {
+                agentId,
+                schema: store.schema,
+                ...inspection,
+              },
+              null,
+              2,
+            ),
+          );
+        } else if (inspection.ok) {
+          defaultRuntime.log(`PostgreSQL memory schema is compatible (${store.schema}).`);
+        } else {
+          defaultRuntime.error(
+            `PostgreSQL memory schema is incompatible (${store.schema}): ${inspection.issues.join(
+              "; ",
+            )}`,
+          );
+        }
+        if (!inspection.ok) {
+          process.exitCode = 1;
+        }
+      } catch (err) {
+        defaultRuntime.error(`PostgreSQL memory status failed: ${formatErrorMessage(err)}`);
+        process.exitCode = 1;
+      } finally {
+        await sql?.end({ timeout: 0 }).catch(() => {});
+      }
+    });
+
+  postgresMemory
+    .command("migrate")
+    .description("Migrate the PostgreSQL memory schema using temporary administrator credentials")
+    .option("--agent <id>", "Agent id (default: default agent)")
+    .option("--schema <name>", "Override the configured PostgreSQL schema")
+    .option(
+      "--vector-dims <number>",
+      "Expected embedding dimensions when migrating an empty vector store",
+      (value) => parsePositiveIntegerOption(value, "--vector-dims"),
+    )
+    .option("--dry-run", "Print migration steps without connecting to PostgreSQL", false)
+    .option("--verbose", "Verbose logging", false)
+    .action(async (opts: MemoryCommandOptions) => {
+      setVerbose(Boolean(opts.verbose));
+      const migrationUrl = process.env.OPENCLAW_MEMORY_MIGRATION_URL?.trim();
+      if (!migrationUrl) {
+        defaultRuntime.error("PostgreSQL memory migration requires OPENCLAW_MEMORY_MIGRATION_URL.");
+        process.exitCode = 1;
+        return;
+      }
+      try {
+        const cfg = loadConfig();
+        const agentId = resolveAgent(cfg, opts.agent);
+        const { store, requireVector } = resolvePostgresStoreForAgent({
+          cfg,
+          agentId,
+          schema: opts.schema,
+        });
+        if (opts.dryRun) {
+          defaultRuntime.log(
+            [
+              `PostgreSQL memory migration dry run (${store.schema}):`,
+              "- create or update extensions, schema, tables, columns, and base indexes",
+              "- backfill embedding_vec and vector_dims",
+              opts.vectorDims
+                ? `- create dimension-specific HNSW indexes, including ${opts.vectorDims} dimensions`
+                : "- create dimension-specific HNSW indexes from existing metadata",
+              "- verify the resulting schema",
+            ].join("\n"),
+          );
+          return;
+        }
+        const result = await runPostgresMemoryMigration({
+          url: migrationUrl,
+          schema: store.schema,
+          requireVector,
+          ...(opts.vectorDims === undefined ? {} : { expectedVectorDims: opts.vectorDims }),
+          echo: Boolean(opts.verbose),
+        });
+        const dims =
+          result.vectorDims.length > 0
+            ? `; vector dimensions: ${result.vectorDims.join(", ")}`
+            : "";
+        defaultRuntime.log(`PostgreSQL memory migration completed (${result.schema})${dims}.`);
+      } catch (err) {
+        defaultRuntime.error(`PostgreSQL memory migration failed: ${formatErrorMessage(err)}`);
+        process.exitCode = 1;
+      }
+    });
 
   memory
     .command("init-store")

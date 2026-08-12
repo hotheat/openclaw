@@ -36,11 +36,17 @@ import {
 import { cosineSimilarity, runWithConcurrency } from "./internal.js";
 import {
   createPostgresMemoryClient,
+  formatPostgresMemoryLocation,
   requirePostgresStoreConfig,
   type PostgresMemoryClient,
   type PostgresMemoryStoreConfig,
 } from "./postgres-client.js";
-import { ensurePostgresMemorySchema, qualifyTable } from "./postgres-schema.js";
+import {
+  isCompatiblePostgresMemoryHnswIndex,
+  POSTGRES_HNSW_MAX_VECTOR_DIMS,
+  qualifyTable,
+  verifyPostgresMemorySchema,
+} from "./postgres-schema.js";
 import {
   buildSearchTokenEntries,
   buildSearchTokenValues,
@@ -51,7 +57,6 @@ import {
 import { buildSessionEntry, listSessionFilesForAgent } from "./session-files.js";
 import type {
   MemoryEmbeddingProbeResult,
-  MemoryRepairProgressUpdate,
   MemoryProviderStatus,
   MemorySearchManager,
   MemorySearchResult,
@@ -85,7 +90,6 @@ const SEARCH_TOKEN_MIGRATION_BATCH_SIZE = 256;
 const KEYWORD_TRIGRAM_CANDIDATE_MULTIPLIER = 4;
 const KEYWORD_TRIGRAM_CANDIDATE_MAX = 1000;
 const EMBEDDING_BATCH_MAX_TOKENS = 8000;
-const POSTGRES_HNSW_MAX_VECTOR_DIMS = 2000;
 const SESSION_DIRTY_DEBOUNCE_MS = 5000;
 const SESSION_DELTA_READ_CHUNK_BYTES = 64 * 1024;
 const IGNORED_MEMORY_WATCH_DIR_NAMES = new Set([
@@ -100,35 +104,6 @@ const IGNORED_MEMORY_WATCH_DIR_NAMES = new Set([
 
 function serializePgvector(values: number[]): string {
   return `[${values.map((value) => Number(value)).join(",")}]`;
-}
-
-function quotePgIdentifier(identifier: string): string {
-  return `"${identifier.replaceAll('"', '""')}"`;
-}
-
-function normalizePgIndexDef(indexDef: string): string {
-  return indexDef
-    .toLowerCase()
-    .replaceAll('"', "")
-    .replace(/\s+/g, " ")
-    .replace(/\(\s+/g, "(")
-    .replace(/\s+\)/g, ")")
-    .trim();
-}
-
-function isCompatibleHnswIndexDefinition(indexDef: string, dims: number): boolean {
-  const normalized = normalizePgIndexDef(indexDef);
-  const vectorDimsPattern = new RegExp(
-    `vector_dims\\s*\\(\\s*embedding_vec\\s*\\)\\s*=\\s*${dims}\\b`,
-  );
-  return (
-    normalized.includes("using hnsw") &&
-    normalized.includes("embedding_vec") &&
-    normalized.includes(`vector(${dims})`) &&
-    normalized.includes("vector_cosine_ops") &&
-    normalized.includes("embedding_vec is not null") &&
-    vectorDimsPattern.test(normalized)
-  );
 }
 
 function truncateSnippet(text: string, maxChars = SNIPPET_MAX_CHARS): string {
@@ -353,19 +328,10 @@ export class PostgresMemoryManager implements MemorySearchManager {
     reporter.tick("Metadata loaded");
   }
 
-  async repairStore(params?: {
-    progress?: (update: MemoryRepairProgressUpdate) => void;
-  }): Promise<void> {
-    const progress = params?.progress;
-    progress?.({ completed: 0, total: 4, label: "Preparing PostgreSQL memory repair..." });
-    await ensurePostgresMemorySchema({ sql: this.sql, config: this.store });
-    progress?.({ completed: 1, total: 4, label: "Schema ready" });
-    this.vector.available = await this.detectVectorAvailability();
-    progress?.({ completed: 2, total: 4, label: "Vector capability checked" });
-    await this.backfillVectorMetadata();
-    progress?.({ completed: 3, total: 4, label: "Backfilled pgvector columns and metadata" });
-    await this.refreshStatusSnapshot();
-    progress?.({ completed: 4, total: 4, label: "Repair complete" });
+  async repairStore(): Promise<void> {
+    throw new Error(
+      `PostgreSQL memory repair requires migration credentials. Run: openclaw memory postgres migrate --schema ${this.store.schema}`,
+    );
   }
 
   async migrateEmbeddings(params?: {
@@ -560,7 +526,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
       chunks: this.statusSnapshot.chunks,
       dirty: this.dirty || this.sessionsDirty,
       workspaceDir: this.workspaceDir,
-      dbPath: `${this.store.host}:${this.store.port}/${this.store.database}/${this.store.schema}`,
+      dbPath: formatPostgresMemoryLocation(this.store),
       sources: Array.from(this.sources),
       extraPaths: this.settings.extraPaths,
       sourceCounts: this.statusSnapshot.sourceCounts,
@@ -671,7 +637,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
   }
 
   private async initializeStoreState(): Promise<MemoryIndexMeta | null> {
-    await ensurePostgresMemorySchema({
+    await verifyPostgresMemorySchema({
       sql: this.sql,
       config: this.store,
       requireVector: this.vector.enabled,
@@ -679,15 +645,9 @@ export class PostgresMemoryManager implements MemorySearchManager {
     this.vector.available = await this.detectVectorAvailability();
     this.fts.available = await this.detectTrigramAvailability();
     try {
-      let meta = await this.readMeta();
+      const meta = await this.readMeta();
       if (meta?.vectorDims) {
-        await this.backfillVectorColumns();
-      } else {
-        await this.backfillVectorMetadata();
-        meta = await this.readMeta();
-      }
-      if (meta?.vectorDims) {
-        await this.ensureVectorIndexForDims(meta.vectorDims);
+        await this.refreshVectorIndexStatusForDims(meta.vectorDims);
       }
       this.dirty = this.sources.has("memory") && (this.purpose === "status" ? !meta : true);
       this.initialized = true;
@@ -698,40 +658,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     }
   }
 
-  private async backfillVectorColumns(): Promise<void> {
-    if (!this.vector.enabled || !this.vector.available) {
-      return;
-    }
-    const chunksTable = qualifyTable(this.store.schema, "chunks");
-    await this.sql.unsafe(`
-      UPDATE ${chunksTable}
-         SET embedding_vec = embedding::vector
-       WHERE embedding_vec IS NULL
-         AND array_length(embedding, 1) > 0
-    `);
-  }
-
-  private async backfillVectorMetadata(): Promise<void> {
-    const chunksTable = qualifyTable(this.store.schema, "chunks");
-    const metaTable = qualifyTable(this.store.schema, "index_meta");
-    await this.backfillVectorColumns();
-    await this.sql.unsafe(`
-      UPDATE ${metaTable} AS m
-         SET vector_dims = dims.vector_dims,
-             updated_at = NOW()
-        FROM (
-          SELECT agent_id, MIN(array_length(embedding, 1)) AS vector_dims
-          FROM ${chunksTable}
-          WHERE array_length(embedding, 1) IS NOT NULL
-          GROUP BY agent_id
-          HAVING MIN(array_length(embedding, 1)) = MAX(array_length(embedding, 1))
-        ) AS dims
-       WHERE m.agent_id = dims.agent_id
-         AND (m.vector_dims IS NULL OR m.vector_dims <> dims.vector_dims)
-    `);
-  }
-
-  private async ensureVectorIndexForDims(dims: number): Promise<void> {
+  private async refreshVectorIndexStatusForDims(dims: number): Promise<void> {
     if (
       !this.vector.available ||
       !Number.isInteger(dims) ||
@@ -741,27 +668,29 @@ export class PostgresMemoryManager implements MemorySearchManager {
       this.vector.indexAvailable = false;
       return;
     }
-    const rows = await this.activeSql<Array<{ indexdef: string }>>`
-      SELECT indexdef
-      FROM pg_indexes
-      WHERE schemaname = ${this.store.schema}
-        AND tablename = 'chunks'
+    const rows = await this.activeSql<Array<{ indexdef: string; vector_dims: number | null }>>`
+      SELECT
+        indexes.indexdef,
+        index_column.atttypmod AS vector_dims
+      FROM pg_indexes AS indexes
+      LEFT JOIN pg_namespace AS index_namespace
+        ON index_namespace.nspname = indexes.schemaname
+      LEFT JOIN pg_class AS index_relation
+        ON index_relation.relnamespace = index_namespace.oid
+       AND index_relation.relname = indexes.indexname
+      LEFT JOIN pg_attribute AS index_column
+        ON index_column.attrelid = index_relation.oid
+       AND index_column.attnum = 1
+      WHERE indexes.schemaname = ${this.store.schema}
+        AND indexes.tablename = 'chunks'
     `;
     this.vector.indexAvailable = rows.some((row) =>
-      isCompatibleHnswIndexDefinition(String(row.indexdef), dims),
+      isCompatiblePostgresMemoryHnswIndex(
+        String(row.indexdef),
+        dims,
+        row.vector_dims === null ? null : Number(row.vector_dims),
+      ),
     );
-    if (this.vector.indexAvailable) {
-      return;
-    }
-    const chunksTable = qualifyTable(this.store.schema, "chunks");
-    const indexName = quotePgIdentifier(`chunks_embedding_vec_${dims}_hnsw_idx`);
-    await this.activeSql.unsafe(`
-      CREATE INDEX IF NOT EXISTS ${indexName}
-        ON ${chunksTable}
-        USING hnsw ((embedding_vec::vector(${dims})) vector_cosine_ops)
-        WHERE embedding_vec IS NOT NULL AND vector_dims(embedding_vec) = ${dims}
-    `);
-    this.vector.indexAvailable = true;
   }
 
   private ensureWatcher(): void {
@@ -1357,7 +1286,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
         }
       }
       this.vector.dims = targetDims;
-      await this.ensureVectorIndexForDims(targetDims);
+      await this.refreshVectorIndexStatusForDims(targetDims);
     }
 
     await this.deletePath(entry.path, options.source);
@@ -1538,7 +1467,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
           }
           if (dims === undefined) {
             dims = embedding.length;
-            await this.ensureVectorIndexForDims(dims);
+            await this.refreshVectorIndexStatusForDims(dims);
           } else if (embedding.length !== dims) {
             throw new Error(
               `postgres memory migration expected ${dims}-dim embeddings, got ${embedding.length}`,
@@ -1841,7 +1770,7 @@ export class PostgresMemoryManager implements MemorySearchManager {
     const chunksTable = this.sql.unsafe(qualifyTable(this.store.schema, "chunks"));
     const vectorType = this.sql.unsafe(`vector(${dims})`);
     const embeddingExpr = this.sql.unsafe(`embedding_vec::vector(${dims})`);
-    await this.ensureVectorIndexForDims(dims);
+    await this.refreshVectorIndexStatusForDims(dims);
     const rows = await this.sql<
       {
         id: string;

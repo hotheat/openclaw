@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ensurePostgresMemorySchema } from "./postgres-schema.js";
+import {
+  inspectPostgresMemorySchema,
+  isCompatiblePostgresMemoryHnswIndex,
+  migratePostgresMemorySchema,
+  verifyPostgresMemorySchema,
+} from "./postgres-schema.js";
 
 function createFakeSql(params?: {
   failCreateVector?: boolean;
@@ -70,15 +75,10 @@ function createFakeSql(params?: {
   return sql;
 }
 
-describe("ensurePostgresMemorySchema", () => {
+describe("migratePostgresMemorySchema", () => {
   const config = {
-    host: "localhost",
-    port: 5432,
-    database: "agent_server",
-    user: "postgres",
-    password: "secret",
+    url: "postgresql://postgres:secret@localhost:5432/agent_server",
     schema: "agent_memory",
-    ssl: false,
     poolMax: 10,
     echo: false,
   } as const;
@@ -87,8 +87,8 @@ describe("ensurePostgresMemorySchema", () => {
     const sql = createFakeSql();
 
     await expect(
-      ensurePostgresMemorySchema({
-        sql: sql as unknown as Parameters<typeof ensurePostgresMemorySchema>[0]["sql"],
+      migratePostgresMemorySchema({
+        sql: sql as unknown as Parameters<typeof migratePostgresMemorySchema>[0]["sql"],
         config,
       }),
     ).resolves.toBeUndefined();
@@ -119,8 +119,8 @@ describe("ensurePostgresMemorySchema", () => {
     });
 
     await expect(
-      ensurePostgresMemorySchema({
-        sql: sql as unknown as Parameters<typeof ensurePostgresMemorySchema>[0]["sql"],
+      migratePostgresMemorySchema({
+        sql: sql as unknown as Parameters<typeof migratePostgresMemorySchema>[0]["sql"],
         config,
       }),
     ).rejects.toThrow("PostgreSQL memory store requires pgvector");
@@ -141,8 +141,8 @@ describe("ensurePostgresMemorySchema", () => {
     });
 
     await expect(
-      ensurePostgresMemorySchema({
-        sql: sql as unknown as Parameters<typeof ensurePostgresMemorySchema>[0]["sql"],
+      migratePostgresMemorySchema({
+        sql: sql as unknown as Parameters<typeof migratePostgresMemorySchema>[0]["sql"],
         config,
         requireVector: false,
       }),
@@ -158,5 +158,72 @@ describe("ensurePostgresMemorySchema", () => {
       ),
     ).toBe(true);
     expect(sql.queries.some((query) => query.includes("USING hnsw"))).toBe(false);
+  });
+});
+
+describe("inspectPostgresMemorySchema", () => {
+  const config = {
+    url: "postgresql://runtime:secret@localhost:5432/agent_server",
+    schema: "agent_memory",
+    poolMax: 10,
+    echo: false,
+  } as const;
+
+  function createInspectionSql() {
+    const queries: string[] = [];
+    const sql = Object.assign(
+      (strings: TemplateStringsArray, ..._values: unknown[]) => {
+        const query = strings.join("?");
+        queries.push(query);
+        if (query.includes("FROM pg_extension")) {
+          return Promise.resolve([{ extname: "vector" }, { extname: "pg_trgm" }]);
+        }
+        return Promise.resolve([]);
+      },
+      {
+        unsafe: (query: string) => query,
+        queries,
+      },
+    );
+    return sql;
+  }
+
+  it("reports missing objects using read-only catalog queries", async () => {
+    const sql = createInspectionSql();
+
+    const result = await inspectPostgresMemorySchema({
+      sql: sql as unknown as Parameters<typeof inspectPostgresMemorySchema>[0]["sql"],
+      config,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toContain("required column index_meta.agent_id is missing");
+    expect(result.issues).toContain("required index chunks_agent_model_idx is missing");
+    expect(
+      sql.queries.some((query) =>
+        /\b(CREATE|ALTER|DROP|TRUNCATE|UPDATE|INSERT|DELETE)\b/i.test(query),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns an explicit migration command when verification fails", async () => {
+    const sql = createInspectionSql();
+
+    await expect(
+      verifyPostgresMemorySchema({
+        sql: sql as unknown as Parameters<typeof verifyPostgresMemorySchema>[0]["sql"],
+        config,
+      }),
+    ).rejects.toThrow("openclaw memory postgres migrate --schema agent_memory");
+  });
+
+  it("uses the index column typmod when PostgreSQL omits the vector cast", () => {
+    const indexDef =
+      "CREATE INDEX chunks_embedding_vec_1024_hnsw_idx ON agent_memory.chunks " +
+      "USING hnsw (embedding_vec vector_cosine_ops) " +
+      "WHERE ((embedding_vec IS NOT NULL) AND (vector_dims(embedding_vec) = 1024))";
+
+    expect(isCompatiblePostgresMemoryHnswIndex(indexDef, 1024, 1024)).toBe(true);
+    expect(isCompatiblePostgresMemoryHnswIndex(indexDef, 1536, 1024)).toBe(false);
   });
 });

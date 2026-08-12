@@ -751,20 +751,10 @@ export const FIELD_HELP: Record<string, string> = {
     'Chooses the builtin memory store implementation: "sqlite" for local per-agent index files, or "postgres" for a shared PostgreSQL-backed store. Keep "sqlite" for simple single-host setups and use "postgres" when you need centralized memory indexing.',
   "agents.defaults.memorySearch.store.path":
     "Sets where the SQLite memory index is stored on disk for each agent. Keep the default `~/.openclaw/memory/{agentId}.sqlite` unless you need custom storage placement or backup policy alignment.",
-  "agents.defaults.memorySearch.store.postgres.host":
-    "PostgreSQL host name used by the builtin memory store when store.driver=postgres. Prefer env substitution so the same config can move across hosts without editing secrets or network addresses inline.",
-  "agents.defaults.memorySearch.store.postgres.port":
-    "PostgreSQL port used by the builtin memory store when store.driver=postgres. Keep the default database port unless your deployment or proxy terminates PostgreSQL on a custom listener.",
-  "agents.defaults.memorySearch.store.postgres.database":
-    "Database name for the builtin PostgreSQL memory store. Reuse an existing operational database when desired, but isolate memory tables into a dedicated schema.",
-  "agents.defaults.memorySearch.store.postgres.user":
-    "Database user name for PostgreSQL-backed builtin memory search. Use a dedicated least-privilege account where possible instead of broad admin credentials.",
-  "agents.defaults.memorySearch.store.postgres.password":
-    "Database password for PostgreSQL-backed builtin memory search. Use secret/env substitution and avoid storing real credentials directly in committed config files.",
+  "agents.defaults.memorySearch.store.postgres.url":
+    "Dedicated PostgreSQL connection URL for builtin memory search. Reference MEMORY_DB_URL and use a least-privilege runtime account that only has DML access to the configured memory schema.",
   "agents.defaults.memorySearch.store.postgres.schema":
     "Schema name used to isolate PostgreSQL memory tables from the rest of the database. Keep a dedicated schema such as `agent_memory` to simplify permissions and operational cleanup.",
-  "agents.defaults.memorySearch.store.postgres.ssl":
-    "Enables or disables PostgreSQL TLS for the builtin memory store. Turn this on for managed or remote databases unless you have a trusted local-only deployment.",
   "agents.defaults.memorySearch.store.postgres.poolMax":
     "Maximum PostgreSQL client pool size used by the builtin memory store. Increase only when multiple agents or concurrent indexing operations need more database throughput.",
   "agents.defaults.memorySearch.store.postgres.echo":

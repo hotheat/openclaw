@@ -7,6 +7,10 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 const getMemorySearchManager = vi.fn();
 const loadConfig = vi.fn(() => ({}));
 const resolveDefaultAgentId = vi.fn(() => "main");
+const postgresClientEnd = vi.fn(async () => {});
+const createPostgresMemoryClient = vi.fn(() => ({ end: postgresClientEnd }));
+const inspectPostgresMemorySchema = vi.fn();
+const runPostgresMemoryMigration = vi.fn();
 const resolveAgentConfig = vi.fn((cfg: Record<string, unknown>, agentId: string) => {
   const agents = (cfg.agents as { list?: Array<{ id: string }> } | undefined)?.list ?? [];
   return agents.find((entry) => entry.id === agentId);
@@ -18,6 +22,26 @@ vi.mock("../memory/index.js", () => ({
 
 vi.mock("../config/config.js", () => ({
   loadConfig,
+}));
+
+vi.mock("../memory/postgres-client.js", () => ({
+  createPostgresMemoryClient,
+  requirePostgresStoreConfig: (config: {
+    store: { driver: string; postgres?: Record<string, unknown> };
+  }) => {
+    if (config.store.driver !== "postgres" || !config.store.postgres) {
+      throw new Error("PostgreSQL memory store is not configured.");
+    }
+    return config.store.postgres;
+  },
+}));
+
+vi.mock("../memory/postgres-schema.js", () => ({
+  inspectPostgresMemorySchema,
+}));
+
+vi.mock("../memory/postgres-migration.js", () => ({
+  runPostgresMemoryMigration,
 }));
 
 vi.mock("../agents/agent-scope.js", () => ({
@@ -48,6 +72,12 @@ afterEach(() => {
     const agents = (cfg.agents as { list?: Array<{ id: string }> } | undefined)?.list ?? [];
     return agents.find((entry) => entry.id === agentId);
   });
+  createPostgresMemoryClient.mockReset();
+  createPostgresMemoryClient.mockImplementation(() => ({ end: postgresClientEnd }));
+  postgresClientEnd.mockReset();
+  inspectPostgresMemorySchema.mockReset();
+  runPostgresMemoryMigration.mockReset();
+  delete process.env.OPENCLAW_MEMORY_MIGRATION_URL;
   process.exitCode = undefined;
   setVerbose(false);
 });
@@ -112,6 +142,28 @@ describe("memory cli", () => {
 
   function mockManager(manager: Record<string, unknown>) {
     getMemorySearchManager.mockResolvedValueOnce({ manager });
+  }
+
+  function mockPostgresConfig() {
+    loadConfig.mockReturnValue({
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "postgres",
+              postgres: {
+                url: "postgresql://runtime:secret@localhost:5432/agent",
+                schema: "agent_memory",
+                poolMax: 10,
+                echo: false,
+              },
+              vector: { enabled: true },
+            },
+          },
+        },
+      },
+    });
   }
 
   async function runMemoryCli(args: string[]) {
@@ -310,6 +362,107 @@ describe("memory cli", () => {
     expectCliSync(sync);
     expect(close).toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("Memory index updated (main).");
+  });
+
+  it("validates postgres memory status with the runtime connection", async () => {
+    mockPostgresConfig();
+    inspectPostgresMemorySchema.mockResolvedValue({
+      ok: true,
+      issues: [],
+      extensions: { vector: true, pgTrgm: true },
+      vectorDims: [1024],
+    });
+    const log = spyRuntimeLogs();
+
+    await runMemoryCli(["postgres", "status"]);
+
+    expect(createPostgresMemoryClient).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "postgresql://runtime:secret@localhost:5432/agent",
+        schema: "agent_memory",
+      }),
+    );
+    expect(inspectPostgresMemorySchema).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ schema: "agent_memory" }),
+        requireVector: true,
+      }),
+    );
+    expect(postgresClientEnd).toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith("PostgreSQL memory schema is compatible (agent_memory).");
+  });
+
+  it("returns a non-zero exit code for incompatible postgres status JSON", async () => {
+    mockPostgresConfig();
+    inspectPostgresMemorySchema.mockResolvedValue({
+      ok: false,
+      issues: ["required index chunks_agent_model_idx is missing"],
+      extensions: { vector: true, pgTrgm: true },
+      vectorDims: [1024],
+    });
+    const log = spyRuntimeLogs();
+
+    await runMemoryCli(["postgres", "status", "--json"]);
+
+    expect(firstLoggedJson(log)).toMatchObject({
+      ok: false,
+      issues: ["required index chunks_agent_model_idx is missing"],
+    });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("requires an explicit migration URL", async () => {
+    mockPostgresConfig();
+    const error = spyRuntimeErrors();
+
+    await runMemoryCli(["postgres", "migrate"]);
+
+    expect(runPostgresMemoryMigration).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "PostgreSQL memory migration requires OPENCLAW_MEMORY_MIGRATION_URL.",
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("uses only the explicit migration URL for postgres migration", async () => {
+    mockPostgresConfig();
+    process.env.OPENCLAW_MEMORY_MIGRATION_URL = "postgresql://admin:secret@localhost:5432/agent";
+    runPostgresMemoryMigration.mockResolvedValue({
+      schema: "agent_memory",
+      vectorDims: [1024],
+    });
+    const log = spyRuntimeLogs();
+
+    await runMemoryCli(["postgres", "migrate"]);
+
+    expect(runPostgresMemoryMigration).toHaveBeenCalledWith({
+      url: "postgresql://admin:secret@localhost:5432/agent",
+      schema: "agent_memory",
+      requireVector: true,
+      echo: false,
+    });
+    expect(log).toHaveBeenCalledWith(
+      "PostgreSQL memory migration completed (agent_memory); vector dimensions: 1024.",
+    );
+  });
+
+  it("passes expected vector dimensions for an empty postgres store", async () => {
+    mockPostgresConfig();
+    process.env.OPENCLAW_MEMORY_MIGRATION_URL = "postgresql://admin:secret@localhost:5432/agent";
+    runPostgresMemoryMigration.mockResolvedValue({
+      schema: "agent_memory",
+      vectorDims: [1024],
+    });
+
+    await runMemoryCli(["postgres", "migrate", "--vector-dims", "1024"]);
+
+    expect(runPostgresMemoryMigration).toHaveBeenCalledWith({
+      url: "postgresql://admin:secret@localhost:5432/agent",
+      schema: "agent_memory",
+      requireVector: true,
+      expectedVectorDims: 1024,
+      echo: false,
+    });
   });
 
   it("initializes memory store", async () => {

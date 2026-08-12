@@ -42,13 +42,8 @@ export type ResolvedMemorySearchConfig = {
     driver: "sqlite" | "postgres";
     path: string;
     postgres?: {
-      host: string;
-      port: number;
-      database: string;
-      user: string;
-      password: string;
+      url: string;
       schema: string;
-      ssl: boolean;
       poolMax: number;
       echo: boolean;
     };
@@ -117,14 +112,9 @@ const DEFAULT_TEMPORAL_DECAY_ENABLED = false;
 const DEFAULT_TEMPORAL_DECAY_HALF_LIFE_DAYS = 30;
 const DEFAULT_CACHE_ENABLED = true;
 const DEFAULT_SOURCES: Array<"memory" | "sessions"> = ["memory"];
-const DEFAULT_POSTGRES_PORT = 5432;
 const DEFAULT_POSTGRES_SCHEMA = "agent_memory";
 const DEFAULT_POSTGRES_POOL_MAX = 10;
 const log = createSubsystemLogger("memory");
-
-function resolveDefaultPostgresSchema(): string {
-  return process.env.POSTGRES__MEMORY_SCHEMA?.trim() || DEFAULT_POSTGRES_SCHEMA;
-}
 
 function parseConfigNumber(
   value: number | string | undefined,
@@ -365,20 +355,11 @@ function mergeConfig(
       overrides?.store?.driver === "postgres" ||
       defaults?.store?.driver === "postgres")
       ? {
-          host: postgresOverrides?.host ?? postgresDefaults?.host ?? "",
-          port: parseConfigNumber(
-            postgresOverrides?.port ?? postgresDefaults?.port,
-            DEFAULT_POSTGRES_PORT,
-            { min: 1 },
-          ),
-          database: postgresOverrides?.database ?? postgresDefaults?.database ?? "",
-          user: postgresOverrides?.user ?? postgresDefaults?.user ?? "",
-          password: postgresOverrides?.password ?? postgresDefaults?.password ?? "",
+          url: postgresOverrides?.url ?? postgresDefaults?.url ?? "",
           schema:
             postgresOverrides?.schema?.trim() ||
             postgresDefaults?.schema?.trim() ||
-            resolveDefaultPostgresSchema(),
-          ssl: parseConfigBoolean(postgresOverrides?.ssl ?? postgresDefaults?.ssl, false),
+            DEFAULT_POSTGRES_SCHEMA,
           poolMax: parseConfigNumber(
             postgresOverrides?.poolMax ?? postgresDefaults?.poolMax,
             DEFAULT_POSTGRES_POOL_MAX,

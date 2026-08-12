@@ -70,7 +70,7 @@ describe("memory search config", () => {
     expect(resolved?.fallback).toBe("none");
   });
 
-  it("defaults postgres schema to POSTGRES__MEMORY_SCHEMA when omitted", () => {
+  it("does not read the legacy POSTGRES__MEMORY_SCHEMA variable", () => {
     vi.stubEnv("POSTGRES__MEMORY_SCHEMA", "custom_memory");
 
     const cfg = asConfig({
@@ -81,38 +81,7 @@ describe("memory search config", () => {
             store: {
               driver: "postgres",
               postgres: {
-                host: "${POSTGRES__HOST}",
-                port: 5432,
-                database: "${POSTGRES__DATABASE}",
-                user: "${POSTGRES__USERNAME}",
-                password: "${POSTGRES__PASSWORD}",
-              },
-            },
-          },
-        },
-      },
-    });
-
-    const resolved = resolveMemorySearchConfig(cfg, "main");
-    expect(resolved?.store.postgres?.schema).toBe("custom_memory");
-  });
-
-  it("defaults postgres schema to agent_memory when omitted without env override", () => {
-    vi.stubEnv("POSTGRES__MEMORY_SCHEMA", undefined);
-
-    const cfg = asConfig({
-      agents: {
-        defaults: {
-          memorySearch: {
-            enabled: true,
-            store: {
-              driver: "postgres",
-              postgres: {
-                host: "${POSTGRES__HOST}",
-                port: 5432,
-                database: "${POSTGRES__DATABASE}",
-                user: "${POSTGRES__USERNAME}",
-                password: "${POSTGRES__PASSWORD}",
+                url: "${MEMORY_DB_URL}",
               },
             },
           },
@@ -122,6 +91,28 @@ describe("memory search config", () => {
 
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.store.postgres?.schema).toBe("agent_memory");
+  });
+
+  it("uses an explicit postgres schema", () => {
+    const cfg = asConfig({
+      agents: {
+        defaults: {
+          memorySearch: {
+            enabled: true,
+            store: {
+              driver: "postgres",
+              postgres: {
+                url: "${MEMORY_DB_URL}",
+                schema: "custom_memory",
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const resolved = resolveMemorySearchConfig(cfg, "main");
+    expect(resolved?.store.postgres?.schema).toBe("custom_memory");
   });
 
   it("merges defaults and overrides", () => {
@@ -178,13 +169,8 @@ describe("memory search config", () => {
             store: {
               driver: "postgres",
               postgres: {
-                host: "${POSTGRES__HOST}",
-                port: 5432,
-                database: "${POSTGRES__DATABASE}",
-                user: "${POSTGRES__USERNAME}",
-                password: "${POSTGRES__PASSWORD}",
+                url: "${MEMORY_DB_URL}",
                 schema: "agent_memory",
-                ssl: false,
                 poolMax: 10,
                 echo: false,
               },
@@ -206,7 +192,7 @@ describe("memory search config", () => {
               store: {
                 postgres: {
                   schema: "agent_memory",
-                  ssl: true,
+                  poolMax: 20,
                 },
               },
             },
@@ -218,14 +204,9 @@ describe("memory search config", () => {
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.store.driver).toBe("postgres");
     expect(resolved?.store.postgres).toEqual({
-      host: "${POSTGRES__HOST}",
-      port: 5432,
-      database: "${POSTGRES__DATABASE}",
-      user: "${POSTGRES__USERNAME}",
-      password: "${POSTGRES__PASSWORD}",
+      url: "${MEMORY_DB_URL}",
       schema: "agent_memory",
-      ssl: true,
-      poolMax: 10,
+      poolMax: 20,
       echo: false,
     });
     expect(resolved?.store.vector.enabled).toBe(true);

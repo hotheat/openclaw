@@ -59,13 +59,8 @@ describe("config schema regressions", () => {
             store: {
               driver: "postgres",
               postgres: {
-                host: "${POSTGRES__HOST}",
-                port: 5432,
-                database: "${POSTGRES__DATABASE}",
-                user: "${POSTGRES__USERNAME}",
-                password: "${POSTGRES__PASSWORD}",
+                url: "${MEMORY_DB_URL}",
                 schema: "agent_memory",
-                ssl: false,
                 poolMax: 10,
                 echo: false,
               },

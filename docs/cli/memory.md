@@ -25,6 +25,8 @@ openclaw memory status --deep --index
 openclaw memory status --deep --index --verbose
 openclaw memory index
 openclaw memory index --verbose
+openclaw memory postgres status
+OPENCLAW_MEMORY_MIGRATION_URL='postgresql://...' openclaw memory postgres migrate
 openclaw memory migrate-search-tokens
 openclaw memory search "release checklist"
 openclaw memory search --query "release checklist"
@@ -52,6 +54,33 @@ Notes:
 - `memory index --verbose` prints per-phase details (provider, model, sources, batch activity).
 - `memory migrate-search-tokens` re-tokenizes existing PostgreSQL memory chunks without re-embedding.
 - `memory status` includes any extra paths configured via `memorySearch.extraPaths`.
+
+## PostgreSQL schema management
+
+PostgreSQL memory runtime connections use the dedicated URL configured at
+`memorySearch.store.postgres.url`, normally `${MEMORY_DB_URL}`. Gateway startup
+and ordinary memory commands only validate the existing schema. They do not
+create extensions, tables, columns, or indexes.
+
+Validate the configured schema with the runtime account:
+
+```bash
+openclaw memory postgres status
+openclaw memory postgres status --schema agent_memory --json
+```
+
+Run schema DDL and one-time vector backfills with temporary administrator
+credentials:
+
+```bash
+OPENCLAW_MEMORY_MIGRATION_URL='postgresql://...' \
+  openclaw memory postgres migrate --schema agent_memory --vector-dims 1024
+```
+
+`OPENCLAW_MEMORY_MIGRATION_URL` is required for migration and is never read by Gateway startup.
+Migration does not fall back to `MEMORY_DB_URL`.
+For an empty vector-enabled store, `--vector-dims` is required so migration can create the first dimension-specific HNSW index before runtime writes metadata.
+Existing stores infer dimensions from `index_meta`; supplying the option also pre-creates the index for that dimension.
 
 ## Domain lexicon
 

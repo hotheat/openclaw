@@ -379,13 +379,8 @@ export type MemorySearchConfig = {
     driver?: "sqlite" | "postgres";
     path?: string;
     postgres?: {
-      host?: string;
-      port?: number | string;
-      database?: string;
-      user?: string;
-      password?: string;
+      url?: string;
       schema?: string;
-      ssl?: boolean | string;
       poolMax?: number | string;
       echo?: boolean | string;
     };

@@ -72,13 +72,8 @@ export const MemorySearchSchema = z
         path: z.string().optional(),
         postgres: z
           .object({
-            host: z.string().optional(),
-            port: z.union([z.number().int().positive(), z.string()]).optional(),
-            database: z.string().optional(),
-            user: z.string().optional(),
-            password: z.string().optional().register(sensitive),
+            url: z.string().optional().register(sensitive),
             schema: z.string().optional(),
-            ssl: z.union([z.boolean(), z.string()]).optional(),
             poolMax: z.union([z.number().int().positive(), z.string()]).optional(),
             echo: z.union([z.boolean(), z.string()]).optional(),
           })

@@ -11,18 +11,14 @@ describe("createPostgresMemoryClient", () => {
     const { createPostgresMemoryClient } = await import("./postgres-client.js");
 
     createPostgresMemoryClient({
-      host: "localhost",
-      port: 5432,
-      database: "agent_server",
-      user: "postgres",
-      password: "secret",
+      url: "postgresql://postgres:secret@localhost:5432/agent_server",
       schema: "agent_memory",
-      ssl: false,
       poolMax: 10,
       echo: false,
     });
 
     expect(postgresFactory).toHaveBeenCalledWith(
+      "postgresql://postgres:secret@localhost:5432/agent_server",
       expect.objectContaining({
         debug: false,
         onnotice: expect.any(Function),
@@ -34,18 +30,14 @@ describe("createPostgresMemoryClient", () => {
     const { createPostgresMemoryClient } = await import("./postgres-client.js");
 
     createPostgresMemoryClient({
-      host: "localhost",
-      port: 5432,
-      database: "agent_server",
-      user: "postgres",
-      password: "secret",
+      url: "postgresql://postgres:secret@localhost:5432/agent_server",
       schema: "agent_memory",
-      ssl: false,
       poolMax: 10,
       echo: true,
     });
 
     expect(postgresFactory).toHaveBeenCalledWith(
+      "postgresql://postgres:secret@localhost:5432/agent_server",
       expect.objectContaining({
         debug: true,
         onnotice: undefined,

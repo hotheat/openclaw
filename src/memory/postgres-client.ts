@@ -13,39 +13,47 @@ export function requirePostgresStoreConfig(
   if (config.store.driver !== "postgres" || !config.store.postgres) {
     throw new Error("PostgreSQL memory store is not configured.");
   }
-  const { host, database, user, password, schema, port, ssl, poolMax, echo } =
-    config.store.postgres;
-  if (!host.trim()) {
-    throw new Error("PostgreSQL memory store host is required.");
-  }
-  if (!database.trim()) {
-    throw new Error("PostgreSQL memory store database is required.");
-  }
-  if (!user.trim()) {
-    throw new Error("PostgreSQL memory store user is required.");
-  }
-  if (!password.trim()) {
-    throw new Error("PostgreSQL memory store password is required.");
+  const { url, schema, poolMax, echo } = config.store.postgres;
+  if (!url.trim()) {
+    throw new Error(
+      "PostgreSQL memory store URL is required. Set MEMORY_DB_URL and reference it from store.postgres.url.",
+    );
   }
   if (!schema.trim()) {
     throw new Error("PostgreSQL memory store schema is required.");
   }
-  return { host, database, user, password, schema, port, ssl, poolMax, echo };
+  return { url, schema, poolMax, echo };
 }
 
 export function createPostgresMemoryClient(
   config: PostgresMemoryStoreConfig,
 ): PostgresMemoryClient {
-  return postgres({
-    host: config.host,
-    port: config.port,
-    database: config.database,
-    username: config.user,
-    password: config.password,
+  type ConnectionOptions = {
+    max: number;
+    debug: boolean;
+    onnotice: (() => void) | undefined;
+    prepare: boolean;
+  };
+  const connectionOptions: ConnectionOptions = {
     max: config.poolMax,
-    ssl: config.ssl ? "require" : undefined,
     debug: config.echo,
     onnotice: config.echo ? undefined : () => {},
     prepare: false,
-  });
+  };
+  const createClient = postgres as unknown as (
+    url: string,
+    options: ConnectionOptions,
+  ) => PostgresMemoryClient;
+  return createClient(config.url, connectionOptions);
+}
+
+export function formatPostgresMemoryLocation(config: PostgresMemoryStoreConfig): string {
+  try {
+    const parsed = new URL(config.url);
+    const port = parsed.port || "5432";
+    const database = parsed.pathname.replace(/^\/+/, "") || "(default)";
+    return `${parsed.hostname}:${port}/${database}/${config.schema}`;
+  } catch {
+    return `postgres/${config.schema}`;
+  }
 }
