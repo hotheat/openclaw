@@ -12,32 +12,58 @@ type ToolResultFlushManager = {
 export const DEFAULT_WAIT_FOR_IDLE_TIMEOUT_MS = 30_000;
 export const DEFAULT_ABORT_SETTLEMENT_TIMEOUT_MS = 1_000;
 
-export type ToolWaitStatus = "idle" | "idle_after_abort" | "timeout" | "unsupported" | "error";
+export type ToolWaitStatus =
+  | "idle"
+  | "idle_after_abort"
+  | "aborted"
+  | "timeout"
+  | "unsupported"
+  | "error";
 
 async function waitForAgentIdleBestEffort(
   agent: IdleAwareAgent | null | undefined,
   timeoutMs: number,
+  abortSignal?: AbortSignal,
 ): Promise<Exclude<ToolWaitStatus, "idle_after_abort">> {
   const waitForIdle = agent?.waitForIdle;
   if (typeof waitForIdle !== "function") {
     return "unsupported";
   }
+  if (abortSignal?.aborted) {
+    return "aborted";
+  }
 
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
   try {
-    return await Promise.race([
+    const waiters: Array<Promise<"idle" | "timeout" | "aborted">> = [
       waitForIdle.call(agent).then(() => "idle" as const),
       new Promise<"timeout">((resolve) => {
         timeoutHandle = setTimeout(() => resolve("timeout"), timeoutMs);
         timeoutHandle.unref?.();
       }),
-    ]);
+    ];
+    if (abortSignal) {
+      waiters.push(
+        new Promise<"aborted">((resolve) => {
+          abortHandler = () => resolve("aborted");
+          abortSignal.addEventListener("abort", abortHandler, { once: true });
+          if (abortSignal.aborted) {
+            abortHandler();
+          }
+        }),
+      );
+    }
+    return await Promise.race(waiters);
   } catch {
     // Best-effort during cleanup.
     return "error";
   } finally {
     if (timeoutHandle) {
       clearTimeout(timeoutHandle);
+    }
+    if (abortSignal && abortHandler) {
+      abortSignal.removeEventListener("abort", abortHandler);
     }
   }
 }
@@ -48,6 +74,7 @@ export async function flushPendingToolResultsAfterIdle(opts: {
   timeoutMs?: number;
   abortAgent?: (() => Promise<void> | void) | undefined;
   abortSettlementTimeoutMs?: number;
+  abortSignal?: AbortSignal;
 }): Promise<{
   waitStatus: ToolWaitStatus;
   pendingBeforeFlush: PendingToolCall[];
@@ -56,16 +83,17 @@ export async function flushPendingToolResultsAfterIdle(opts: {
   let waitStatus: ToolWaitStatus = await waitForAgentIdleBestEffort(
     opts.agent,
     opts.timeoutMs ?? DEFAULT_WAIT_FOR_IDLE_TIMEOUT_MS,
+    opts.abortSignal,
   );
 
   /*
-   * ======== 步骤1：终止迟迟未收敛的工具执行 ========
-   * 目标：避免 synthetic result 写入后，旧工具又写入同一个 toolCallId。
-   * 1) 只有确实存在 pending 调用时才中止 agent。
-   * 2) 中止后再等待一个短暂收敛窗口。
+   * Stop an agent that did not settle before the caller's deadline. Pending
+   * tool calls are not a reliable activity signal because the agent may be
+   * generating the final assistant response after all tool results landed.
    */
-  const pendingAfterWait = opts.sessionManager?.getPendingToolCalls?.() ?? [];
-  if (waitStatus === "timeout" && pendingAfterWait.length > 0 && opts.abortAgent) {
+  const waitWasAborted = waitStatus === "aborted";
+  let shouldWaitForAbortSettlement = waitWasAborted;
+  if (waitStatus === "timeout" && opts.abortAgent) {
     try {
       const abortPromise = opts.abortAgent();
       if (abortPromise) {
@@ -73,18 +101,26 @@ export async function flushPendingToolResultsAfterIdle(opts: {
           // The bounded idle check below determines whether cleanup can safely flush.
         });
       }
-      const abortWaitStatus = await waitForAgentIdleBestEffort(
-        opts.agent,
-        opts.abortSettlementTimeoutMs ?? DEFAULT_ABORT_SETTLEMENT_TIMEOUT_MS,
-      );
-      waitStatus = abortWaitStatus === "idle" ? "idle_after_abort" : abortWaitStatus;
+      shouldWaitForAbortSettlement = true;
     } catch {
       waitStatus = "error";
     }
   }
+  if (shouldWaitForAbortSettlement) {
+    const abortWaitStatus = await waitForAgentIdleBestEffort(
+      opts.agent,
+      opts.abortSettlementTimeoutMs ?? DEFAULT_ABORT_SETTLEMENT_TIMEOUT_MS,
+    );
+    waitStatus =
+      abortWaitStatus === "idle"
+        ? "idle_after_abort"
+        : waitWasAborted && abortWaitStatus === "timeout"
+          ? "aborted"
+          : abortWaitStatus;
+  }
 
   const pendingBeforeFlush = opts.sessionManager?.getPendingToolCalls?.() ?? [];
-  const canFlush = waitStatus !== "timeout" && waitStatus !== "error";
+  const canFlush = waitStatus !== "aborted" && waitStatus !== "timeout" && waitStatus !== "error";
   const syntheticResults = canFlush ? (opts.sessionManager?.flushPendingToolResults?.() ?? []) : [];
   return { waitStatus, pendingBeforeFlush, syntheticResults };
 }

@@ -7,10 +7,21 @@ import "./test-helpers/fast-coding-tools.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { pollUntil } from "../../test/helpers/poll.js";
 import type { OpenClawConfig } from "../config/config.js";
+import {
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "../plugins/hook-runner-global.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
+import type {
+  PluginHookAgentEndEvent,
+  PluginHookLlmOutputEvent,
+  PluginHookRegistration,
+} from "../plugins/types.js";
 
 const embeddedSubscribeTestState = vi.hoisted(() => ({
+  delayedFinalEvents: [] as string[],
+  stalledSettlementStarted: false,
   waitForCompactionRetryError: undefined as Error | undefined,
   providerContexts: [] as unknown[],
 }));
@@ -51,6 +62,101 @@ vi.mock("@mariozechner/pi-coding-agent", async () => {
             throw new Error("transport failed");
           };
         }
+      }
+      if (modelId === "mock-delayed-final") {
+        const session = result.session;
+        const emitMessage = (
+          message: Parameters<typeof session.sessionManager.appendMessage>[0],
+        ) => {
+          session.agent.appendMessage(message);
+          session.sessionManager.appendMessage(message);
+          const emit = (session as unknown as { _emit: (event: unknown) => void })._emit.bind(
+            session,
+          );
+          emit({ type: "message_start", message });
+          emit({ type: "message_end", message });
+        };
+        let settled = false;
+        session.prompt = async () => {
+          emitMessage({
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "call_delayed_final",
+                name: "read",
+                arguments: {},
+              },
+            ],
+            stopReason: "toolUse",
+            api: "openai-responses",
+            provider: "openai",
+            model: modelId,
+            usage: createMockUsage(1, 1),
+            timestamp: Date.now(),
+          });
+          embeddedSubscribeTestState.delayedFinalEvents.push("prompt_return");
+        };
+        session.agent.waitForIdle = async () => {
+          embeddedSubscribeTestState.delayedFinalEvents.push("settlement_start");
+          if (!settled) {
+            await Promise.resolve();
+            emitMessage({
+              role: "toolResult",
+              toolCallId: "call_delayed_final",
+              toolName: "read",
+              content: [{ type: "text", text: "late tool result" }],
+              isError: false,
+              timestamp: Date.now(),
+            });
+            emitMessage({
+              role: "assistant",
+              content: [{ type: "text", text: "Final answer after delayed tool execution." }],
+              stopReason: "stop",
+              api: "openai-responses",
+              provider: "openai",
+              model: modelId,
+              usage: createMockUsage(2, 3),
+              timestamp: Date.now(),
+            });
+            settled = true;
+            embeddedSubscribeTestState.delayedFinalEvents.push("final_emitted");
+          }
+          embeddedSubscribeTestState.delayedFinalEvents.push("settlement_end");
+        };
+      }
+      if (modelId === "mock-synthetic-settlement") {
+        const session = result.session;
+        session.prompt = async () => {
+          const message = {
+            role: "assistant" as const,
+            content: [
+              {
+                type: "toolCall" as const,
+                id: "call_synthetic_settlement",
+                name: "read",
+                arguments: {},
+              },
+            ],
+            stopReason: "toolUse" as const,
+            api: "anthropic-messages" as const,
+            provider: "anthropic",
+            model: modelId,
+            usage: createMockUsage(1, 1),
+            timestamp: Date.now(),
+          };
+          session.agent.appendMessage(message);
+          session.sessionManager.appendMessage(message);
+        };
+        session.agent.waitForIdle = async () => {};
+      }
+      if (modelId === "mock-stalled-settlement") {
+        const session = result.session;
+        session.prompt = async () => {};
+        session.agent.waitForIdle = () => {
+          embeddedSubscribeTestState.stalledSettlementStarted = true;
+          return new Promise<void>(() => {});
+        };
       }
       return result;
     },
@@ -127,8 +233,16 @@ vi.mock("./pi-embedded-subscribe.js", async () => {
       ...args: Parameters<typeof actual.subscribeEmbeddedPiSession>
     ): ReturnType<typeof actual.subscribeEmbeddedPiSession> => {
       const subscription = actual.subscribeEmbeddedPiSession(...args);
+      const isDelayedFinal =
+        (args[0].session.model as { id?: string } | undefined)?.id === "mock-delayed-final";
       return {
         ...subscription,
+        unsubscribe: () => {
+          if (isDelayedFinal) {
+            embeddedSubscribeTestState.delayedFinalEvents.push("unsubscribe");
+          }
+          subscription.unsubscribe();
+        },
         waitForCompactionRetry: async () => {
           if (embeddedSubscribeTestState.waitForCompactionRetryError) {
             throw embeddedSubscribeTestState.waitForCompactionRetryError;
@@ -188,6 +302,28 @@ const makeOpenAiConfig = (modelIds: string[]) =>
             cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             // Use a realistic window well above the default compaction reserve (16_384) so the
             // preflight/emergency-compaction path is not spuriously triggered for small prompts.
+            contextWindow: 200_000,
+            maxTokens: 2048,
+          })),
+        },
+      },
+    },
+  }) satisfies OpenClawConfig;
+
+const makeAnthropicConfig = (modelIds: string[]) =>
+  ({
+    models: {
+      providers: {
+        anthropic: {
+          api: "anthropic-messages",
+          apiKey: "sk-test",
+          baseUrl: "https://example.com",
+          models: modelIds.map((id) => ({
+            id,
+            name: `Mock ${id}`,
+            reasoning: false,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
             contextWindow: 200_000,
             maxTokens: 2048,
           })),
@@ -387,6 +523,147 @@ describe("runEmbeddedPiAgent", () => {
 
     expect(result.payloads?.length).toBeGreaterThan(0);
     expect(events).toEqual(["start", "complete"]);
+  });
+
+  it("settles delayed tool loops before snapshots, hooks, and unsubscribe", async () => {
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const agentEnd = vi.fn((event: PluginHookAgentEndEvent) => {
+      embeddedSubscribeTestState.delayedFinalEvents.push("agent_end_hook");
+      expect((event.messages.at(-1) as { role?: string } | undefined)?.role).toBe("assistant");
+    });
+    const llmOutput = vi.fn((event: PluginHookLlmOutputEvent) => {
+      const lastAssistant = event.lastAssistant as
+        | { content?: Array<{ type?: string; text?: string }> }
+        | undefined;
+      embeddedSubscribeTestState.delayedFinalEvents.push("llm_output_hook");
+      expect(event.assistantTexts).toContain("Final answer after delayed tool execution.");
+      expect(lastAssistant?.content?.[0]?.text).toBe("Final answer after delayed tool execution.");
+    });
+    registry.typedHooks.push(
+      {
+        pluginId: "settlement-test",
+        hookName: "agent_end",
+        handler: agentEnd,
+        source: "test",
+      } as PluginHookRegistration<"agent_end">,
+      {
+        pluginId: "settlement-test",
+        hookName: "llm_output",
+        handler: llmOutput,
+        source: "test",
+      } as PluginHookRegistration<"llm_output">,
+    );
+    embeddedSubscribeTestState.delayedFinalEvents.length = 0;
+    setActivePluginRegistry(registry);
+    initializeGlobalHookRunner(registry);
+
+    try {
+      const result = await runEmbeddedPiAgent({
+        sessionId: "session:delayed-final",
+        sessionKey: nextSessionKey(),
+        sessionFile: nextSessionFile(),
+        workspaceDir,
+        config: makeOpenAiConfig(["mock-delayed-final"]),
+        prompt: "finish after the tool result",
+        provider: "openai",
+        model: "mock-delayed-final",
+        timeoutMs: 5_000,
+        agentDir,
+        runId: nextRunId("delayed-final"),
+        enqueue: immediateEnqueue,
+      });
+
+      expect(result.payloads?.[0]?.text).toBe("Final answer after delayed tool execution.");
+      expect(agentEnd).toHaveBeenCalledTimes(1);
+      expect(llmOutput).toHaveBeenCalledTimes(1);
+      expect(embeddedSubscribeTestState.delayedFinalEvents).toEqual([
+        "prompt_return",
+        "settlement_start",
+        "final_emitted",
+        "settlement_end",
+        "agent_end_hook",
+        "llm_output_hook",
+        "unsubscribe",
+      ]);
+    } finally {
+      resetGlobalHookRunner();
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
+  });
+
+  it("reports synthetic tool settlement consistently to snapshots, hooks, and traces", async () => {
+    const previousRegistry = getActivePluginRegistry();
+    const registry = createEmptyPluginRegistry();
+    const agentEnd = vi.fn();
+    const endTraceRun = vi.fn();
+    registry.typedHooks.push({
+      pluginId: "synthetic-settlement-test",
+      hookName: "agent_end",
+      handler: agentEnd,
+      source: "test",
+    } as PluginHookRegistration<"agent_end">);
+    registry.agentTraceSinks.push({
+      pluginId: "synthetic-settlement-test",
+      source: "test",
+      sink: {
+        startRun: () => ({ end: endTraceRun }),
+      },
+    });
+    setActivePluginRegistry(registry);
+    initializeGlobalHookRunner(registry);
+
+    try {
+      const sessionFile = nextSessionFile();
+      await runEmbeddedPiAgent({
+        sessionId: "session:synthetic-settlement",
+        sessionKey: nextSessionKey(),
+        sessionFile,
+        workspaceDir,
+        config: makeAnthropicConfig(["mock-synthetic-settlement"]),
+        prompt: "leave a pending tool call",
+        provider: "anthropic",
+        model: "mock-synthetic-settlement",
+        timeoutMs: 5_000,
+        agentDir,
+        runId: nextRunId("synthetic-settlement"),
+        enqueue: immediateEnqueue,
+      });
+
+      const transcriptMessages = await readSessionMessages(sessionFile);
+      expect(transcriptMessages.at(-1)).toMatchObject({
+        role: "toolResult",
+        content: [
+          expect.objectContaining({
+            text: expect.stringContaining("inserted synthetic error result"),
+          }),
+        ],
+      });
+      expect(agentEnd).toHaveBeenCalledTimes(1);
+      expect(agentEnd).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({
+              role: "toolResult",
+              toolCallId: "call_synthetic_settlement",
+              isError: true,
+            }),
+          ]),
+          success: false,
+          error: expect.stringContaining("missing_tool_results"),
+        }),
+        expect.anything(),
+      );
+      expect(endTraceRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining("missing_tool_results"),
+        }),
+      );
+    } finally {
+      resetGlobalHookRunner();
+      setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
+    }
   });
 
   it("handles prompt error paths without dropping user state", async () => {
@@ -740,6 +1017,44 @@ describe("runEmbeddedPiAgent", () => {
       embeddedSubscribeTestState.waitForCompactionRetryError = undefined;
       setActivePluginRegistry(previousRegistry ?? createEmptyPluginRegistry());
     }
+  });
+
+  it("releases the session lane promptly when cancellation interrupts settlement", async () => {
+    const sessionId = "session:stalled-settlement-abort";
+    embeddedSubscribeTestState.stalledSettlementStarted = false;
+    const execution = runEmbeddedPiAgent({
+      sessionId,
+      sessionKey: nextSessionKey(),
+      sessionFile: nextSessionFile(),
+      workspaceDir,
+      config: makeOpenAiConfig(["mock-stalled-settlement"]),
+      prompt: "wait forever during settlement",
+      provider: "openai",
+      model: "mock-stalled-settlement",
+      timeoutMs: 120_000,
+      agentDir,
+      runId: nextRunId("stalled-settlement-abort"),
+      enqueue: immediateEnqueue,
+    });
+
+    await pollUntil(
+      async () => (embeddedSubscribeTestState.stalledSettlementStarted ? true : undefined),
+      { timeoutMs: 1_000, intervalMs: 10 },
+    );
+    const abortedAt = Date.now();
+    expect(abortEmbeddedPiRun(sessionId)).toBe(true);
+
+    const outcome = await Promise.race([execution, delay(2_500).then(() => "timeout" as const)]);
+
+    expect(outcome).not.toBe("timeout");
+    if (outcome === "timeout") {
+      return;
+    }
+    expect(Date.now() - abortedAt).toBeLessThan(2_500);
+    expect(outcome.meta.aborted).toBe(true);
+    expect(outcome.payloads).toBeUndefined();
+    expect(await waitForEmbeddedPiRunEnd(sessionId, 100)).toBe(true);
+    expect(isEmbeddedPiRunActive(sessionId)).toBe(false);
   });
 
   it("aborts pending runs that are waiting on the global lane", async () => {

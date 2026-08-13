@@ -71,6 +71,37 @@ describe("flushPendingToolResultsAfterIdle", () => {
     );
   });
 
+  it("honors an explicit settlement budget beyond the default 30 seconds", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
+    vi.useFakeTimers();
+    const idle = deferred<void>();
+    const agent = { waitForIdle: () => idle.promise };
+    let settled = false;
+
+    appendMessage(assistantToolCall("call_slow_final_response"));
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 60_000,
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(settled).toBe(false);
+
+    appendMessage(toolResult("call_slow_final_response", "generated file"));
+    idle.resolve();
+    const result = await flushPromise;
+
+    expect(result.waitStatus).toBe("idle");
+    expect(result.pendingBeforeFlush).toEqual([]);
+    expect(result.syntheticResults).toEqual([]);
+    expect(getMessages(sm).map((message) => message.role)).toEqual(["assistant", "toolResult"]);
+  });
+
   it("does not flush pending tool calls when idle cannot be confirmed", async () => {
     const sm = guardSessionManager(SessionManager.inMemory());
     const appendMessage = sm.appendMessage.bind(sm) as unknown as (message: AgentMessage) => void;
@@ -118,6 +149,90 @@ describe("flushPendingToolResultsAfterIdle", () => {
 
     expect(result.waitStatus).toBe("idle_after_abort");
     expect(result.syntheticResults.map((call) => call.toolCallId)).toEqual(["call_orphan_abort"]);
+  });
+
+  it("aborts a stalled agent after tool results have already landed", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    vi.useFakeTimers();
+    let aborted = false;
+    const agent = {
+      waitForIdle: () => (aborted ? Promise.resolve() : new Promise<void>(() => {})),
+    };
+
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 30,
+      abortAgent: async () => {
+        aborted = true;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(30);
+    const result = await flushPromise;
+
+    expect(aborted).toBe(true);
+    expect(result.waitStatus).toBe("idle_after_abort");
+    expect(result.pendingBeforeFlush).toEqual([]);
+    expect(result.syntheticResults).toEqual([]);
+  });
+
+  it("uses the bounded abort settlement window when cancellation happens while waiting", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortAgent = vi.fn();
+    const agent = { waitForIdle: () => new Promise<void>(() => {}) };
+
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 120_000,
+      abortSettlementTimeoutMs: 1_000,
+      abortAgent,
+      abortSignal: controller.signal,
+    });
+    await Promise.resolve();
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(999);
+    let settled = false;
+    void flushPromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await flushPromise;
+
+    expect(abortAgent).not.toHaveBeenCalled();
+    expect(result.waitStatus).toBe("aborted");
+    expect(result.pendingBeforeFlush).toEqual([]);
+    expect(result.syntheticResults).toEqual([]);
+  });
+
+  it("uses the bounded abort settlement window when cancellation already happened", async () => {
+    const sm = guardSessionManager(SessionManager.inMemory());
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const abortAgent = vi.fn();
+    const agent = { waitForIdle: () => new Promise<void>(() => {}) };
+    controller.abort();
+
+    const flushPromise = flushPendingToolResultsAfterIdle({
+      agent,
+      sessionManager: sm,
+      timeoutMs: 120_000,
+      abortSettlementTimeoutMs: 1_000,
+      abortAgent,
+      abortSignal: controller.signal,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const result = await flushPromise;
+
+    expect(abortAgent).not.toHaveBeenCalled();
+    expect(result.waitStatus).toBe("aborted");
+    expect(result.pendingBeforeFlush).toEqual([]);
+    expect(result.syntheticResults).toEqual([]);
   });
 
   it("returns after the settlement timeout when abort never resolves", async () => {

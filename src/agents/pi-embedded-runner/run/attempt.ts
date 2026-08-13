@@ -158,6 +158,8 @@ type PromptBuildHookRunner = {
   ) => Promise<PluginHookBeforeAgentStartResult | undefined>;
 };
 
+const CLEANUP_IDLE_WAIT_TIMEOUT_MS = 1;
+
 function isToolLoopStopReason(stopReason: unknown): boolean {
   if (typeof stopReason !== "string") {
     return false;
@@ -1423,38 +1425,37 @@ export async function runEmbeddedAttempt(
 
       let abortWarnTimer: NodeJS.Timeout | undefined;
       const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
-      const abortTimer = setTimeout(
-        () => {
-          if (!isProbeSession) {
-            log.warn(
-              `embedded run timeout: runId=${params.runId} sessionId=${params.sessionId} timeoutMs=${params.timeoutMs}`,
-            );
-          }
-          if (
-            shouldFlagCompactionTimeout({
-              isTimeout: true,
-              isCompactionPendingOrRetrying: subscription.isCompacting(),
-              isCompactionInFlight: activeSession.isCompacting,
-            })
-          ) {
-            timedOutDuringCompaction = true;
-          }
-          abortRun(true);
-          if (!abortWarnTimer) {
-            abortWarnTimer = setTimeout(() => {
-              if (!activeSession.isStreaming) {
-                return;
-              }
-              if (!isProbeSession) {
-                log.warn(
-                  `embedded run abort still streaming: runId=${params.runId} sessionId=${params.sessionId}`,
-                );
-              }
-            }, 10_000);
-          }
-        },
-        Math.max(1, params.timeoutMs),
-      );
+      const attemptTimeoutMs = Math.max(1, params.timeoutMs);
+      const currentAttemptDeadlineAt = Date.now() + attemptTimeoutMs;
+      const abortTimer = setTimeout(() => {
+        if (!isProbeSession) {
+          log.warn(
+            `embedded run timeout: runId=${params.runId} sessionId=${params.sessionId} timeoutMs=${params.timeoutMs}`,
+          );
+        }
+        if (
+          shouldFlagCompactionTimeout({
+            isTimeout: true,
+            isCompactionPendingOrRetrying: subscription.isCompacting(),
+            isCompactionInFlight: activeSession.isCompacting,
+          })
+        ) {
+          timedOutDuringCompaction = true;
+        }
+        abortRun(true);
+        if (!abortWarnTimer) {
+          abortWarnTimer = setTimeout(() => {
+            if (!activeSession.isStreaming) {
+              return;
+            }
+            if (!isProbeSession) {
+              log.warn(
+                `embedded run abort still streaming: runId=${params.runId} sessionId=${params.sessionId}`,
+              );
+            }
+          }, 10_000);
+        }
+      }, attemptTimeoutMs);
 
       let messagesSnapshot: AgentMessage[] = [];
       let promptStartMessageCount = activeSession.messages.length;
@@ -1489,6 +1490,35 @@ export async function runEmbeddedAttempt(
       let promptError: unknown = null;
       let promptErrorSource: "prompt" | "compaction" | null = null;
       let generationFinishError: string | undefined;
+      let toolFlushResult: Awaited<ReturnType<typeof flushPendingToolResultsAfterIdle>> | undefined;
+      let toolSettlementPromise: ReturnType<typeof flushPendingToolResultsAfterIdle> | undefined;
+      let lastAssistant: AssistantMessage | undefined;
+      let assistantErrors: AssistantMessage[] = [];
+      let termination: EmbeddedRunAttemptResult["termination"] | undefined;
+      let attemptError: string | undefined;
+      const settleToolLoop = (cleanup = false) => {
+        if (!toolSettlementPromise) {
+          log.info(`embedded run tool settlement start: runId=${params.runId}`);
+          toolSettlementPromise = flushPendingToolResultsAfterIdle({
+            agent: activeSession.agent,
+            sessionManager,
+            timeoutMs: cleanup
+              ? CLEANUP_IDLE_WAIT_TIMEOUT_MS
+              : Math.max(1, currentAttemptDeadlineAt - Date.now()),
+            abortAgent: cleanup ? () => activeSession.abort() : () => abortRun(true),
+            abortSignal: runAbortController.signal,
+          }).then((result) => {
+            log.info(
+              `embedded run tool settlement end: runId=${params.runId} ` +
+                `waitStatus=${result.waitStatus} ` +
+                `pending=${result.pendingBeforeFlush.length} ` +
+                `synthetic=${result.syntheticResults.length}`,
+            );
+            return result;
+          });
+        }
+        return toolSettlementPromise;
+      };
       try {
         const promptStartedAt = Date.now();
 
@@ -2007,6 +2037,8 @@ export async function runEmbeddedAttempt(
           }
         }
 
+        toolFlushResult = await settleToolLoop(aborted || promptError !== null);
+
         // Append cache-TTL timestamp AFTER prompt + compaction retry completes.
         // Previously this was before the prompt, which caused a custom entry to be
         // inserted between compaction and the next prompt — breaking the
@@ -2027,11 +2059,41 @@ export async function runEmbeddedAttempt(
 
         // If timeout occurred during compaction, use pre-compaction snapshot when available
         // (compaction restructures messages but does not add user/assistant turns).
+        const syntheticToolResultsWritten = toolFlushResult.syntheticResults.length > 0;
+        const persistedSyntheticResults: AgentMessage[] = [];
+        if (syntheticToolResultsWritten) {
+          const syntheticToolCallIds = new Set(
+            toolFlushResult.syntheticResults.map((call) => call.toolCallId),
+          );
+          for (const message of sessionManager.buildSessionContext().messages) {
+            if (message.role === "toolResult" && syntheticToolCallIds.has(message.toolCallId)) {
+              persistedSyntheticResults.push(message);
+            }
+          }
+        }
+        const appendPersistedSyntheticResults = (messages: AgentMessage[]) => {
+          const snapshot = messages.slice();
+          const existingToolResultIds = new Set(
+            snapshot
+              .filter((message) => message.role === "toolResult")
+              .map((message) => message.toolCallId),
+          );
+          for (const message of persistedSyntheticResults) {
+            if (message.role === "toolResult" && !existingToolResultIds.has(message.toolCallId)) {
+              snapshot.push(message);
+              existingToolResultIds.add(message.toolCallId);
+            }
+          }
+          return snapshot;
+        };
+        const currentSnapshot = appendPersistedSyntheticResults(activeSession.messages);
         const snapshotSelection = selectCompactionTimeoutSnapshot({
           timedOutDuringCompaction,
-          preCompactionSnapshot,
+          preCompactionSnapshot: preCompactionSnapshot
+            ? appendPersistedSyntheticResults(preCompactionSnapshot)
+            : null,
           preCompactionSessionId,
-          currentSnapshot: activeSession.messages.slice(),
+          currentSnapshot,
           currentSessionId: activeSession.sessionId,
         });
         if (timedOutDuringCompaction) {
@@ -2043,6 +2105,43 @@ export async function runEmbeddedAttempt(
         }
         messagesSnapshot = snapshotSelection.messagesSnapshot;
         sessionIdUsed = snapshotSelection.sessionIdUsed;
+        lastAssistant = messagesSnapshot
+          .slice()
+          .toReversed()
+          .find((m): m is AssistantMessage => m.role === "assistant");
+        assistantErrors = messagesSnapshot
+          .slice(promptStartMessageCount)
+          .filter((m): m is AssistantMessage => m.role === "assistant" && m.stopReason === "error");
+        const lastStopReason =
+          typeof lastAssistant?.stopReason === "string" ? lastAssistant.stopReason : undefined;
+        const hasIncompleteToolLoop =
+          !aborted &&
+          !timedOut &&
+          !promptError &&
+          !clientToolCallDetected &&
+          (toolFlushResult.pendingBeforeFlush.length > 0 ||
+            isToolLoopStopReason(lastAssistant?.stopReason));
+        termination = hasIncompleteToolLoop
+          ? {
+              kind: "incomplete_tool_loop",
+              cause:
+                toolFlushResult.pendingBeforeFlush.length > 0
+                  ? "missing_tool_results"
+                  : "awaiting_final_response",
+              lastStopReason,
+              unresolvedToolCalls: toolFlushResult.pendingBeforeFlush,
+              syntheticToolResultsWritten,
+              toolWaitStatus: toolFlushResult.waitStatus,
+            }
+          : { kind: "completed" };
+        attemptError =
+          termination.kind === "incomplete_tool_loop"
+            ? `${termination.cause}; unresolved=${
+                termination.unresolvedToolCalls.map((call) => call.toolName).join(",") || "none"
+              }`
+            : promptError
+              ? describeUnknownError(promptError)
+              : undefined;
 
         if (promptError && promptErrorSource === "prompt") {
           try {
@@ -2078,8 +2177,8 @@ export async function runEmbeddedAttempt(
             .runAgentEnd(
               {
                 messages: messagesSnapshot,
-                success: !aborted && !promptError,
-                error: promptError ? describeUnknownError(promptError) : undefined,
+                success: !aborted && !promptError && termination.kind === "completed",
+                error: attemptError,
                 durationMs: Date.now() - promptStartedAt,
               },
               {
@@ -2094,11 +2193,46 @@ export async function runEmbeddedAttempt(
               log.warn(`agent_end hook failed: ${err}`);
             });
         }
+
+        if (hookRunner?.hasHooks("llm_output")) {
+          hookRunner
+            .runLlmOutput(
+              {
+                runId: params.runId,
+                sessionId: params.sessionId,
+                provider: params.provider,
+                model: params.modelId,
+                assistantTexts,
+                lastAssistant,
+                usage: getUsageTotals(),
+              },
+              {
+                agentId: hookAgentId,
+                sessionKey: params.sessionKey,
+                sessionId: params.sessionId,
+                workspaceDir: params.workspaceDir,
+                messageProvider: params.messageProvider ?? undefined,
+              },
+            )
+            .catch((err) => {
+              log.warn(`llm_output hook failed: ${String(err)}`);
+            });
+        }
       } catch (err) {
         generationFinishError = describeUnknownError(err);
         throw err;
       } finally {
         steerQueue.close();
+        if (!toolFlushResult) {
+          try {
+            toolFlushResult = await settleToolLoop(true);
+          } catch (err) {
+            log.warn(
+              `embedded run tool settlement failed during cleanup: runId=${params.runId} ` +
+                `error=${String(err)}`,
+            );
+          }
+        }
         clearTimeout(abortTimer);
         if (abortWarnTimer) {
           clearTimeout(abortWarnTimer);
@@ -2133,14 +2267,6 @@ export async function runEmbeddedAttempt(
         }
       }
 
-      const lastAssistant = messagesSnapshot
-        .slice()
-        .toReversed()
-        .find((m) => m.role === "assistant");
-      const assistantErrors = messagesSnapshot
-        .slice(promptStartMessageCount)
-        .filter((m): m is AssistantMessage => m.role === "assistant" && m.stopReason === "error");
-
       const toolMetasNormalized = toolMetas
         .filter(
           (entry): entry is { toolName: string; meta?: string } =>
@@ -2148,83 +2274,13 @@ export async function runEmbeddedAttempt(
         )
         .map((entry) => ({ toolName: entry.toolName, meta: entry.meta }));
 
-      if (hookRunner?.hasHooks("llm_output")) {
-        hookRunner
-          .runLlmOutput(
-            {
-              runId: params.runId,
-              sessionId: params.sessionId,
-              provider: params.provider,
-              model: params.modelId,
-              assistantTexts,
-              lastAssistant,
-              usage: getUsageTotals(),
-            },
-            {
-              agentId: hookAgentId,
-              sessionKey: params.sessionKey,
-              sessionId: params.sessionId,
-              workspaceDir: params.workspaceDir,
-              messageProvider: params.messageProvider ?? undefined,
-            },
-          )
-          .catch((err) => {
-            log.warn(`llm_output hook failed: ${String(err)}`);
-          });
+      if (!toolFlushResult || !termination) {
+        throw new Error("embedded run tool settlement did not complete");
       }
-
-      /*
-       * ======== 步骤1：固化工具闭环状态 ========
-       * 目标：在 synthetic result 清空 pending 状态前，保存未完成工具。
-       * 1) 等待当前工具执行收敛。
-       * 2) 补写严格 provider 所需的错误 toolResult。
-       */
-      log.info(`embedded run tool settlement start: runId=${params.runId}`);
-      const toolFlushResult = await flushPendingToolResultsAfterIdle({
-        agent: session?.agent,
-        sessionManager,
-        abortAgent: () => session?.abort(),
-      });
-      log.info(
-        `embedded run tool settlement end: runId=${params.runId} ` +
-          `waitStatus=${toolFlushResult.waitStatus} ` +
-          `pending=${toolFlushResult.pendingBeforeFlush.length} ` +
-          `synthetic=${toolFlushResult.syntheticResults.length}`,
-      );
-
-      const lastStopReason =
-        typeof lastAssistant?.stopReason === "string" ? lastAssistant.stopReason : undefined;
-      const hasIncompleteToolLoop =
-        !aborted &&
-        !timedOut &&
-        !promptError &&
-        !clientToolCallDetected &&
-        (toolFlushResult.pendingBeforeFlush.length > 0 ||
-          isToolLoopStopReason(lastAssistant?.stopReason));
-      const termination = hasIncompleteToolLoop
-        ? ({
-            kind: "incomplete_tool_loop",
-            cause:
-              toolFlushResult.pendingBeforeFlush.length > 0
-                ? "missing_tool_results"
-                : "awaiting_final_response",
-            lastStopReason,
-            unresolvedToolCalls: toolFlushResult.pendingBeforeFlush,
-            syntheticToolResultsWritten: toolFlushResult.syntheticResults.length > 0,
-            toolWaitStatus: toolFlushResult.waitStatus,
-          } as const)
-        : ({ kind: "completed" } as const);
 
       await endTraceRunOnce({
         success: !aborted && !promptError && termination.kind === "completed",
-        error:
-          termination.kind === "incomplete_tool_loop"
-            ? `${termination.cause}; unresolved=${
-                termination.unresolvedToolCalls.map((call) => call.toolName).join(",") || "none"
-              }`
-            : promptError
-              ? describeUnknownError(promptError)
-              : undefined,
+        error: attemptError,
         durationMs:
           traceRunStartedAt != null ? Math.max(0, Date.now() - traceRunStartedAt) : undefined,
         endedAt: Date.now(),
@@ -2261,18 +2317,7 @@ export async function runEmbeddedAttempt(
       };
     } finally {
       // Always tear down the session (and release the lock) before we leave this attempt.
-      //
-      // BUGFIX: Wait for the agent to be truly idle before flushing pending tool results.
-      // pi-agent-core's auto-retry resolves waitForRetry() on assistant message receipt,
-      // *before* tool execution completes in the retried agent loop. Without this wait,
-      // flushPendingToolResults() fires while tools are still executing, inserting
-      // synthetic "missing tool result" errors and causing silent agent failures.
-      // See: https://github.com/openclaw/openclaw/issues/8643
       removeToolResultContextGuard?.();
-      await flushPendingToolResultsAfterIdle({
-        agent: session?.agent,
-        sessionManager,
-      });
       session?.dispose();
       await sessionLock.release();
     }
