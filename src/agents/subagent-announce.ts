@@ -151,6 +151,7 @@ async function stageAndDeliverSubagentHandoff(params: {
   requesterOrigin?: DeliveryContext;
   outcome?: SubagentRunOutcome;
   completionDelivery?: SubagentCompletionDelivery;
+  sourceToolCallId?: string;
   handoffMalformed?: boolean;
   signal?: AbortSignal;
 }): Promise<SubagentHandoffAnnounceView> {
@@ -254,6 +255,7 @@ async function stageAndDeliverSubagentHandoff(params: {
       handoffMalformed: params.handoffMalformed === true,
       outcome: params.outcome?.status,
       completionDelivery: params.completionDelivery,
+      sourceToolCallId: params.sourceToolCallId,
       signal: timeoutSignal.signal,
     };
     const ctx = {
@@ -1656,6 +1658,7 @@ export async function runSubagentAnnounceFlow(params: {
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentCompletionDelivery;
+  sourceToolCallId?: string;
   spawnMode?: SpawnSubagentMode;
   signal?: AbortSignal;
 }): Promise<boolean> {
@@ -1939,6 +1942,7 @@ export async function runSubagentAnnounceFlow(params: {
           requesterOrigin: completionDirectOrigin ?? directOrigin,
           outcome,
           completionDelivery: params.completionDelivery,
+          sourceToolCallId: params.sourceToolCallId,
           handoffMalformed,
           signal: params.signal,
         })

@@ -115,6 +115,7 @@ describe("subagent registry steer restarts", () => {
       requesterDisplayKey: "main",
       task: "initial task",
       cleanup: "keep",
+      sourceToolCallId: "spawn-call-1",
     });
 
     const previous = mod.listSubagentRunsForRequester("agent:main:main")[0];
@@ -143,6 +144,7 @@ describe("subagent registry steer restarts", () => {
     const runs = mod.listSubagentRunsForRequester("agent:main:main");
     expect(runs).toHaveLength(1);
     expect(runs[0].runId).toBe("run-new");
+    expect(mod.getSubagentSourceToolCallId(runs[0])).toBe("spawn-call-1");
 
     lifecycleHandler?.({
       stream: "lifecycle",
@@ -162,8 +164,12 @@ describe("subagent registry steer restarts", () => {
       }),
     );
 
-    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as { childRunId?: string };
+    const announce = (announceSpy.mock.calls[0]?.[0] ?? {}) as {
+      childRunId?: string;
+      sourceToolCallId?: string;
+    };
     expect(announce.childRunId).toBe("run-new");
+    expect(announce.sourceToolCallId).toBe("spawn-call-1");
   });
 
   it("defers subagent_ended hook for completion-mode runs until announce delivery resolves", async () => {

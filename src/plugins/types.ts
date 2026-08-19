@@ -723,6 +723,7 @@ export type PluginHookSubagentHandoffStagingEvent = {
   handoffMalformed?: boolean;
   outcome?: "ok" | "error" | "timeout" | "unknown";
   completionDelivery?: "auto" | "parent" | "direct";
+  sourceToolCallId?: string;
   signal?: AbortSignal;
 };
 

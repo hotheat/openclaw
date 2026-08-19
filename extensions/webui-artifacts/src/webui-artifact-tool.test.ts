@@ -98,7 +98,7 @@ describe("webui_artifact_publish", () => {
     expect(tool.deliveryEffect).toBe("user_facing");
   });
 
-  it("hashes and uploads the same file handle and passes toolCallId as sourceToolCallId", async () => {
+  it("uses the direct publish tool call for idempotency and placement", async () => {
     const workspace = await makeWorkspace();
     const content = Buffer.from("artifact content\n");
     await fs.writeFile(path.join(workspace, "report.txt"), content);
@@ -119,6 +119,7 @@ describe("webui_artifact_publish", () => {
         sha256: createHash("sha256").update(content).digest("hex"),
         md5Base64: createHash("md5").update(content).digest("base64"),
         sourceToolCallId: "call_1",
+        anchorToolCallId: "call_1",
       },
     ]);
     expect(client.uploaded).toEqual(content);

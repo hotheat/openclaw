@@ -1606,6 +1606,7 @@ describe("subagent announce formatting", () => {
       ...defaultOutcomeAnnounce,
       expectsCompletionMessage: true,
       completionDelivery: "direct",
+      sourceToolCallId: "spawn-call-webchat",
     });
 
     expect(didAnnounce).toBe(true);
@@ -1624,6 +1625,7 @@ describe("subagent announce formatting", () => {
       expect.objectContaining({
         runId: "run-webchat-direct",
         requesterSessionKey,
+        sourceToolCallId: "spawn-call-webchat",
         content: expect.stringContaining("<SUBAGENT_HANDOFF>"),
       }),
       expect.objectContaining({ requesterSessionKey }),
@@ -1631,6 +1633,7 @@ describe("subagent announce formatting", () => {
     expect(subagentHandoffDeliveryHookMock).toHaveBeenCalledWith(
       expect.objectContaining({
         requesterSessionKey,
+        sourceToolCallId: "spawn-call-webchat",
         artifacts: [
           {
             sourceRelativePath: "artifacts/exports/researcher/run-1/report.md",

@@ -69,6 +69,7 @@ export default function register(api: OpenClawPluginApi) {
           filename: artifact.fileName,
           caption: artifact.title,
           sourceId: `subagent-handoff:${event.runId}:${index}`,
+          anchorToolCallId: event.sourceToolCallId,
           signal: event.signal,
         });
         deliveredArtifacts.push(artifact.relativePath);

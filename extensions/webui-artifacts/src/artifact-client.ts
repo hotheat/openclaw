@@ -17,6 +17,7 @@ export type ArtifactInitInput = {
   sha256: string;
   md5Base64: string;
   sourceToolCallId?: string;
+  anchorToolCallId?: string;
 };
 
 export type ArtifactUploadTarget = {

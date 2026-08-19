@@ -591,6 +591,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     requesterOrigin,
     requesterDisplayKey: entry.requesterDisplayKey,
     task: entry.task,
+    sourceToolCallId: getSubagentSourceToolCallId(entry),
     timeoutMs: SUBAGENT_ANNOUNCE_TIMEOUT_MS,
     cleanup: entry.cleanup,
     waitForCompletion: false,
@@ -1331,8 +1332,9 @@ export function replaceSubagentRunAfterSteer(params: {
   };
 
   subagentRuns.set(nextRunId, next);
-  const sourceToolCallId = subagentSourceToolCallIds.get(source);
+  const sourceToolCallId = getSubagentSourceToolCallId(source);
   if (sourceToolCallId) {
+    next.sourceToolCallId = sourceToolCallId;
     subagentSourceToolCallIds.set(next, sourceToolCallId);
   }
   ensureListener();
@@ -1404,6 +1406,7 @@ export function registerSubagentRun(params: {
   subagentRuns.set(params.runId, entry);
   const sourceToolCallId = params.sourceToolCallId?.trim();
   if (sourceToolCallId) {
+    entry.sourceToolCallId = sourceToolCallId;
     subagentSourceToolCallIds.set(entry, sourceToolCallId);
   }
   ensureListener();
@@ -1421,7 +1424,7 @@ export function registerSubagentRun(params: {
 }
 
 export function getSubagentSourceToolCallId(run: SubagentRunRecord): string | undefined {
-  return subagentSourceToolCallIds.get(run);
+  return run.sourceToolCallId?.trim() || subagentSourceToolCallIds.get(run);
 }
 
 async function waitForSubagentCompletion(params: {

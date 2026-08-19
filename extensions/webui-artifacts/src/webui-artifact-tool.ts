@@ -241,6 +241,7 @@ export async function publishWorkspaceArtifact(params: {
   filename?: string;
   caption?: string;
   sourceId?: string;
+  anchorToolCallId?: string;
   signal?: AbortSignal;
   afterScan?: ArtifactToolOptions["afterScan"];
 }): Promise<PublishedWorkspaceArtifact> {
@@ -279,6 +280,7 @@ export async function publishWorkspaceArtifact(params: {
         sha256: digest.sha256,
         md5Base64: digest.md5Base64,
         sourceToolCallId: params.sourceId?.trim() || undefined,
+        anchorToolCallId: params.anchorToolCallId?.trim() || undefined,
       },
       params.signal,
     );
@@ -362,6 +364,7 @@ export function createWebuiArtifactTool(options: ArtifactToolOptions) {
           filename: rawParams.filename,
           caption: rawParams.caption,
           sourceId: toolCallId,
+          anchorToolCallId: toolCallId,
           signal,
           afterScan: options.afterScan,
         }),

@@ -162,6 +162,7 @@ describe("webui-artifacts registration", () => {
             requesterWorkspaceDir: workspaceDir,
             requesterOrigin,
             deliveryEligible: true,
+            sourceToolCallId: "spawn-call-1",
             artifacts: [
               {
                 sourceRelativePath: relativePath,
@@ -183,6 +184,7 @@ describe("webui-artifacts registration", () => {
           fileName: "nsclc-pd1-response.pptx",
           contentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
           sourceToolCallId: "subagent-handoff:run-1:0",
+          anchorToolCallId: "spawn-call-1",
         });
         expect(result).toEqual({
           handled: true,
@@ -321,6 +323,7 @@ describe("webui-artifacts registration", () => {
           requesterWorkspaceDir: workspaceDir,
           requesterOrigin: { channel: "webchat" },
           deliveryEligible: true,
+          sourceToolCallId: "spawn-call-1",
           artifacts: [
             {
               sourceRelativePath: deliveredPath,
@@ -336,6 +339,20 @@ describe("webui-artifacts registration", () => {
         },
         {},
       );
+
+      const initBodies = fetchMock.mock.calls
+        .filter(([input]) => String(input).endsWith("/api/v1/openclaw/internal/artifacts/init"))
+        .map(([, init]) => JSON.parse(String((init as RequestInit | undefined)?.body)));
+      expect(initBodies).toEqual([
+        expect.objectContaining({
+          sourceToolCallId: "subagent-handoff:run-1:0",
+          anchorToolCallId: "spawn-call-1",
+        }),
+        expect.objectContaining({
+          sourceToolCallId: "subagent-handoff:run-1:1",
+          anchorToolCallId: "spawn-call-1",
+        }),
+      ]);
 
       expect(result).toEqual({
         handled: true,

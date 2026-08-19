@@ -100,6 +100,7 @@ describe("subagent registry persistence", () => {
       cleanup: "keep",
       trackingTaskFlowId: "tf_local",
       completionDelivery: "direct",
+      sourceToolCallId: "spawn-call-1",
     });
 
     const registryPath = path.join(tempStateDir, "subagents", "runs.json");
@@ -111,6 +112,7 @@ describe("subagent registry persistence", () => {
       | {
           requesterOrigin?: { channel?: string; accountId?: string };
           trackingTaskFlowId?: string;
+          sourceToolCallId?: string;
         }
       | undefined;
     expect(run).toBeDefined();
@@ -121,6 +123,7 @@ describe("subagent registry persistence", () => {
     expect(run?.requesterOrigin?.channel).toBe("whatsapp");
     expect(run?.requesterOrigin?.accountId).toBe("acct-main");
     expect(run?.trackingTaskFlowId).toBe("tf_local");
+    expect(run?.sourceToolCallId).toBe("spawn-call-1");
 
     // Simulate a process restart: module re-import should load persisted runs
     // and trigger the announce flow once the run resolves.
@@ -141,6 +144,7 @@ describe("subagent registry persistence", () => {
       cleanup: string;
       label?: string;
       completionDelivery?: string;
+      sourceToolCallId?: string;
     };
     const first = (announceSpy.mock.calls as unknown as Array<[unknown]>)[0]?.[0] as
       | AnnounceParams
@@ -152,6 +156,7 @@ describe("subagent registry persistence", () => {
     expect(first.requesterOrigin?.channel).toBe("whatsapp");
     expect(first.requesterOrigin?.accountId).toBe("acct-main");
     expect(first.completionDelivery).toBe("parent");
+    expect(first.sourceToolCallId).toBe("spawn-call-1");
   });
 
   it("retries interrupted cleanup when cleanupHandled has no completion timestamp", async () => {

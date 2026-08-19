@@ -30,6 +30,8 @@ export type SubagentRunRecord = {
   suppressAnnounceReason?: "steer-restart" | "killed";
   expectsCompletionMessage?: boolean;
   completionDelivery?: SubagentCompletionDelivery;
+  /** Browser-visible sessions_spawn tool call that created this run. */
+  sourceToolCallId?: string;
   /** Number of announce delivery attempts that returned false (deferred). */
   announceRetryCount?: number;
   /** Timestamp of the last announce retry attempt (for backoff). */

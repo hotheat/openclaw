@@ -31,6 +31,7 @@ import { optionalStringEnum } from "../schema/typebox.js";
 import { getSubagentDepthFromSessionStore } from "../subagent-depth.js";
 import {
   clearSubagentRunSteerRestart,
+  getSubagentSourceToolCallId,
   listSubagentRunsForRequester,
   markSubagentRunTerminated,
   markSubagentRunForSteerRestart,
@@ -395,6 +396,7 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
             model: resolveModelRef(sessionEntry) || entry.model,
             totalTokens,
             startedAt: entry.startedAt,
+            sourceToolCallId: getSubagentSourceToolCallId(entry),
           };
           index += 1;
           return { line, view: entry.endedAt ? { ...baseView, endedAt: entry.endedAt } : baseView };
