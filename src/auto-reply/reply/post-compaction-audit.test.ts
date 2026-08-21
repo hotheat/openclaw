@@ -1,8 +1,12 @@
-import { describe, it, expect } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
 import {
   auditPostCompactionReads,
   extractReadPaths,
   formatAuditWarning,
+  readSessionMessages,
 } from "./post-compaction-audit.js";
 
 describe("extractReadPaths", () => {
@@ -50,6 +54,43 @@ describe("extractReadPaths", () => {
 
     const paths = extractReadPaths(messages);
     expect(paths).toEqual(["AGENTS.md"]);
+  });
+
+  it("extracts paths from Pi toolCall arguments", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            name: "read",
+            arguments: { path: "WORKFLOW_AUTO.md" },
+          },
+          {
+            type: "tool_call",
+            name: "READ",
+            arguments: { file_path: "memory/2026-08-19.md" },
+          },
+        ],
+      },
+    ];
+
+    expect(extractReadPaths(messages)).toEqual(["WORKFLOW_AUTO.md", "memory/2026-08-19.md"]);
+  });
+
+  it("ignores malformed tool blocks", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          null,
+          { type: "toolCall", name: "read", arguments: "not-an-object" },
+          { type: "toolCall", name: "read", arguments: { path: 123 } },
+        ],
+      },
+    ];
+
+    expect(extractReadPaths(messages)).toEqual([]);
   });
 
   it("ignores non-assistant messages", () => {
@@ -103,6 +144,28 @@ describe("extractReadPaths", () => {
 
     const paths = extractReadPaths(messages);
     expect(paths).toEqual([]);
+  });
+});
+
+describe("readSessionMessages", () => {
+  it("reads only messages from the most recent raw records", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-compaction-audit-"));
+    const sessionFile = path.join(directory, "session.jsonl");
+    const lines = [
+      { type: "session", version: 3, id: "session-1" },
+      { type: "message", message: { role: "assistant", content: "old" } },
+      { type: "custom", value: 1 },
+      { type: "message", message: { role: "assistant", content: "recent" } },
+    ];
+    await fs.writeFile(sessionFile, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+
+    try {
+      await expect(readSessionMessages(sessionFile, 2)).resolves.toEqual([
+        { role: "assistant", content: "recent" },
+      ]);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
   });
 });
 

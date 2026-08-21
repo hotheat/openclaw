@@ -740,7 +740,7 @@ export async function runReplyAgent(params: {
       try {
         const sessionFile = activeSessionEntry?.sessionFile;
         if (sessionFile) {
-          const messages = readSessionMessages(sessionFile);
+          const messages = await readSessionMessages(sessionFile);
           const readPaths = extractReadPaths(messages);
           const workspaceDir = process.cwd();
           const audit = auditPostCompactionReads(readPaths, workspaceDir);

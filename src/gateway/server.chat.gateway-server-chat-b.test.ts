@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { INBOUND_MEDIA_REPLY_HINT } from "../auto-reply/media-note.js";
 import type { GetReplyOptions } from "../auto-reply/types.js";
+import type { ChatHistoryResult } from "./protocol/index.js";
 import { __setMaxChatHistoryMessagesBytesForTest } from "./server-constants.js";
 import {
   connectOk,
@@ -72,10 +73,17 @@ async function writeMainSessionTranscript(sessionDir: string, lines: string[]) {
   await fs.writeFile(path.join(sessionDir, "sess-main.jsonl"), `${lines.join("\n")}\n`, "utf-8");
 }
 
+function v3HistoryLines(records: unknown[]): string[] {
+  return [
+    JSON.stringify({ type: "session", version: 3, id: "sess-main" }),
+    ...records.map((record) => JSON.stringify(record)),
+  ];
+}
+
 async function fetchHistoryMessages(
   ws: Awaited<ReturnType<typeof startServerWithClient>>["ws"],
 ): Promise<unknown[]> {
-  const historyRes = await rpcReq<{ messages?: unknown[] }>(ws, "chat.history", {
+  const historyRes = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
     sessionKey: "main",
     limit: 1000,
   });
@@ -84,6 +92,193 @@ async function fetchHistoryMessages(
 }
 
 describe("gateway server chat", () => {
+  test("chat.history paginates v3 transcripts and preserves public message metadata", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines([
+          {
+            type: "message",
+            id: "entry-1",
+            message: { role: "user", content: "one", usage: { input: 1 } },
+          },
+          {
+            type: "message",
+            id: "entry-2",
+            message: {
+              role: "assistant",
+              content: "two",
+              provider: "otr",
+              model: "gpt-5.6-sol",
+              usage: { output: 2 },
+            },
+          },
+          {
+            type: "message",
+            id: "entry-3",
+            message: { role: "assistant", content: "three" },
+          },
+        ]),
+      );
+
+      const latest = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 2,
+      });
+      expect(latest.ok).toBe(true);
+      expect(latest.payload).toMatchObject({ hasMore: true, cursorReset: false });
+      expect(latest.payload?.messages?.map((message) => message.historyEntryId)).toEqual([
+        "entry-2",
+        "entry-3",
+      ]);
+      expect(latest.payload?.messages?.[0]).toMatchObject({
+        provider: "otr",
+        model: "gpt-5.6-sol",
+      });
+      expect(latest.payload?.messages?.[0]?.usage).toBeUndefined();
+
+      const older = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 2,
+        before: latest.payload?.nextBefore,
+      });
+      expect(older.ok).toBe(true);
+      expect(older.payload).toMatchObject({ hasMore: false, cursorReset: false });
+      expect(older.payload?.messages?.map((message) => message.historyEntryId)).toEqual([
+        "entry-1",
+      ]);
+    });
+  });
+
+  test("chat.history preserves the synthetic compaction divider contract", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines([
+          { type: "message", id: "entry-1", message: { role: "user", content: "one" } },
+          { type: "compaction", id: "compact-1", timestamp: "2026-08-20T00:00:00.000Z" },
+        ]),
+      );
+
+      const history = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 10,
+      });
+
+      expect(history.ok).toBe(true);
+      expect(history.payload?.messages?.[1]).toMatchObject({
+        role: "system",
+        content: [{ type: "text", text: "Compaction" }],
+        historyEntryId: "compact-1",
+        __openclaw: { kind: "compaction", id: "compact-1" },
+      });
+    });
+  });
+
+  test("chat.history recomputes the cursor after response-byte trimming", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      __setMaxChatHistoryMessagesBytesForTest(2_500);
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines(
+          ["entry-1", "entry-2", "entry-3"].map((id) => ({
+            type: "message",
+            id,
+            message: { role: "assistant", content: `${id}:${"x".repeat(900)}` },
+          })),
+        ),
+      );
+
+      const latest = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 3,
+      });
+      expect(latest.ok).toBe(true);
+      expect(latest.payload?.messages?.map((message) => message.historyEntryId)).toEqual([
+        "entry-2",
+        "entry-3",
+      ]);
+      expect(latest.payload?.hasMore).toBe(true);
+
+      const older = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 3,
+        before: latest.payload?.nextBefore,
+      });
+      expect(older.ok).toBe(true);
+      expect(older.payload?.messages?.map((message) => message.historyEntryId)).toEqual([
+        "entry-1",
+      ]);
+    });
+  });
+
+  test("chat.history resets a stale cursor after the active file is replaced", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines([
+          { type: "message", id: "entry-1", message: { role: "user", content: "one" } },
+          { type: "message", id: "entry-2", message: { role: "assistant", content: "two" } },
+        ]),
+      );
+      const initial = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 1,
+      });
+      const transcriptPath = path.join(sessionDir, "sess-main.jsonl");
+      await fs.rename(transcriptPath, `${transcriptPath}.bak`);
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines([
+          {
+            type: "message",
+            id: "replacement",
+            message: { role: "assistant", content: "new" },
+          },
+        ]),
+      );
+
+      const reset = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 1,
+        before: initial.payload?.nextBefore,
+      });
+      expect(reset.ok).toBe(true);
+      expect(reset.payload).toMatchObject({ cursorReset: true, hasMore: false });
+      expect(reset.payload?.messages?.map((message) => message.historyEntryId)).toEqual([
+        "replacement",
+      ]);
+    });
+  });
+
+  test("chat.history rejects malformed cursors", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      await createSessionDir();
+      await writeMainSessionStore();
+
+      const response = await rpcReq(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 1,
+        before: "invalid+cursor",
+      });
+      expect(response.ok).toBe(false);
+      expect(response.error?.code).toBe("INVALID_REQUEST");
+    });
+  });
+
   test("smoke: caps history payload and preserves routing metadata", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       const historyMaxBytes = 64 * 1024;

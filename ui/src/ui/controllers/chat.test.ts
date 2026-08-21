@@ -1,9 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleChatEvent, sendChatMessage, type ChatEventPayload, type ChatState } from "./chat.ts";
+import {
+  handleChatEvent,
+  loadChatHistory,
+  loadOlderChatHistory,
+  resetChatHistoryForSessionSwitch,
+  sendChatMessage,
+  type ChatEventPayload,
+  type ChatHistoryPort,
+  type ChatState,
+} from "./chat.ts";
 
 function createState(overrides: Partial<ChatState> = {}): ChatState {
   return {
     chatAttachments: [],
+    chatHistoryHasMore: false,
+    chatHistoryLoadingOlder: false,
+    chatHistoryNextBefore: null,
+    chatHistorySessionKey: "main",
+    chatHistoryRequestGeneration: 0,
+    chatHistoryInitialRequestId: 0,
+    chatHistoryOlderRequestId: 0,
     chatLoading: false,
     chatMessage: "",
     chatMessages: [],
@@ -19,6 +35,348 @@ function createState(overrides: Partial<ChatState> = {}): ChatState {
     ...overrides,
   };
 }
+
+function createHistoryPort(
+  result: Awaited<ReturnType<ChatHistoryPort["load"]>>,
+): ChatHistoryPort & { load: ReturnType<typeof vi.fn<ChatHistoryPort["load"]>> } {
+  const load = vi.fn<ChatHistoryPort["load"]>().mockResolvedValue(result);
+  return { load };
+}
+
+describe("chat history pagination", () => {
+  it("loads a large initial window and retains its cursor", async () => {
+    const port = createHistoryPort({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-2", role: "assistant" }],
+      hasMore: true,
+      nextBefore: "cursor-2",
+      cursorReset: false,
+      thinkingLevel: "medium",
+    });
+    const state = createState();
+
+    await loadChatHistory(state, port);
+
+    expect(port.load).toHaveBeenCalledWith({ sessionKey: "main", limit: 1000 });
+    expect(state.chatMessages).toEqual([{ historyEntryId: "entry-2", role: "assistant" }]);
+    expect(state.chatHistoryHasMore).toBe(true);
+    expect(state.chatHistoryNextBefore).toBe("cursor-2");
+    expect(state.chatThinkingLevel).toBe("medium");
+  });
+
+  it("prepends an older page and advances the cursor without duplicates", async () => {
+    const port = createHistoryPort({
+      sessionKey: "main",
+      messages: [
+        { historyEntryId: "entry-1", role: "user" },
+        { historyEntryId: "entry-2", role: "assistant" },
+      ],
+      hasMore: true,
+      nextBefore: "cursor-1",
+      cursorReset: false,
+    });
+    const state = createState({
+      chatMessages: [{ historyEntryId: "entry-2", role: "assistant" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "cursor-2",
+    });
+
+    await loadOlderChatHistory(state, port);
+
+    expect(port.load).toHaveBeenCalledWith({
+      sessionKey: "main",
+      before: "cursor-2",
+      limit: 100,
+    });
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "entry-1", role: "user" },
+      { historyEntryId: "entry-2", role: "assistant" },
+    ]);
+    expect(state.chatHistoryNextBefore).toBe("cursor-1");
+  });
+
+  it("replaces local history when an older-page cursor is reset", async () => {
+    const port = createHistoryPort({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-new", role: "assistant" }],
+      hasMore: false,
+      cursorReset: true,
+    });
+    const state = createState({
+      chatMessages: [{ historyEntryId: "entry-old", role: "user" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "stale-cursor",
+    });
+
+    await loadOlderChatHistory(state, port);
+
+    expect(state.chatMessages).toEqual([{ historyEntryId: "entry-new", role: "assistant" }]);
+    expect(state.chatHistoryHasMore).toBe(false);
+    expect(state.chatHistoryNextBefore).toBe(null);
+  });
+
+  it("preserves loaded older messages when the latest window has stable overlap", async () => {
+    const port = createHistoryPort({
+      sessionKey: "main",
+      messages: [
+        { historyEntryId: "entry-2", role: "assistant" },
+        { historyEntryId: "entry-3", role: "user" },
+      ],
+      hasMore: true,
+      nextBefore: "latest-window-cursor",
+      cursorReset: false,
+    });
+    const state = createState({
+      chatMessages: [
+        { historyEntryId: "entry-1", role: "user" },
+        { historyEntryId: "entry-2", role: "assistant" },
+      ],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "older-cursor",
+    });
+
+    await loadChatHistory(state, port);
+
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "entry-1", role: "user" },
+      { historyEntryId: "entry-2", role: "assistant" },
+      { historyEntryId: "entry-3", role: "user" },
+    ]);
+    expect(state.chatHistoryHasMore).toBe(true);
+    expect(state.chatHistoryNextBefore).toBe("older-cursor");
+  });
+
+  it("rebuilds from the latest page when stable overlap is lost", async () => {
+    const port = createHistoryPort({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-new", role: "assistant" }],
+      hasMore: true,
+      nextBefore: "new-cursor",
+      cursorReset: false,
+    });
+    const state = createState({
+      chatMessages: [{ historyEntryId: "entry-old", role: "user" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "old-cursor",
+    });
+
+    await loadChatHistory(state, port);
+
+    expect(state.chatMessages).toEqual([{ historyEntryId: "entry-new", role: "assistant" }]);
+    expect(state.chatHistoryHasMore).toBe(true);
+    expect(state.chatHistoryNextBefore).toBe("new-cursor");
+  });
+
+  it("clears the previous session before loading colliding history IDs", async () => {
+    const port = createHistoryPort({
+      sessionKey: "session-b",
+      messages: [{ historyEntryId: "off-0", role: "assistant", text: "session-b" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    const state = createState({
+      sessionKey: "session-b",
+      chatMessages: [
+        { historyEntryId: "old-prefix", role: "user", text: "session-a secret" },
+        { historyEntryId: "off-0", role: "assistant", text: "session-a" },
+      ],
+      chatHistoryHasMore: true,
+      chatHistoryLoadingOlder: true,
+      chatHistoryNextBefore: "session-a-cursor",
+    });
+
+    resetChatHistoryForSessionSwitch(state);
+    expect(state.chatMessages).toEqual([]);
+    expect(state.chatHistoryHasMore).toBe(false);
+    expect(state.chatHistoryLoadingOlder).toBe(false);
+    expect(state.chatHistoryNextBefore).toBe(null);
+    expect(state.chatHistorySessionKey).toBe("session-b");
+
+    await loadChatHistory(state, port);
+
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "off-0", role: "assistant", text: "session-b" },
+    ]);
+  });
+
+  it("replaces history when its owner differs from the requested session", async () => {
+    const port = createHistoryPort({
+      sessionKey: "session-b",
+      messages: [{ historyEntryId: "off-0", role: "assistant", text: "session-b" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    const state = createState({
+      sessionKey: "session-b",
+      chatHistorySessionKey: "session-a",
+      chatMessages: [
+        { historyEntryId: "old-prefix", role: "user", text: "session-a secret" },
+        { historyEntryId: "off-0", role: "assistant", text: "session-a" },
+      ],
+    });
+
+    await loadChatHistory(state, port);
+
+    expect(state.chatHistorySessionKey).toBe("session-b");
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "off-0", role: "assistant", text: "session-b" },
+    ]);
+  });
+
+  it("does not load an older page owned by another session", async () => {
+    const port = createHistoryPort({
+      sessionKey: "session-b",
+      messages: [{ historyEntryId: "off-0", role: "assistant", text: "session-b" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    const state = createState({
+      sessionKey: "session-b",
+      chatHistorySessionKey: "session-a",
+      chatMessages: [{ historyEntryId: "off-0", role: "assistant", text: "session-a" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "session-a-cursor",
+    });
+
+    await loadOlderChatHistory(state, port);
+
+    expect(port.load).not.toHaveBeenCalled();
+    expect(state.chatMessages).toEqual([]);
+    expect(state.chatHistorySessionKey).toBe("session-b");
+    expect(state.chatHistoryHasMore).toBe(false);
+    expect(state.chatHistoryNextBefore).toBe(null);
+  });
+
+  it("ignores an older request after switching away and back", async () => {
+    let resolveFirst!: (result: Awaited<ReturnType<ChatHistoryPort["load"]>>) => void;
+    const firstPort: ChatHistoryPort = {
+      load: vi.fn().mockReturnValue(
+        new Promise<Awaited<ReturnType<ChatHistoryPort["load"]>>>((resolve) => {
+          resolveFirst = resolve;
+        }),
+      ),
+    };
+    const state = createState();
+    const firstLoad = loadChatHistory(state, firstPort);
+
+    state.sessionKey = "session-b";
+    resetChatHistoryForSessionSwitch(state);
+    state.sessionKey = "main";
+    resetChatHistoryForSessionSwitch(state);
+
+    resolveFirst({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "stale", role: "assistant" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    await firstLoad;
+
+    expect(state.chatMessages).toEqual([]);
+    expect(state.chatLoading).toBe(false);
+  });
+
+  it("releases the older-page loading flag when a refresh supersedes it", async () => {
+    let resolveOlder!: (result: Awaited<ReturnType<ChatHistoryPort["load"]>>) => void;
+    const olderPort: ChatHistoryPort = {
+      load: vi.fn().mockReturnValue(
+        new Promise<Awaited<ReturnType<ChatHistoryPort["load"]>>>((resolve) => {
+          resolveOlder = resolve;
+        }),
+      ),
+    };
+    const state = createState({
+      chatMessages: [{ historyEntryId: "entry-2", role: "assistant" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "cursor-2",
+    });
+
+    const olderLoad = loadOlderChatHistory(state, olderPort);
+    expect(state.chatHistoryLoadingOlder).toBe(true);
+
+    const refreshPort = createHistoryPort({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-2", role: "assistant" }],
+      hasMore: true,
+      nextBefore: "cursor-2",
+      cursorReset: false,
+    });
+    await loadChatHistory(state, refreshPort);
+
+    resolveOlder({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-1", role: "user" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    await olderLoad;
+
+    expect(state.chatHistoryLoadingOlder).toBe(false);
+    expect(state.chatMessages).toEqual([{ historyEntryId: "entry-2", role: "assistant" }]);
+
+    const retryPort = createHistoryPort({
+      sessionKey: "main",
+      messages: [
+        { historyEntryId: "entry-1", role: "user" },
+        { historyEntryId: "entry-2", role: "assistant" },
+      ],
+      hasMore: false,
+      cursorReset: false,
+    });
+    await loadOlderChatHistory(state, retryPort);
+
+    expect(retryPort.load).toHaveBeenCalledWith({
+      sessionKey: "main",
+      before: "cursor-2",
+      limit: 100,
+    });
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "entry-1", role: "user" },
+      { historyEntryId: "entry-2", role: "assistant" },
+    ]);
+  });
+
+  it("releases the initial loading flag when an older-page load supersedes it", async () => {
+    let resolveInitial!: (result: Awaited<ReturnType<ChatHistoryPort["load"]>>) => void;
+    const initialPort: ChatHistoryPort = {
+      load: vi.fn().mockReturnValue(
+        new Promise<Awaited<ReturnType<ChatHistoryPort["load"]>>>((resolve) => {
+          resolveInitial = resolve;
+        }),
+      ),
+    };
+    const state = createState({
+      chatMessages: [{ historyEntryId: "entry-2", role: "assistant" }],
+      chatHistoryHasMore: true,
+      chatHistoryNextBefore: "cursor-2",
+    });
+
+    const initialLoad = loadChatHistory(state, initialPort);
+    expect(state.chatLoading).toBe(true);
+
+    const olderPort = createHistoryPort({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "entry-1", role: "user" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    await loadOlderChatHistory(state, olderPort);
+
+    resolveInitial({
+      sessionKey: "main",
+      messages: [{ historyEntryId: "stale", role: "assistant" }],
+      hasMore: false,
+      cursorReset: false,
+    });
+    await initialLoad;
+
+    expect(state.chatLoading).toBe(false);
+    expect(state.chatMessages).toEqual([
+      { historyEntryId: "entry-1", role: "user" },
+      { historyEntryId: "entry-2", role: "assistant" },
+    ]);
+  });
+});
 
 describe("handleChatEvent", () => {
   it("returns null when payload is missing", () => {

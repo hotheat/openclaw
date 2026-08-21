@@ -95,6 +95,8 @@ import type {
   ChatAttachmentMaterializeParamsSchema,
   ChatAbortParamsSchema,
   ChatEventSchema,
+  ChatHistoryParamsSchema,
+  ChatHistoryResultSchema,
   ChatInjectParamsSchema,
   ChatSteerParamsSchema,
   ChatSteerResultSchema,
@@ -260,6 +262,8 @@ export type DeviceTokenRotateParams = Static<typeof DeviceTokenRotateParamsSchem
 export type DeviceTokenRevokeParams = Static<typeof DeviceTokenRevokeParamsSchema>;
 export type ChatAttachmentMaterializeParams = Static<typeof ChatAttachmentMaterializeParamsSchema>;
 export type ChatAbortParams = Static<typeof ChatAbortParamsSchema>;
+export type ChatHistoryParams = Static<typeof ChatHistoryParamsSchema>;
+export type ChatHistoryResult = Static<typeof ChatHistoryResultSchema>;
 export type ChatInjectParams = Static<typeof ChatInjectParamsSchema>;
 export type ChatSteerParams = Static<typeof ChatSteerParamsSchema>;
 export type ChatSteerResult = Static<typeof ChatSteerResultSchema>;

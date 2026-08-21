@@ -59,6 +59,11 @@
   background: transparent;
 }
 
+.chat-history-load-older {
+  display: block;
+  margin: 0 auto 12px;
+}
+
 /* Focus mode exit button */
 .chat-focus-exit {
   position: absolute;

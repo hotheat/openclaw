@@ -50,6 +50,43 @@ function createProps(overrides: Partial<ChatProps> = {}): ChatProps {
 }
 
 describe("chat view", () => {
+  it("loads earlier messages through the pagination action", () => {
+    const container = document.createElement("div");
+    const onLoadOlder = vi.fn();
+    render(
+      renderChat(
+        createProps({
+          historyHasMore: true,
+          onLoadOlder,
+        }),
+      ),
+      container,
+    );
+
+    const button = container.querySelector<HTMLButtonElement>(".chat-history-load-older");
+    expect(button?.textContent?.trim()).toBe("Load earlier messages");
+    button?.click();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables the pagination action while an older page is loading", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          historyHasMore: true,
+          historyLoadingOlder: true,
+          onLoadOlder: vi.fn(),
+        }),
+      ),
+      container,
+    );
+
+    const button = container.querySelector<HTMLButtonElement>(".chat-history-load-older");
+    expect(button?.disabled).toBe(true);
+    expect(button?.textContent?.trim()).toBe("Loading earlier messages…");
+  });
+
   it("renders compacting indicator as a badge", () => {
     const container = document.createElement("div");
     render(

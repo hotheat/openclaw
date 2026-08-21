@@ -5,7 +5,11 @@ import { refreshChat } from "./app-chat.ts";
 import { syncUrlWithSessionKey } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { OpenClawApp } from "./app.ts";
-import { ChatState, loadChatHistory } from "./controllers/chat.ts";
+import {
+  loadChatHistory,
+  resetChatHistoryForSessionSwitch,
+  type ChatState,
+} from "./controllers/chat.ts";
 import { icons } from "./icons.ts";
 import { iconForTab, pathForTab, titleForTab, type Tab } from "./navigation.ts";
 import type { ThemeTransitionContext } from "./theme-transition.ts";
@@ -38,6 +42,7 @@ function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string)
   state.chatStream = null;
   (state as unknown as OpenClawApp).chatStreamStartedAt = null;
   state.chatRunId = null;
+  resetChatHistoryForSessionSwitch(state);
   (state as unknown as OpenClawApp).resetToolStream();
   (state as unknown as OpenClawApp).resetChatScroll();
   state.applySettings({
@@ -140,6 +145,7 @@ export function renderChatControls(state: AppViewState) {
             state.chatStream = null;
             (state as unknown as OpenClawApp).chatStreamStartedAt = null;
             state.chatRunId = null;
+            resetChatHistoryForSessionSwitch(state);
             (state as unknown as OpenClawApp).resetToolStream();
             (state as unknown as OpenClawApp).resetChatScroll();
             state.applySettings({

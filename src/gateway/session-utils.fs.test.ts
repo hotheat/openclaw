@@ -8,7 +8,6 @@ import {
   archiveSessionTranscripts,
   readFirstUserMessageFromTranscript,
   readLastMessagePreviewFromTranscript,
-  readSessionMessages,
   readSessionTitleFieldsFromTranscript,
   readSessionPreviewItemsFromTranscript,
   resolveSessionTranscriptCandidates,
@@ -482,98 +481,6 @@ describe("readSessionTitleFieldsFromTranscript cache", () => {
     expect(second.lastMessagePreview).toBe("New");
     expect(readSpy.mock.calls.length).toBeGreaterThan(readsAfterFirst);
     readSpy.mockRestore();
-  });
-});
-
-describe("readSessionMessages", () => {
-  let tmpDir: string;
-  let storePath: string;
-
-  registerTempSessionStore("openclaw-session-fs-test-", (nextTmpDir, nextStorePath) => {
-    tmpDir = nextTmpDir;
-    storePath = nextStorePath;
-  });
-
-  test("includes synthetic compaction markers for compaction entries", () => {
-    const sessionId = "test-session-compaction";
-    const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
-    const lines = [
-      JSON.stringify({ type: "session", version: 1, id: sessionId }),
-      JSON.stringify({ message: { role: "user", content: "Hello" } }),
-      JSON.stringify({
-        type: "compaction",
-        id: "comp-1",
-        timestamp: "2026-02-07T00:00:00.000Z",
-        summary: "Compacted history",
-        firstKeptEntryId: "x",
-        tokensBefore: 123,
-      }),
-      JSON.stringify({ message: { role: "assistant", content: "World" } }),
-    ];
-    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf-8");
-
-    const out = readSessionMessages(sessionId, storePath);
-    expect(out).toHaveLength(3);
-    const marker = out[1] as {
-      role: string;
-      content?: Array<{ text?: string }>;
-      __openclaw?: { kind?: string; id?: string };
-      timestamp?: number;
-    };
-    expect(marker.role).toBe("system");
-    expect(marker.content?.[0]?.text).toBe("Compaction");
-    expect(marker.__openclaw?.kind).toBe("compaction");
-    expect(marker.__openclaw?.id).toBe("comp-1");
-    expect(typeof marker.timestamp).toBe("number");
-  });
-
-  test("reads cross-agent absolute sessionFile across store-root layouts", () => {
-    const cases = [
-      {
-        sessionId: "cross-agent-default-root",
-        sessionFile: path.join(
-          tmpDir,
-          "agents",
-          "ops",
-          "sessions",
-          "cross-agent-default-root.jsonl",
-        ),
-        wrongStorePath: path.join(tmpDir, "agents", "main", "sessions", "sessions.json"),
-        message: { role: "user", content: "from-ops" },
-      },
-      {
-        sessionId: "cross-agent-custom-root",
-        sessionFile: path.join(
-          tmpDir,
-          "custom",
-          "agents",
-          "ops",
-          "sessions",
-          "cross-agent-custom-root.jsonl",
-        ),
-        wrongStorePath: path.join(tmpDir, "custom", "agents", "main", "sessions", "sessions.json"),
-        message: { role: "assistant", content: "from-custom-ops" },
-      },
-    ] as const;
-
-    for (const testCase of cases) {
-      fs.mkdirSync(path.dirname(testCase.sessionFile), { recursive: true });
-      fs.writeFileSync(
-        testCase.sessionFile,
-        [
-          JSON.stringify({ type: "session", version: 1, id: testCase.sessionId }),
-          JSON.stringify({ message: testCase.message }),
-        ].join("\n"),
-        "utf-8",
-      );
-
-      const out = readSessionMessages(
-        testCase.sessionId,
-        testCase.wrongStorePath,
-        testCase.sessionFile,
-      );
-      expect(out).toEqual([testCase.message]);
-    }
   });
 });
 

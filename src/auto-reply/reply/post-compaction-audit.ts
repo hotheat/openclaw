@@ -1,11 +1,12 @@
-import fs from "node:fs";
 import path from "node:path";
+import { readRecentTranscriptRecords } from "../../sessions/bounded-transcript.js";
 
 // Default required files — constants, extensible to config later
 const DEFAULT_REQUIRED_READS: Array<string | RegExp> = [
   "WORKFLOW_AUTO.md",
   /memory\/\d{4}-\d{2}-\d{2}\.md/, // daily memory files
 ];
+const READ_TOOL_BLOCK_TYPES = new Set(["toolcall", "tool_use", "tool_call"]);
 
 /**
  * Audit whether agent read required startup files after compaction.
@@ -47,34 +48,23 @@ export function auditPostCompactionReads(
  * Read messages from a session JSONL file.
  * Returns messages from the last N lines (default 100).
  */
-export function readSessionMessages(
+export async function readSessionMessages(
   sessionFile: string,
-  maxLines = 100,
-): Array<{ role?: string; content?: unknown }> {
-  if (!fs.existsSync(sessionFile)) {
-    return [];
-  }
-
-  try {
-    const content = fs.readFileSync(sessionFile, "utf-8");
-    const lines = content.trim().split("\n");
-    const recentLines = lines.slice(-maxLines);
-
-    const messages: Array<{ role?: string; content?: unknown }> = [];
-    for (const line of recentLines) {
-      try {
-        const entry = JSON.parse(line);
-        if (entry.type === "message" && entry.message) {
-          messages.push(entry.message);
-        }
-      } catch {
-        // Skip malformed lines
-      }
+  maxRecords = 100,
+): Promise<Array<{ role?: string; content?: unknown }>> {
+  const records = await readRecentTranscriptRecords(sessionFile, maxRecords);
+  const messages: Array<{ role?: string; content?: unknown }> = [];
+  for (const record of records) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      continue;
     }
-    return messages;
-  } catch {
-    return [];
+    const entry = record as Record<string, unknown>;
+    if (entry.type !== "message" || !entry.message || typeof entry.message !== "object") {
+      continue;
+    }
+    messages.push(entry.message as { role?: string; content?: unknown });
   }
+  return messages;
 }
 
 /**
@@ -87,12 +77,27 @@ export function extractReadPaths(messages: Array<{ role?: string; content?: unkn
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) {
       continue;
     }
-    for (const block of msg.content) {
-      if (block.type === "tool_use" && block.name === "read") {
-        const filePath = block.input?.file_path ?? block.input?.path;
-        if (typeof filePath === "string") {
-          paths.push(filePath);
-        }
+    for (const value of msg.content) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        continue;
+      }
+      const block = value as Record<string, unknown>;
+      const type = typeof block.type === "string" ? block.type.trim().toLowerCase() : "";
+      if (!READ_TOOL_BLOCK_TYPES.has(type)) {
+        continue;
+      }
+      const name = typeof block.name === "string" ? block.name.trim().toLowerCase() : "";
+      if (name !== "read") {
+        continue;
+      }
+      const argumentsValue = block.arguments ?? block.input;
+      if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+        continue;
+      }
+      const argumentsRecord = argumentsValue as Record<string, unknown>;
+      const filePath = argumentsRecord.path ?? argumentsRecord.file_path;
+      if (typeof filePath === "string") {
+        paths.push(filePath);
       }
     }
   }

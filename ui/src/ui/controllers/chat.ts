@@ -1,3 +1,7 @@
+import type {
+  ChatHistoryParams,
+  ChatHistoryResult,
+} from "../../../../src/gateway/protocol/schema/types.js";
 import { extractText } from "../chat/message-extract.ts";
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { ChatAttachment } from "../ui-types.ts";
@@ -8,6 +12,13 @@ export type ChatState = {
   connected: boolean;
   sessionKey: string;
   chatLoading: boolean;
+  chatHistoryLoadingOlder: boolean;
+  chatHistoryHasMore: boolean;
+  chatHistoryNextBefore: string | null;
+  chatHistorySessionKey: string;
+  chatHistoryRequestGeneration: number;
+  chatHistoryInitialRequestId: number;
+  chatHistoryOlderRequestId: number;
   chatMessages: unknown[];
   chatThinkingLevel: string | null;
   chatSending: boolean;
@@ -19,6 +30,121 @@ export type ChatState = {
   lastError: string | null;
 };
 
+export type ChatHistoryPort = {
+  load(params: ChatHistoryParams): Promise<ChatHistoryResult>;
+};
+
+const CHAT_HISTORY_INITIAL_LIMIT = 1000;
+const CHAT_HISTORY_OLDER_PAGE_LIMIT = 100;
+
+export function createGatewayChatHistoryPort(
+  client: Pick<GatewayBrowserClient, "request">,
+): ChatHistoryPort {
+  return {
+    load: (params) => client.request<ChatHistoryResult>("chat.history", params),
+  };
+}
+
+function historyEntryId(message: unknown): string | undefined {
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return undefined;
+  }
+  const value = (message as { historyEntryId?: unknown }).historyEntryId;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function dedupeHistoryMessages(messages: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const id = historyEntryId(message);
+    if (!id) {
+      return true;
+    }
+    if (seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+    return true;
+  });
+}
+
+function mergeLatestHistory(
+  existing: unknown[],
+  latest: unknown[],
+): {
+  messages: unknown[];
+  overlap: boolean;
+  preservedOlderPrefix: boolean;
+} {
+  const existingIndexById = new Map<string, number>();
+  existing.forEach((message, index) => {
+    const id = historyEntryId(message);
+    if (id && !existingIndexById.has(id)) {
+      existingIndexById.set(id, index);
+    }
+  });
+  let overlapIndex = -1;
+  for (const message of latest) {
+    const id = historyEntryId(message);
+    const existingIndex = id ? existingIndexById.get(id) : undefined;
+    if (existingIndex !== undefined) {
+      overlapIndex = existingIndex;
+      break;
+    }
+  }
+  if (overlapIndex < 0) {
+    return { messages: latest, overlap: false, preservedOlderPrefix: false };
+  }
+  const olderPrefix = existing.slice(0, overlapIndex);
+  return {
+    messages: dedupeHistoryMessages([...olderPrefix, ...latest]),
+    overlap: true,
+    preservedOlderPrefix: olderPrefix.length > 0,
+  };
+}
+
+function applyHistoryCursor(state: ChatState, result: ChatHistoryResult) {
+  const nextBefore = result.nextBefore?.trim() || null;
+  state.chatHistoryNextBefore = nextBefore;
+  state.chatHistoryHasMore = Boolean(result.hasMore && nextBefore);
+}
+
+export function resetChatHistoryPagination(state: ChatState) {
+  state.chatHistoryLoadingOlder = false;
+  state.chatHistoryHasMore = false;
+  state.chatHistoryNextBefore = null;
+}
+
+export function resetChatHistoryForSessionSwitch(state: ChatState) {
+  resetChatHistoryPagination(state);
+  state.chatLoading = false;
+  state.chatMessages = [];
+  state.chatHistorySessionKey = state.sessionKey;
+  state.chatHistoryRequestGeneration += 1;
+}
+
+function prepareChatHistoryRequest(state: ChatState, requestedSessionKey: string): number {
+  state.chatHistoryRequestGeneration += 1;
+  if (state.chatHistorySessionKey !== requestedSessionKey) {
+    resetChatHistoryPagination(state);
+    state.chatMessages = [];
+    state.chatHistorySessionKey = requestedSessionKey;
+  }
+  return state.chatHistoryRequestGeneration;
+}
+
+function isCurrentChatHistoryRequest(
+  state: ChatState,
+  requestedSessionKey: string,
+  requestGeneration: number,
+) {
+  return (
+    state.sessionKey === requestedSessionKey &&
+    state.chatHistorySessionKey === requestedSessionKey &&
+    state.chatHistoryRequestGeneration === requestGeneration
+  );
+}
+
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
@@ -27,26 +153,97 @@ export type ChatEventPayload = {
   errorMessage?: string;
 };
 
-export async function loadChatHistory(state: ChatState) {
-  if (!state.client || !state.connected) {
+export async function loadChatHistory(state: ChatState, historyPort?: ChatHistoryPort) {
+  if (!state.connected || (!historyPort && !state.client)) {
     return;
   }
+  const requestedSessionKey = state.sessionKey;
+  const requestGeneration = prepareChatHistoryRequest(state, requestedSessionKey);
+  // The shared generation invalidates result application across both history
+  // request kinds, so loading flags must be released against a per-kind id.
+  const initialRequestId = ++state.chatHistoryInitialRequestId;
+  const previousMessages = state.chatMessages;
+  const previousHasMore = state.chatHistoryHasMore;
+  const previousNextBefore = state.chatHistoryNextBefore;
+  const port = historyPort ?? createGatewayChatHistoryPort(state.client!);
   state.chatLoading = true;
   state.lastError = null;
   try {
-    const res = await state.client.request<{ messages?: Array<unknown>; thinkingLevel?: string }>(
-      "chat.history",
-      {
-        sessionKey: state.sessionKey,
-        limit: 200,
-      },
-    );
-    state.chatMessages = Array.isArray(res.messages) ? res.messages : [];
+    const res = await port.load({
+      sessionKey: requestedSessionKey,
+      limit: CHAT_HISTORY_INITIAL_LIMIT,
+    });
+    if (!isCurrentChatHistoryRequest(state, requestedSessionKey, requestGeneration)) {
+      return;
+    }
+    const latest = Array.isArray(res.messages) ? res.messages : [];
+    const merged = mergeLatestHistory(previousMessages, latest);
+    const reset = res.cursorReset || (previousMessages.length > 0 && !merged.overlap);
+    state.chatMessages = reset ? latest : merged.messages;
+    if (!reset && merged.preservedOlderPrefix) {
+      state.chatHistoryHasMore = previousHasMore;
+      state.chatHistoryNextBefore = previousNextBefore;
+    } else {
+      applyHistoryCursor(state, res);
+    }
     state.chatThinkingLevel = res.thinkingLevel ?? null;
   } catch (err) {
-    state.lastError = String(err);
+    if (isCurrentChatHistoryRequest(state, requestedSessionKey, requestGeneration)) {
+      state.lastError = String(err);
+    }
   } finally {
-    state.chatLoading = false;
+    if (state.chatHistoryInitialRequestId === initialRequestId) {
+      state.chatLoading = false;
+    }
+  }
+}
+
+export async function loadOlderChatHistory(state: ChatState, historyPort?: ChatHistoryPort) {
+  if (
+    !state.connected ||
+    (!historyPort && !state.client) ||
+    state.chatHistoryLoadingOlder ||
+    !state.chatHistoryHasMore ||
+    !state.chatHistoryNextBefore
+  ) {
+    return;
+  }
+  const requestedSessionKey = state.sessionKey;
+  if (state.chatHistorySessionKey !== requestedSessionKey) {
+    resetChatHistoryForSessionSwitch(state);
+    return;
+  }
+  const requestGeneration = prepareChatHistoryRequest(state, requestedSessionKey);
+  const olderRequestId = ++state.chatHistoryOlderRequestId;
+  const before = state.chatHistoryNextBefore;
+  const port = historyPort ?? createGatewayChatHistoryPort(state.client!);
+  state.chatHistoryLoadingOlder = true;
+  state.lastError = null;
+  try {
+    const res = await port.load({
+      sessionKey: requestedSessionKey,
+      before,
+      limit: CHAT_HISTORY_OLDER_PAGE_LIMIT,
+    });
+    if (!isCurrentChatHistoryRequest(state, requestedSessionKey, requestGeneration)) {
+      return;
+    }
+    const messages = Array.isArray(res.messages) ? res.messages : [];
+    if (res.cursorReset) {
+      state.chatMessages = messages;
+    } else {
+      state.chatMessages = dedupeHistoryMessages([...messages, ...state.chatMessages]);
+    }
+    applyHistoryCursor(state, res);
+    state.chatThinkingLevel = res.thinkingLevel ?? state.chatThinkingLevel;
+  } catch (err) {
+    if (isCurrentChatHistoryRequest(state, requestedSessionKey, requestGeneration)) {
+      state.lastError = String(err);
+    }
+  } finally {
+    if (state.chatHistoryOlderRequestId === olderRequestId) {
+      state.chatHistoryLoadingOlder = false;
+    }
   }
 }
 

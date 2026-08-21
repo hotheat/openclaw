@@ -137,7 +137,7 @@ function emitStruct(name: string, schema: JsonSchema): string {
         .map(([key, prop]) => {
           const propName = safeName(key);
           const req = required.has(key);
-          return `        ${propName}: ${swiftType(prop, true)}${req ? "" : "?"}`;
+          return `        ${propName}: ${swiftType(prop, true)}${req ? "" : "? = nil"}`;
         })
         .join(",\n") +
       ")\n" +

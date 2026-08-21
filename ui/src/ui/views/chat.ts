@@ -37,6 +37,8 @@ export type ChatProps = {
   thinkingLevel: string | null;
   showThinking: boolean;
   loading: boolean;
+  historyHasMore?: boolean;
+  historyLoadingOlder?: boolean;
   sending: boolean;
   canAbort?: boolean;
   compactionStatus?: CompactionIndicatorStatus | null;
@@ -70,6 +72,7 @@ export type ChatProps = {
   onScrollToBottom?: () => void;
   // Event handlers
   onRefresh: () => void;
+  onLoadOlder?: () => void;
   onToggleFocusMode: () => void;
   onDraftChange: (next: string) => void;
   onSend: () => void;
@@ -265,6 +268,20 @@ export function renderChat(props: ChatProps) {
       aria-live="polite"
       @scroll=${props.onChatScroll}
     >
+      ${
+        props.historyHasMore || props.historyLoadingOlder
+          ? html`
+              <button
+                class="btn btn--sm chat-history-load-older"
+                type="button"
+                ?disabled=${props.historyLoadingOlder}
+                @click=${props.onLoadOlder}
+              >
+                ${props.historyLoadingOlder ? "Loading earlier messages…" : "Load earlier messages"}
+              </button>
+            `
+          : nothing
+      }
       ${
         props.loading
           ? html`
