@@ -731,7 +731,7 @@ Time format in system prompt. Default: `auto` (OS preference).
 ```
 
 - `model.primary`: format `provider/model` (e.g. `anthropic/claude-opus-4-6`). If you omit the provider, OpenClaw assumes `anthropic` (deprecated).
-- `models`: the configured model catalog and allowlist for `/model`. Each entry can include `alias` (shortcut) and `params` (provider-specific: `temperature`, `maxTokens`).
+- `models`: the configured model catalog and allowlist for `/model`. Each entry can include `alias` (shortcut) and `params` (provider-specific: `temperature`, `maxTokens`). For OpenAI-compatible chat template options, set `params.chatTemplateKwargs`; OpenClaw forwards the object as `chat_template_kwargs` and merges it with request-generated values.
 - `imageModel`: only used if the primary model lacks image input. Set `agents.list[].imageModel: null` to disable inherited image-model routing for an agent that should use native vision only.
 - `thinkingDefault`: default `/think` level when the session has no stored override. Use `off` for the main agent and a higher level such as `high` for a research agent when you want deeper default reasoning.
 - `reasoningDefault`: default `/reasoning` visibility when the session has no stored override. Default is `off`, so model reasoning is hidden unless the user or config explicitly enables it.

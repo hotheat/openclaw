@@ -54,6 +54,44 @@ function invokeOnPayload(
   );
 }
 
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function resolveChatTemplateKwargs(
+  extraParams: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const configured = readRecord(extraParams?.chatTemplateKwargs);
+  return configured ? { ...configured } : undefined;
+}
+
+function createChatTemplateKwargsWrapper(
+  baseStreamFn: StreamFn | undefined,
+  chatTemplateKwargs: Record<string, unknown>,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
+        const payloadRecord = readRecord(payload);
+        if (payloadRecord) {
+          payloadRecord.chat_template_kwargs = {
+            ...readRecord(payloadRecord.chat_template_kwargs),
+            ...chatTemplateKwargs,
+          };
+        }
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
+      },
+    });
+  };
+}
+
 /**
  * Resolve cacheRetention from extraParams, supporting both new `cacheRetention`
  * and legacy `cacheControlTtl` values for backwards compatibility.
@@ -668,6 +706,12 @@ export function applyExtraParamsToAgent(
   if (wrappedStreamFn) {
     log.debug(`applying extraParams to agent streamFn for ${provider}/${modelId}`);
     agent.streamFn = wrappedStreamFn;
+  }
+
+  const chatTemplateKwargs = resolveChatTemplateKwargs(merged);
+  if (chatTemplateKwargs) {
+    log.debug(`applying chatTemplateKwargs for ${provider}/${modelId}`);
+    agent.streamFn = createChatTemplateKwargsWrapper(agent.streamFn, chatTemplateKwargs);
   }
 
   const anthropicBetas = resolveAnthropicBetas(merged, provider, modelId);
