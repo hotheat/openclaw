@@ -12,12 +12,8 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
-import { normalizeWebchatAttachmentRefs } from "../../sessions/webchat-attachment-refs.js";
 import { deliveryContextFromSession } from "../../utils/delivery-context.js";
-import {
-  stripInlineDirectiveTagsForDisplay,
-  stripInlineDirectiveTagsFromMessageForDisplay,
-} from "../../utils/directive-tags.js";
+import { stripInlineDirectiveTagsFromMessageForDisplay } from "../../utils/directive-tags.js";
 import { resolveGatewayClientMessageChannel } from "../../utils/message-channel.js";
 import {
   abortChatRunById,
@@ -33,13 +29,10 @@ import {
   type ChatImageContent,
   parseMessageWithAttachments,
 } from "../chat-attachments.js";
-import {
-  scanLeadingInboundMediaPrompt,
-  stripEnvelopeFromMessage,
-  stripEnvelopeFromMessages,
-} from "../chat-sanitize.js";
+import { stripEnvelopeFromMessage } from "../chat-sanitize.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
 import {
+  type ChatHistoryResult,
   ErrorCodes,
   errorShape,
   formatValidationErrors,
@@ -50,13 +43,12 @@ import {
   validateChatSendParams,
   validateChatSteerParams,
 } from "../protocol/index.js";
-import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
-  capArrayByJsonBytes,
-  loadSessionEntry,
-  readSessionMessages,
-  resolveSessionModelRef,
-} from "../session-utils.js";
+  InvalidHistoryCursorError,
+  loadSessionHistoryPage,
+  SessionHistoryResponseBudgetError,
+} from "../session-history-page.js";
+import { loadSessionEntry, resolveSessionModelRef } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
@@ -98,13 +90,6 @@ function resolveWebchatClientSessionId(sessionKey: string): string | undefined {
   return undefined;
 }
 
-const CHAT_HISTORY_TEXT_MAX_CHARS = 12_000;
-const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
-const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
-const CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE = 16;
-const CHAT_HISTORY_ATTACHMENTS_PER_RESPONSE = 256;
-const WEBCHAT_INPUT_ARTIFACT_PATH_RE =
-  /[\\/]uploads[\\/]webchat[\\/][^\\/\s\]|]+[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([^\s\]|]+)(?:\s+\(([^)]+)\))?/gi;
 let chatHistoryPlaceholderEmitCount = 0;
 
 function stripDisallowedChatControlChars(message: string): string {
@@ -126,295 +111,6 @@ export function sanitizeChatSendMessageInput(
     return { ok: false, error: "message must not contain null bytes" };
   }
   return { ok: true, message: stripDisallowedChatControlChars(normalized) };
-}
-
-function truncateChatHistoryText(text: string): { text: string; truncated: boolean } {
-  if (text.length <= CHAT_HISTORY_TEXT_MAX_CHARS) {
-    return { text, truncated: false };
-  }
-  return {
-    text: `${text.slice(0, CHAT_HISTORY_TEXT_MAX_CHARS)}\n...(truncated)...`,
-    truncated: true,
-  };
-}
-
-function sanitizeChatHistoryContentBlock(block: unknown): { block: unknown; changed: boolean } {
-  if (!block || typeof block !== "object") {
-    return { block, changed: false };
-  }
-  const entry = { ...(block as Record<string, unknown>) };
-  let changed = false;
-  if (typeof entry.text === "string") {
-    const stripped = stripInlineDirectiveTagsForDisplay(entry.text);
-    const res = truncateChatHistoryText(stripped.text);
-    entry.text = res.text;
-    changed ||= stripped.changed || res.truncated;
-  }
-  if (typeof entry.partialJson === "string") {
-    const res = truncateChatHistoryText(entry.partialJson);
-    entry.partialJson = res.text;
-    changed ||= res.truncated;
-  }
-  if (typeof entry.arguments === "string") {
-    const res = truncateChatHistoryText(entry.arguments);
-    entry.arguments = res.text;
-    changed ||= res.truncated;
-  }
-  if (typeof entry.thinking === "string") {
-    const res = truncateChatHistoryText(entry.thinking);
-    entry.thinking = res.text;
-    changed ||= res.truncated;
-  }
-  if ("thinkingSignature" in entry) {
-    delete entry.thinkingSignature;
-    changed = true;
-  }
-  const type = typeof entry.type === "string" ? entry.type : "";
-  if (type === "image" && typeof entry.data === "string") {
-    const bytes = Buffer.byteLength(entry.data, "utf8");
-    delete entry.data;
-    entry.omitted = true;
-    entry.bytes = bytes;
-    changed = true;
-  }
-  return { block: changed ? entry : block, changed };
-}
-
-function sanitizeChatHistoryMessage(message: unknown): { message: unknown; changed: boolean } {
-  if (!message || typeof message !== "object") {
-    return { message, changed: false };
-  }
-  const entry = { ...(message as Record<string, unknown>) };
-  let changed = false;
-
-  if ("details" in entry) {
-    delete entry.details;
-    changed = true;
-  }
-  if ("usage" in entry) {
-    delete entry.usage;
-    changed = true;
-  }
-  if ("cost" in entry) {
-    delete entry.cost;
-    changed = true;
-  }
-
-  if (typeof entry.content === "string") {
-    const stripped = stripInlineDirectiveTagsForDisplay(entry.content);
-    const res = truncateChatHistoryText(stripped.text);
-    entry.content = res.text;
-    changed ||= stripped.changed || res.truncated;
-  } else if (Array.isArray(entry.content)) {
-    const updated = entry.content.map((block) => sanitizeChatHistoryContentBlock(block));
-    if (updated.some((item) => item.changed)) {
-      entry.content = updated.map((item) => item.block);
-      changed = true;
-    }
-  }
-
-  if (typeof entry.text === "string") {
-    const stripped = stripInlineDirectiveTagsForDisplay(entry.text);
-    const res = truncateChatHistoryText(stripped.text);
-    entry.text = res.text;
-    changed ||= stripped.changed || res.truncated;
-  }
-
-  return { message: changed ? entry : message, changed };
-}
-
-function sanitizeChatHistoryMessages(messages: unknown[]): unknown[] {
-  if (messages.length === 0) {
-    return messages;
-  }
-  let changed = false;
-  const next = messages.map((message) => {
-    const res = sanitizeChatHistoryMessage(message);
-    changed ||= res.changed;
-    return res.message;
-  });
-  return changed ? next : messages;
-}
-
-type ChatHistoryAttachmentRef = {
-  attachmentId: string;
-  ordinal: number;
-};
-
-function extractChatHistoryMarkerAttachmentRefs(text: string): ChatHistoryAttachmentRef[] {
-  const refs: ChatHistoryAttachmentRef[] = [];
-  const seen = new Set<string>();
-  const { mediaLines } = scanLeadingInboundMediaPrompt(text);
-  WEBCHAT_INPUT_ARTIFACT_PATH_RE.lastIndex = 0;
-  for (const match of mediaLines.join("\n").matchAll(WEBCHAT_INPUT_ARTIFACT_PATH_RE)) {
-    const attachmentId = match[1];
-    if (!attachmentId || seen.has(attachmentId)) {
-      continue;
-    }
-    seen.add(attachmentId);
-    refs.push({ attachmentId, ordinal: refs.length });
-    if (refs.length >= CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE) {
-      break;
-    }
-  }
-  return refs;
-}
-
-function extractMessageMarkerAttachmentRefs(message: Record<string, unknown>) {
-  const texts: string[] = [];
-  if (typeof message.content === "string") {
-    texts.push(message.content);
-  } else if (Array.isArray(message.content)) {
-    for (const block of message.content) {
-      if (
-        block &&
-        typeof block === "object" &&
-        typeof (block as { text?: unknown }).text === "string"
-      ) {
-        texts.push((block as { text: string }).text);
-      }
-    }
-  } else if (typeof message.text === "string") {
-    texts.push(message.text);
-  }
-  const seen = new Set<string>();
-  return texts
-    .flatMap((text) => extractChatHistoryMarkerAttachmentRefs(text))
-    .filter((ref) => {
-      if (seen.has(ref.attachmentId)) {
-        return false;
-      }
-      seen.add(ref.attachmentId);
-      return true;
-    })
-    .slice(0, CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE)
-    .map((ref, ordinal) => ({ ...ref, ordinal }));
-}
-
-function rebuildChatHistoryAttachmentReferences(messages: unknown[]): {
-  messages: unknown[];
-  structuredRefMessages: number;
-  markerFallbackMessages: number;
-} {
-  let structuredRefMessages = 0;
-  let markerFallbackMessages = 0;
-  const responseAttachmentIds = new Set<string>();
-  const rebuiltMessages = messages.map((message) => {
-    if (!message || typeof message !== "object") {
-      return message;
-    }
-    const source = message as Record<string, unknown>;
-    const entry = { ...source };
-    delete entry.attachments;
-    delete entry.__openclaw;
-    if (typeof source.role !== "string" || source.role.toLowerCase() !== "user") {
-      return entry;
-    }
-    const privateValue = source.__openclaw;
-    const structuredRefs =
-      privateValue && typeof privateValue === "object"
-        ? normalizeWebchatAttachmentRefs(
-            (privateValue as Record<string, unknown>).attachments,
-          )?.slice(0, CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE)
-        : undefined;
-    let refs = structuredRefs;
-    if (refs) {
-      structuredRefMessages += 1;
-    } else {
-      refs = extractMessageMarkerAttachmentRefs(source);
-      if (refs.length > 0) {
-        markerFallbackMessages += 1;
-      }
-    }
-    if (!refs || refs.length === 0) {
-      return entry;
-    }
-    const boundedRefs = refs.filter((ref) => {
-      if (responseAttachmentIds.has(ref.attachmentId)) {
-        return true;
-      }
-      if (responseAttachmentIds.size >= CHAT_HISTORY_ATTACHMENTS_PER_RESPONSE) {
-        return false;
-      }
-      responseAttachmentIds.add(ref.attachmentId);
-      return true;
-    });
-    if (boundedRefs.length === 0) {
-      return entry;
-    }
-    return { ...entry, __openclaw: { attachments: boundedRefs } };
-  });
-  return { messages: rebuiltMessages, structuredRefMessages, markerFallbackMessages };
-}
-
-function jsonUtf8Bytes(value: unknown): number {
-  try {
-    return Buffer.byteLength(JSON.stringify(value), "utf8");
-  } catch {
-    return Buffer.byteLength(String(value), "utf8");
-  }
-}
-
-function buildOversizedHistoryPlaceholder(message?: unknown): Record<string, unknown> {
-  const role =
-    message &&
-    typeof message === "object" &&
-    typeof (message as { role?: unknown }).role === "string"
-      ? (message as { role: string }).role
-      : "assistant";
-  const timestamp =
-    message &&
-    typeof message === "object" &&
-    typeof (message as { timestamp?: unknown }).timestamp === "number"
-      ? (message as { timestamp: number }).timestamp
-      : Date.now();
-  return {
-    role,
-    timestamp,
-    content: [{ type: "text", text: CHAT_HISTORY_OVERSIZED_PLACEHOLDER }],
-    __openclaw: { truncated: true, reason: "oversized" },
-  };
-}
-
-function replaceOversizedChatHistoryMessages(params: {
-  messages: unknown[];
-  maxSingleMessageBytes: number;
-}): { messages: unknown[]; replacedCount: number } {
-  const { messages, maxSingleMessageBytes } = params;
-  if (messages.length === 0) {
-    return { messages, replacedCount: 0 };
-  }
-  let replacedCount = 0;
-  const next = messages.map((message) => {
-    if (jsonUtf8Bytes(message) <= maxSingleMessageBytes) {
-      return message;
-    }
-    replacedCount += 1;
-    return buildOversizedHistoryPlaceholder(message);
-  });
-  return { messages: replacedCount > 0 ? next : messages, replacedCount };
-}
-
-function enforceChatHistoryFinalBudget(params: { messages: unknown[]; maxBytes: number }): {
-  messages: unknown[];
-  placeholderCount: number;
-} {
-  const { messages, maxBytes } = params;
-  if (messages.length === 0) {
-    return { messages, placeholderCount: 0 };
-  }
-  if (jsonUtf8Bytes(messages) <= maxBytes) {
-    return { messages, placeholderCount: 0 };
-  }
-  const last = messages.at(-1);
-  if (last && jsonUtf8Bytes([last]) <= maxBytes) {
-    return { messages: [last], placeholderCount: 0 };
-  }
-  const placeholder = buildOversizedHistoryPlaceholder(last);
-  if (jsonUtf8Bytes([placeholder]) <= maxBytes) {
-    return { messages: [placeholder], placeholderCount: 1 };
-  }
-  return { messages: [], placeholderCount: 0 };
 }
 
 function resolveTranscriptPath(params: {
@@ -695,31 +391,45 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const { sessionKey, limit } = params as {
-      sessionKey: string;
-      limit?: number;
-    };
+    const { sessionKey, limit, before } = params;
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
     const sessionId = entry?.sessionId;
-    const rawMessages =
-      sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
     const hardMax = 1000;
     const defaultLimit = 200;
     const requested = typeof limit === "number" ? limit : defaultLimit;
     const max = Math.min(hardMax, requested);
-    const sliced = rawMessages.length > max ? rawMessages.slice(-max) : rawMessages;
-    const rebuilt = rebuildChatHistoryAttachmentReferences(sliced);
-    const sanitized = stripEnvelopeFromMessages(rebuilt.messages);
-    const normalized = sanitizeChatHistoryMessages(sanitized);
-    const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
-    const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
-    const replaced = replaceOversizedChatHistoryMessages({
-      messages: normalized,
-      maxSingleMessageBytes: perMessageHardCap,
-    });
-    const capped = capArrayByJsonBytes(replaced.messages, maxHistoryBytes).items;
-    const bounded = enforceChatHistoryFinalBudget({ messages: capped, maxBytes: maxHistoryBytes });
-    const placeholderCount = replaced.replacedCount + bounded.placeholderCount;
+    const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+    const startedAt = Date.now();
+    let historyPage: Awaited<ReturnType<typeof loadSessionHistoryPage>>;
+    try {
+      historyPage = await loadSessionHistoryPage({
+        sessionId,
+        storePath,
+        sessionFile: entry?.sessionFile,
+        agentId: sessionAgentId,
+        before,
+        limit: max,
+      });
+    } catch (error) {
+      if (error instanceof InvalidHistoryCursorError) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, error.message));
+        return;
+      }
+      if (error instanceof SessionHistoryResponseBudgetError) {
+        context.logGateway.warn("chat.history response budget removed every readable message");
+      }
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.UNAVAILABLE,
+          error instanceof Error ? error.message : "chat history read failed",
+        ),
+      );
+      return;
+    }
+    const { diagnostics } = historyPage;
+    const placeholderCount = diagnostics.placeholderCount;
     if (placeholderCount > 0) {
       chatHistoryPlaceholderEmitCount += placeholderCount;
       context.logGateway.debug(
@@ -727,12 +437,17 @@ export const chatHandlers: GatewayRequestHandlers = {
       );
     }
     context.logGateway.debug(
-      `chat.history attachment refs structured_ref_messages=${rebuilt.structuredRefMessages} ` +
-        `marker_fallback_messages=${rebuilt.markerFallbackMessages}`,
+      `chat.history attachment refs structured_ref_messages=${diagnostics.structuredRefMessages} ` +
+        `marker_fallback_messages=${diagnostics.markerFallbackMessages}`,
+    );
+    context.logGateway.debug(
+      `chat.history page_records=${historyPage.messages.length} scanned_bytes=${diagnostics.scannedBytes} ` +
+        `read_chunks=${diagnostics.readChunks} cursor_reset=${historyPage.cursorReset} ` +
+        `malformed_lines=${diagnostics.malformedLines} response_bytes=${diagnostics.responseBytes} ` +
+        `duration_ms=${Date.now() - startedAt}`,
     );
     let thinkingLevel = entry?.thinkingLevel;
     if (!thinkingLevel) {
-      const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
       const { provider, model } = resolveSessionModelRef(cfg, entry, sessionAgentId);
       const catalog = await context.loadGatewayModelCatalog();
       thinkingLevel = resolveThinkingDefault({
@@ -744,13 +459,17 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
     }
     const verboseLevel = entry?.verboseLevel ?? cfg.agents?.defaults?.verboseDefault;
-    respond(true, {
+    const result = {
       sessionKey,
       sessionId,
-      messages: bounded.messages,
+      messages: historyPage.messages,
+      nextBefore: historyPage.nextBefore,
+      hasMore: historyPage.hasMore,
+      cursorReset: historyPage.cursorReset,
       thinkingLevel,
       verboseLevel,
-    });
+    } satisfies ChatHistoryResult;
+    respond(true, result);
   },
   "chat.steer": async ({ params, respond, context }) => {
     if (!validateChatSteerParams(params)) {

@@ -6,6 +6,7 @@ import {
   ProtocolSchemas,
   validateAgentParams,
   validateChatEvent,
+  validateChatHistoryResult,
   validateChatSendParams,
   validateChatSteerParams,
   validateChatSteerResult,
@@ -85,6 +86,43 @@ describe("chat event protocol", () => {
         silent: true,
       }),
     ).toBe(true);
+  });
+});
+
+describe("chat history protocol", () => {
+  const result = {
+    sessionKey: "agent:main:main",
+    sessionId: "session-1",
+    messages: [
+      {
+        historyEntryId: "entry-1",
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        provider: "otr",
+        model: "gpt-5.6-sol",
+      },
+    ],
+    nextBefore: "opaque-cursor",
+    hasMore: true,
+    cursorReset: false,
+    thinkingLevel: "high",
+    verboseLevel: "off",
+  };
+
+  it("registers and accepts the public history result", () => {
+    expect(ProtocolSchemas.ChatHistoryResult).toBeDefined();
+    expect(validateChatHistoryResult(result)).toBe(true);
+  });
+
+  it("requires stable message identity and explicit pagination state", () => {
+    expect(
+      validateChatHistoryResult({
+        ...result,
+        messages: [{ role: "assistant", content: "missing id" }],
+      }),
+    ).toBe(false);
+    expect(validateChatHistoryResult({ ...result, hasMore: "yes" })).toBe(false);
+    expect(validateChatHistoryResult({ ...result, cursorReset: undefined })).toBe(false);
   });
 });
 

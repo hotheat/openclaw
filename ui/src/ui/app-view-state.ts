@@ -53,6 +53,13 @@ export type AppViewState = {
   assistantAgentId: string | null;
   sessionKey: string;
   chatLoading: boolean;
+  chatHistoryLoadingOlder: boolean;
+  chatHistoryHasMore: boolean;
+  chatHistoryNextBefore: string | null;
+  chatHistorySessionKey: string;
+  chatHistoryRequestGeneration: number;
+  chatHistoryInitialRequestId: number;
+  chatHistoryOlderRequestId: number;
   chatSending: boolean;
   chatMessage: string;
   chatAttachments: ChatAttachment[];

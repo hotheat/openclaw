@@ -58,7 +58,10 @@ import {
   ChatAttachmentMaterializeParamsSchema,
   type ChatEvent,
   ChatEventSchema,
+  type ChatHistoryParams,
   ChatHistoryParamsSchema,
+  type ChatHistoryResult,
+  ChatHistoryResultSchema,
   type ChatInjectParams,
   ChatInjectParamsSchema,
   ChatSendParamsSchema,
@@ -395,7 +398,8 @@ export const validateExecApprovalsNodeSetParams = ajv.compile<ExecApprovalsNodeS
   ExecApprovalsNodeSetParamsSchema,
 );
 export const validateLogsTailParams = ajv.compile<LogsTailParams>(LogsTailParamsSchema);
-export const validateChatHistoryParams = ajv.compile(ChatHistoryParamsSchema);
+export const validateChatHistoryParams = ajv.compile<ChatHistoryParams>(ChatHistoryParamsSchema);
+export const validateChatHistoryResult = ajv.compile<ChatHistoryResult>(ChatHistoryResultSchema);
 export const validateChatAttachmentMaterializeParams = ajv.compile<ChatAttachmentMaterializeParams>(
   ChatAttachmentMaterializeParamsSchema,
 );
@@ -539,6 +543,7 @@ export {
   LogsTailParamsSchema,
   LogsTailResultSchema,
   ChatHistoryParamsSchema,
+  ChatHistoryResultSchema,
   ChatAttachmentMaterializeParamsSchema,
   ChatSendParamsSchema,
   ChatSteerParamsSchema,
@@ -656,6 +661,8 @@ export type {
   ExecApprovalsSnapshot,
   LogsTailParams,
   LogsTailResult,
+  ChatHistoryParams,
+  ChatHistoryResult,
   PollParams,
   UpdateRunParams,
   ChatInjectParams,

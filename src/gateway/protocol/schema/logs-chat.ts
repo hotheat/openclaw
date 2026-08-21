@@ -28,6 +28,32 @@ export const ChatHistoryParamsSchema = Type.Object(
   {
     sessionKey: NonEmptyString,
     limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })),
+    before: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
+  },
+  { additionalProperties: false },
+);
+
+export const ChatHistoryMessageSchema = Type.Unsafe<
+  { historyEntryId: string } & Record<string, unknown>
+>({
+  type: "object",
+  properties: {
+    historyEntryId: NonEmptyString,
+  },
+  required: ["historyEntryId"],
+  additionalProperties: true,
+});
+
+export const ChatHistoryResultSchema = Type.Object(
+  {
+    sessionKey: NonEmptyString,
+    sessionId: Type.Optional(NonEmptyString),
+    messages: Type.Array(ChatHistoryMessageSchema),
+    nextBefore: Type.Optional(NonEmptyString),
+    hasMore: Type.Boolean(),
+    cursorReset: Type.Boolean(),
+    thinkingLevel: Type.Optional(Type.String()),
+    verboseLevel: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );

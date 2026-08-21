@@ -81,7 +81,24 @@ _Avoid_: 裸用 runId 而不区分前端/Gateway 侧
 BFF 在 Gateway 上游断开时为 active run 合成的 chat 事件状态（非 OpenClaw 原生状态），含义是"本轮结果未知"。无 seq，不参与 seq 比较；恢复靠前端 health 轮询。
 
 **Reconcile（对账）**:
-任一 run 到达终态后，以 `chat.history` 全量替换本地流式状态。Gateway 历史是唯一事实源。
+任一 run 到达终态后，以 `chat.history` 最新窗口按稳定历史条目标识与本地状态尾部对齐合并；已加载的更早历史页保留，窗口与已加载历史无重叠时按游标重置处理。Gateway 历史仍是唯一事实源。
+_Avoid_: 全量替换本地状态（旧语义）、把 reconcile 响应当完整 transcript snapshot
+
+**历史页（History Page）**:
+`chat.history` 一次返回的按时间正序展示历史窗口，用 opaque 游标（`before`/`nextBefore`）向更早方向翻页；只覆盖当前活跃 transcript。
+_Avoid_: 完整历史、跨 reset 文件的合并视图
+
+**游标重置（Cursor Reset）**:
+游标所指 transcript 被替换、截断或会话切换后，服务端改答最新页并显式标记；客户端必须清空已加载历史与旧游标再采用最新页。对账窗口与已加载历史无重叠（缺口）时走同一路径。
+_Avoid_: 静默回退、把 stale cursor 当请求错误
+
+**历史条目标识（History Entry ID）**:
+Gateway 为每条展示消息附加的稳定公开标识，源自 transcript record 身份，缺失时由服务端按文件内位置合成；供展示层跨页去重与合并使用。
+_Avoid_: 页内下标 ID、临时 key
+
+**有界 Transcript 扫描（Bounded Transcript Scan）**:
+按反向 chunk traversal 读取活跃 JSONL transcript，在完整行上统一执行单行字节、扫描字节和原始 record 数量上限，并把每行解码为 decoded、malformed 或 oversized 结果；历史页与 post-compaction audit 共用该读取语义。
+_Avoid_: 同步全文件读取、调用方自行拆行或复制 JSON record decode
 
 **Target / Binding**:
 principal 与 direct/group target 的授权绑定关系，决定 agentId 与 namespace；`bridge.connect` 首帧完成绑定。

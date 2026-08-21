@@ -10,7 +10,11 @@ import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-iden
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
 import { loadAgents } from "./controllers/agents.ts";
 import { loadChannels } from "./controllers/channels.ts";
-import { loadChatHistory } from "./controllers/chat.ts";
+import {
+  loadChatHistory,
+  loadOlderChatHistory,
+  resetChatHistoryForSessionSwitch,
+} from "./controllers/chat.ts";
 import {
   applyConfig,
   loadConfig,
@@ -231,6 +235,7 @@ export function renderApp(state: AppViewState) {
                 onSessionKeyChange: (next) => {
                   state.sessionKey = next;
                   state.chatMessage = "";
+                  resetChatHistoryForSessionSwitch(state);
                   state.resetToolStream();
                   state.applySettings({
                     ...state.settings,
@@ -809,6 +814,7 @@ export function renderApp(state: AppViewState) {
                   state.chatStreamStartedAt = null;
                   state.chatRunId = null;
                   state.chatQueue = [];
+                  resetChatHistoryForSessionSwitch(state);
                   state.resetToolStream();
                   state.resetChatScroll();
                   state.applySettings({
@@ -823,6 +829,8 @@ export function renderApp(state: AppViewState) {
                 thinkingLevel: state.chatThinkingLevel,
                 showThinking,
                 loading: state.chatLoading,
+                historyHasMore: state.chatHistoryHasMore,
+                historyLoadingOlder: state.chatHistoryLoadingOlder,
                 sending: state.chatSending,
                 compactionStatus: state.compactionStatus,
                 fallbackStatus: state.fallbackStatus,
@@ -843,6 +851,7 @@ export function renderApp(state: AppViewState) {
                   state.resetToolStream();
                   return Promise.all([loadChatHistory(state), refreshChatAvatar(state)]);
                 },
+                onLoadOlder: () => void loadOlderChatHistory(state),
                 onToggleFocusMode: () => {
                   if (state.onboarding) {
                     return;
