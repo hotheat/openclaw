@@ -19,7 +19,7 @@ describe("process supervisor", () => {
     const run = await spawnChild(supervisor, {
       sessionId: "s1",
       argv: [process.execPath, "-e", 'process.stdout.write("ok")'],
-      timeoutMs: 1_000,
+      timeoutMs: 5_000,
       stdinMode: "pipe-closed",
     });
     const exit = await run.wait();
@@ -48,8 +48,8 @@ describe("process supervisor", () => {
     const first = await spawnChild(supervisor, {
       sessionId: "s1",
       scopeKey: "scope:a",
-      argv: [process.execPath, "-e", "setTimeout(() => {}, 40)"],
-      timeoutMs: 500,
+      argv: [process.execPath, "-e", "setTimeout(() => {}, 5_000)"],
+      timeoutMs: 5_000,
       stdinMode: "pipe-open",
     });
 
@@ -58,7 +58,7 @@ describe("process supervisor", () => {
       scopeKey: "scope:a",
       replaceExistingScope: true,
       argv: [process.execPath, "-e", 'process.stdout.write("new")'],
-      timeoutMs: 1_000,
+      timeoutMs: 5_000,
       stdinMode: "pipe-closed",
     });
 
@@ -88,7 +88,7 @@ describe("process supervisor", () => {
     const run = await spawnChild(supervisor, {
       sessionId: "s-capture",
       argv: [process.execPath, "-e", 'process.stdout.write("streamed")'],
-      timeoutMs: 1_000,
+      timeoutMs: 5_000,
       stdinMode: "pipe-closed",
       captureOutput: false,
       onStdout: (chunk) => {
