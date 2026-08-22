@@ -399,6 +399,7 @@ jobs:
           GROK_MODELS_BASE_URL: ${{ vars.GROK_MODELS_BASE_URL }}
           GROK_MODEL: ${{ vars.GROK_MODEL || 'grok-4.6' }}
           GROK_REASONING_EFFORT: ${{ vars.GROK_REASONING_EFFORT || 'high' }}
+          GROK_REVIEW_MAX_TURNS: ${{ vars.GROK_REVIEW_MAX_TURNS || '36' }}
         run: |
           set -euo pipefail
           case "${GROK_MODELS_BASE_URL}" in
@@ -418,6 +419,10 @@ jobs:
           }
           [[ "${GROK_REASONING_EFFORT}" =~ ^[A-Za-z0-9_-]+$ ]] || {
             echo "GROK_REASONING_EFFORT contains unsupported characters" >&2
+            exit 1
+          }
+          [[ "${GROK_REVIEW_MAX_TURNS}" =~ ^[1-9][0-9]*$ ]] || {
+            echo "GROK_REVIEW_MAX_TURNS must be a positive integer" >&2
             exit 1
           }
           case "${GROK_API_BACKEND}" in
@@ -471,6 +476,7 @@ jobs:
           GROK_HOME: ${{ runner.temp }}/grok-home
           GROK_MODELS_BASE_URL: ${{ vars.GROK_MODELS_BASE_URL }}
           GROK_REASONING_EFFORT: ${{ vars.GROK_REASONING_EFFORT || 'high' }}
+          GROK_REVIEW_MAX_TURNS: ${{ vars.GROK_REVIEW_MAX_TURNS || '36' }}
           GROK_WRITE_FILE: "0"
           XAI_API_KEY: ${{ secrets.GROK_TOKEN }}
         run: |
@@ -494,7 +500,7 @@ jobs:
             --deny "MCPTool" \
             --disable-web-search \
             --no-subagents \
-            --max-turns 8 > "${raw_output}"
+            --max-turns "${GROK_REVIEW_MAX_TURNS}" > "${raw_output}"
           jq -er '.text | select(type == "string" and length > 0)' \
             "${raw_output}" > grok-review.md
 
