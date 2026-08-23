@@ -502,10 +502,15 @@ jobs:
             --no-subagents \
             --max-turns "${GROK_REVIEW_MAX_TURNS}" | tee "${raw_output}"
           jq -ser \
-            '[.[] | select(.role == "assistant")
+            '[.[]
+              | if .type == "assistant" and .message.role? == "assistant" then .message
+                elif .role? == "assistant" then .
+                else empty
+                end
               | [.content[]? | select(.type == "text") | .text] | join("\n\n")
               | select(length > 0)] | last
-            | select(test("(?m)(^|[.!?。！？])## Findings[ \\t]*$"))' \
+            | select(type == "string"
+              and test("(?m)(^|[.!?。！？])## Findings[ \\t]*$"))' \
             "${raw_output}" > grok-review.md
 
       - name: Sanitize Grok review output
