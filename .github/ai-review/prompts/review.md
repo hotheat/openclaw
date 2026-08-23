@@ -34,16 +34,17 @@ Return markdown with these sections:
 
 1. `## Findings`
 
+- Start the response directly with this heading. Do not include review-process narration before it.
+
 - Order by severity.
 - Use this compact structure for each finding:
 
-  ```text
   [Severity] Short title
   Evidence: path/to/file.ts:42 — concrete evidence
   Impact: what can go wrong
   Fix: the smallest safe correction
-  ```
 
+- Do not wrap findings in fenced code blocks. Separate findings with a blank line.
 - Use `Critical`, `Important`, or `Suggestion` as the severity.
 - Keep evidence specific and include exact file paths and lines when possible.
 - If there are no `Critical` or `Important` findings, write `No Critical or Important findings.`

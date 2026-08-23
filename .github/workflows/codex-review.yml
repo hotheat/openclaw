@@ -485,13 +485,13 @@ jobs:
             echo "GROK_TOKEN is not configured" >&2
             exit 1
           fi
-          raw_output="${RUNNER_TEMP}/grok-review.json"
+          raw_output="${RUNNER_TEMP}/grok-review.ndjson"
           grok \
             --prompt-file "${{ steps.grok_review_prompt.outputs.path }}" \
             --cwd "${GITHUB_WORKSPACE}" \
             --model ci-review \
             --reasoning-effort "${GROK_REASONING_EFFORT}" \
-            --output-format json \
+            --output-format streaming-messages-json \
             --permission-mode dontAsk \
             --sandbox off \
             --tools "read_file,grep,list_dir" \
@@ -500,8 +500,12 @@ jobs:
             --deny "MCPTool" \
             --disable-web-search \
             --no-subagents \
-            --max-turns "${GROK_REVIEW_MAX_TURNS}" > "${raw_output}"
-          jq -er '.text | select(type == "string" and length > 0)' \
+            --max-turns "${GROK_REVIEW_MAX_TURNS}" | tee "${raw_output}"
+          jq -ser \
+            '[.[] | select(.role == "assistant")
+              | [.content[]? | select(.type == "text") | .text] | join("\n\n")
+              | select(length > 0)] | last
+            | select(test("(?m)(^|[.!?。！？])## Findings[ \\t]*$"))' \
             "${raw_output}" > grok-review.md
 
       - name: Sanitize Grok review output

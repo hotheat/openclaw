@@ -17,6 +17,16 @@ HTTP_URL_PATTERN = re.compile(
     r'[^\s<>{}\[\]()`]*',
     re.IGNORECASE,
 )
+FINDINGS_HEADING_PATTERN = re.compile(
+    r'(?:^|(?<=[.!?。！？]))## Findings[ \t]*(?:\r?\n|$)',
+    re.MULTILINE,
+)
+FINDING_FENCE_PATTERN = re.compile(
+    r'^[ \t]*```(?:text|markdown)?[ \t]*\r?\n'
+    r'(?P<body>[ \t]*\[(?:Critical|Important|Suggestion)\].*?)'
+    r'\r?\n[ \t]*```[ \t]*(?=\r?\n|$)',
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def _safe_netloc(parsed: SplitResult) -> str:
@@ -48,9 +58,19 @@ def _sanitize_url(match: re.Match[str]) -> str:
     return urlunsplit(sanitized)
 
 
+def _normalize_review_markdown(review: str) -> str:
+    """Keep the final review and unwrap legacy finding-only code fences."""
+    findings_heading = FINDINGS_HEADING_PATTERN.search(review)
+    if findings_heading is not None:
+        review = review[findings_heading.start() :]
+
+    return FINDING_FENCE_PATTERN.sub(lambda match: match.group('body').strip(), review)
+
+
 def sanitize_review(review: str) -> str:
-    """Strip HTTP URL user information and queries while preserving review text."""
-    return HTTP_URL_PATTERN.sub(_sanitize_url, review)
+    """Normalize publishable markdown and strip credential-shaped URL data."""
+    normalized_review = _normalize_review_markdown(review)
+    return HTTP_URL_PATTERN.sub(_sanitize_url, normalized_review)
 
 
 def main() -> None:
