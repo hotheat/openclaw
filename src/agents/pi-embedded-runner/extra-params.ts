@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { log } from "./logger.js";
 
 type KimiMoonshotThinkingType = "enabled" | "disabled";
+type QwenReasoningEffort = "low" | "medium" | "xhigh";
 
 const OPENROUTER_APP_HEADERS: Record<string, string> = {
   "HTTP-Referer": "https://openclaw.ai",
@@ -593,6 +594,56 @@ function createDeepseekThinkingWrapper(
   };
 }
 
+function mapQwenThinkingPayload(thinkingLevel: ThinkLevel): {
+  enableThinking: boolean;
+  reasoningEffort?: QwenReasoningEffort;
+} {
+  if (thinkingLevel === "off") {
+    return { enableThinking: false };
+  }
+  if (thinkingLevel === "minimal" || thinkingLevel === "low") {
+    return { enableThinking: true, reasoningEffort: "low" };
+  }
+  if (thinkingLevel === "medium") {
+    return { enableThinking: true, reasoningEffort: "medium" };
+  }
+  return { enableThinking: true, reasoningEffort: "xhigh" };
+}
+
+function createQwenThinkingWrapper(
+  baseStreamFn: StreamFn | undefined,
+  thinkingLevel: ThinkLevel,
+): StreamFn {
+  const underlying = baseStreamFn ?? streamSimple;
+  return (model, context, options) => {
+    if (model.api !== "openai-completions" || readRecord(model.compat)?.thinkingFormat !== "qwen") {
+      return underlying(model, context, options);
+    }
+
+    const originalOnPayload = options?.onPayload;
+    const mapped = mapQwenThinkingPayload(thinkingLevel);
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload: unknown, ...rest: unknown[]) => {
+        const payloadModel = rest[0] as Model<Api> | undefined;
+        const payloadRecord = readRecord(payload);
+        if (payloadRecord) {
+          payloadRecord.chat_template_kwargs = {
+            ...readRecord(payloadRecord.chat_template_kwargs),
+            enable_thinking: mapped.enableThinking,
+          };
+          if (mapped.reasoningEffort) {
+            payloadRecord.reasoning_effort = mapped.reasoningEffort;
+          } else {
+            delete payloadRecord.reasoning_effort;
+          }
+        }
+        return invokeOnPayload(originalOnPayload, payload, payloadModel);
+      },
+    });
+  };
+}
+
 /**
  * Create a streamFn wrapper that adds OpenRouter app attribution headers
  * and injects reasoning.effort based on the configured thinking level.
@@ -750,6 +801,11 @@ export function applyExtraParamsToAgent(
       providerBaseUrl,
       thinkingLevel,
     );
+  }
+
+  if (thinkingLevel) {
+    log.debug(`applying Qwen thinking params when compatible for ${provider}/${modelId}`);
+    agent.streamFn = createQwenThinkingWrapper(agent.streamFn, thinkingLevel);
   }
 
   // Enable Z.AI tool_stream for real-time tool call streaming.

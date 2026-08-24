@@ -131,6 +131,35 @@ describe("run completion contract", () => {
     );
   });
 
+  it("continues a webchat run after a thinking-only response reaches the output limit", async () => {
+    mockedRunEmbeddedAttempt
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: [],
+          lastAssistant: makeAssistantMessage({
+            content: [{ type: "thinking", thinking: "internal-only" }],
+            stopReason: "length",
+          }),
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeAttemptResult({
+          assistantTexts: ["最终答复。"],
+        }),
+      );
+
+    const result = await runEmbeddedPiAgent({
+      ...baseParams,
+      sessionKey: "agent:main:webchat:chat-1",
+    });
+
+    expect(result.meta.error).toBeUndefined();
+    expect(mockedRunEmbeddedAttempt).toHaveBeenCalledTimes(2);
+    expect(mockedRunEmbeddedAttempt.mock.calls[1]?.[0]?.prompt).toContain(
+      "reached the output limit",
+    );
+  });
+
   it("enforces the continuation cap across changing completion classifications", async () => {
     mockedRunEmbeddedAttempt
       .mockResolvedValueOnce(

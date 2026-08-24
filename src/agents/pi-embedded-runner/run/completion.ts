@@ -77,7 +77,10 @@ export function isCompletionContractEnabled(params: {
   const sessionKey = params.sessionKey?.trim() ?? "";
   const agentId = params.agentId?.trim() ?? "";
   return (
-    sessionKey.includes(":subagent:") || sessionKey.includes(":feishu:") || agentId === "researcher"
+    sessionKey.includes(":subagent:") ||
+    sessionKey.includes(":feishu:") ||
+    sessionKey.includes(":webchat:") ||
+    agentId === "researcher"
   );
 }
 
@@ -132,7 +135,11 @@ export function buildCompletionContinuationPrompt(params: {
       );
     }
   } else if (params.assessment.classification === "empty_result") {
-    lines.push("Your previous turn ended without a user-facing result.");
+    lines.push(
+      params.assessment.reason.includes("output limit")
+        ? "Your previous turn reached the output limit without a user-facing result."
+        : "Your previous turn ended without a user-facing result.",
+    );
     lines.push("Continue immediately and return the actual result in this turn.");
   } else {
     lines.push(
@@ -202,6 +209,16 @@ export function assessRunCompletion(attempt: EmbeddedRunAttemptResult): RunCompl
 
   const lastAssistantText = getLastAssistantText(attempt);
   const hasReply = hasUserFacingReply(attempt);
+  const stoppedAtOutputLimit = attempt.lastAssistant?.stopReason?.trim().toLowerCase() === "length";
+
+  if (stoppedAtOutputLimit && !hasReply) {
+    return {
+      classification: "empty_result",
+      recoveryAction: "retry_same_step",
+      toolPolicy: "normal",
+      reason: "assistant reached the output limit without a user-facing result",
+    };
+  }
 
   if (attempt.lastToolError && !hasReply) {
     return {

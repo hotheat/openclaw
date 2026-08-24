@@ -18,6 +18,7 @@ function runChatTemplateKwargsCase(params: {
   configured: unknown;
   payload?: Record<string, unknown>;
   extraParamsOverride?: Record<string, unknown>;
+  thinkingLevel?: Parameters<typeof applyExtraParamsToAgent>[5];
 }) {
   const provider = "qwen-openai";
   const modelId = "qwen/qwen3.8-27b";
@@ -46,12 +47,16 @@ function runChatTemplateKwargsCase(params: {
     provider,
     modelId,
     params.extraParamsOverride,
+    params.thinkingLevel,
   );
 
   const model = {
     api: "openai-completions",
     provider,
     id: modelId,
+    compat: {
+      thinkingFormat: "qwen",
+    },
   } as Model<"openai-completions">;
   const context: Context = { messages: [] };
   void agent.streamFn?.(model, context, {});
@@ -116,5 +121,77 @@ describe("extra-params: chatTemplateKwargs passthrough", () => {
     });
 
     expect(payload).not.toHaveProperty("chat_template_kwargs");
+  });
+
+  it.each([
+    {
+      thinkingLevel: "low",
+      reasoningEffort: "low",
+    },
+    {
+      thinkingLevel: "medium",
+      reasoningEffort: "medium",
+    },
+    {
+      thinkingLevel: "high",
+      reasoningEffort: "xhigh",
+    },
+  ] as const)(
+    "maps $thinkingLevel thinking to Qwen request fields",
+    ({ thinkingLevel, reasoningEffort }) => {
+      const payload = runChatTemplateKwargsCase({
+        configured: {
+          preserve_thinking: false,
+        },
+        thinkingLevel,
+      });
+
+      expect(payload.chat_template_kwargs).toEqual({
+        preserve_thinking: false,
+        enable_thinking: true,
+      });
+      expect(payload.reasoning_effort).toBe(reasoningEffort);
+    },
+  );
+
+  it("maps off thinking to the Qwen chat template and clears stale effort", () => {
+    const payload = runChatTemplateKwargsCase({
+      configured: {
+        enable_thinking: true,
+        preserve_thinking: false,
+      },
+      payload: {
+        model: "qwen/qwen3.8-27b",
+        messages: [],
+        reasoning_effort: "xhigh",
+        chat_template_kwargs: {
+          enable_thinking: true,
+          preserve_thinking: true,
+        },
+      },
+      thinkingLevel: "off",
+    });
+
+    expect(payload.chat_template_kwargs).toEqual({
+      enable_thinking: false,
+      preserve_thinking: false,
+    });
+    expect(payload).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("applies runtime thinking after configured chat template kwargs", () => {
+    const payload = runChatTemplateKwargsCase({
+      configured: {
+        enable_thinking: false,
+        preserve_thinking: false,
+      },
+      thinkingLevel: "medium",
+    });
+
+    expect(payload.chat_template_kwargs).toEqual({
+      enable_thinking: true,
+      preserve_thinking: false,
+    });
+    expect(payload.reasoning_effort).toBe("medium");
   });
 });

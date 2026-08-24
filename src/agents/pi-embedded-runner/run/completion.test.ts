@@ -161,6 +161,24 @@ describe("run completion assessment", () => {
     expect(assessment.recoveryAction).toBe("retry_same_step");
   });
 
+  it("returns empty_result when output ends at length with thinking only", () => {
+    const assessment = assessRunCompletion(
+      makeAttemptResult({
+        lastAssistant: {
+          role: "assistant",
+          content: [{ type: "thinking", thinking: "internal-only" }],
+          stopReason: "length",
+        } as EmbeddedRunAttemptResult["lastAssistant"],
+      }),
+    );
+
+    expect(assessment).toMatchObject({
+      classification: "empty_result",
+      recoveryAction: "retry_same_step",
+      reason: "assistant reached the output limit without a user-facing result",
+    });
+  });
+
   it("does not treat finished instructions containing common progress words as incomplete", () => {
     const assessment = assessRunCompletion(
       makeAttemptResult({
@@ -199,7 +217,7 @@ describe("run completion assessment", () => {
     expect(assessment.recoveryAction).toBe("retry_same_step");
   });
 
-  it("enables the contract for researcher, subagent, and Feishu runs", () => {
+  it("enables the contract for researcher, subagent, Feishu, and webchat runs", () => {
     expect(isCompletionContractEnabled({ sessionKey: "agent:main:subagent:abc" })).toBe(true);
     expect(
       isCompletionContractEnabled({
@@ -211,6 +229,7 @@ describe("run completion assessment", () => {
         sessionKey: "agent:feishu-group_x:feishu:group:oc_x",
       }),
     ).toBe(true);
+    expect(isCompletionContractEnabled({ sessionKey: "agent:main:webchat:chat_x" })).toBe(true);
     expect(isCompletionContractEnabled({ agentId: "researcher" })).toBe(true);
     expect(isCompletionContractEnabled({ sessionKey: "agent:main:main", agentId: "main" })).toBe(
       false,
