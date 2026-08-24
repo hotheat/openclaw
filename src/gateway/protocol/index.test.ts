@@ -87,6 +87,31 @@ describe("chat event protocol", () => {
       }),
     ).toBe(true);
   });
+
+  it("accepts a persisted assistant id on final events", () => {
+    expect(
+      validateChatEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        seq: 2,
+        state: "final",
+        messageId: "entry-final",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "done" }],
+        },
+      }),
+    ).toBe(true);
+    expect(
+      validateChatEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        seq: 2,
+        state: "final",
+        messageId: "",
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("chat history protocol", () => {

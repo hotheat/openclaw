@@ -427,6 +427,8 @@ function withCompletionContractTerminal<T extends EmbeddedPiRunResult>(params: {
   result: T;
 }): T {
   if (params.enabled && !params.emittedRef.value) {
+    // Completion-contract terminals are synthetic and intentionally omit
+    // assistantMessageId; WebChat falls back to text-based reconciliation.
     emitEmbeddedRunTerminalEvent({
       runId: params.runId,
       startedAt: params.startedAt,

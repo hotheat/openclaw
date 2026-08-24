@@ -77,7 +77,13 @@ export function startGatewayMaintenanceTimers(params: {
   playwrightRecovery?: PlaywrightRecoveryMaintenanceConfig;
   dedupe: Map<string, DedupeEntry>;
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
-  chatRunState: { abortedRuns: Map<string, number> };
+  chatRunState: {
+    abortedRuns: Map<string, number>;
+    deltaRevisions: Map<string, number>;
+    deltaSeqs: Map<string, number>;
+    deltaLastBroadcastRevisions: Map<string, number>;
+    deltaLastNodeRevisions: Map<string, number>;
+  };
   chatRunBuffers: Map<string, string>;
   chatDeltaSentAt: Map<string, number>;
   removeChatRun: (
@@ -159,6 +165,10 @@ export function startGatewayMaintenanceTimers(params: {
         {
           chatAbortControllers: params.chatAbortControllers,
           chatRunBuffers: params.chatRunBuffers,
+          chatDeltaRevisions: params.chatRunState.deltaRevisions,
+          chatDeltaSeqs: params.chatRunState.deltaSeqs,
+          chatDeltaLastBroadcastRevisions: params.chatRunState.deltaLastBroadcastRevisions,
+          chatDeltaLastNodeRevisions: params.chatRunState.deltaLastNodeRevisions,
           chatDeltaSentAt: params.chatDeltaSentAt,
           chatAbortedRuns: params.chatRunState.abortedRuns,
           removeChatRun: params.removeChatRun,
@@ -177,6 +187,10 @@ export function startGatewayMaintenanceTimers(params: {
       }
       params.chatRunState.abortedRuns.delete(runId);
       params.chatRunBuffers.delete(runId);
+      params.chatRunState.deltaRevisions.delete(runId);
+      params.chatRunState.deltaSeqs.delete(runId);
+      params.chatRunState.deltaLastBroadcastRevisions.delete(runId);
+      params.chatRunState.deltaLastNodeRevisions.delete(runId);
       params.chatDeltaSentAt.delete(runId);
     }
   }, 60_000);

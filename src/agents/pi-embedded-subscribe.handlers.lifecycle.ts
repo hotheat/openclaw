@@ -25,6 +25,37 @@ export function handleAgentStart(ctx: EmbeddedPiSubscribeContext) {
   });
 }
 
+function resolvePersistedAssistantMessageId(
+  ctx: EmbeddedPiSubscribeContext,
+  lastAssistant: EmbeddedPiSubscribeContext["state"]["lastAssistant"],
+): string | undefined {
+  if (
+    !isAssistantMessage(lastAssistant) ||
+    lastAssistant.stopReason === "error" ||
+    lastAssistant.stopReason === "aborted"
+  ) {
+    return undefined;
+  }
+  try {
+    const leaf = ctx.params.session.sessionManager.getLeafEntry();
+    if (
+      leaf?.type !== "message" ||
+      leaf.message.role !== "assistant" ||
+      leaf.message !== lastAssistant ||
+      typeof leaf.id !== "string" ||
+      !leaf.id.trim()
+    ) {
+      return undefined;
+    }
+    return leaf.id;
+  } catch (error) {
+    ctx.log.debug(
+      `embedded run assistantMessageId unavailable: runId=${ctx.params.runId} error=${String(error)}`,
+    );
+    return undefined;
+  }
+}
+
 export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
   const lastAssistant = ctx.state.lastAssistant;
   const isError = isAssistantMessage(lastAssistant) && lastAssistant.stopReason === "error";
@@ -74,6 +105,7 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
       },
     });
   } else {
+    const assistantMessageId = resolvePersistedAssistantMessageId(ctx, lastAssistant);
     ctx.log.debug(`embedded run agent end: runId=${ctx.params.runId} isError=${isError}`);
     emitAgentEvent({
       runId: ctx.params.runId,
@@ -81,11 +113,15 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
       data: {
         phase: "end",
         endedAt: Date.now(),
+        ...(assistantMessageId ? { assistantMessageId } : {}),
       },
     });
     void ctx.params.onAgentEvent?.({
       stream: "lifecycle",
-      data: { phase: "end" },
+      data: {
+        phase: "end",
+        ...(assistantMessageId ? { assistantMessageId } : {}),
+      },
     });
   }
 

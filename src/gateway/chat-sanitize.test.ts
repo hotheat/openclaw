@@ -82,6 +82,40 @@ describe("stripEnvelopeFromMessage", () => {
     expect(result.content).toBe("Actual user message");
   });
 
+  test("removes queued system events before the user envelope from a persisted transcript", () => {
+    const input = {
+      role: "user",
+      content: `System: [2026-08-23 12:22:11 GMT+8] Exec completed (oceanic-, code 0) :: files-ready
+System: [2026-08-23 12:22:52 GMT+8] Exec failed (kind-ott, signal SIGTERM)
+
+Conversation info (untrusted metadata):
+\`\`\`json
+{
+  "message_id": "bff-4dfe733b9cd5e282-4ba45266a5356ee1-run_31f3430e2f3046958aac212729e44612",
+  "sender_id": "webchat:user",
+  "sender": "webchat:user"
+}
+\`\`\`
+
+[Sun 2026-08-23 12:27 GMT+8] 再转换成 go 格式的文件`,
+    };
+
+    const result = stripEnvelopeFromMessage(input) as { content?: string };
+
+    expect(result.content).toBe("再转换成 go 格式的文件");
+  });
+
+  test("keeps system-shaped text when it is not a leading event block", () => {
+    const input = {
+      role: "user",
+      content: "请解释下面这行：\nSystem: [2026-08-23 12:22:11 GMT+8] Exec completed",
+    };
+
+    const result = stripEnvelopeFromMessage(input) as { content?: string };
+
+    expect(result.content).toBe(input.content);
+  });
+
   test("strips metadata-like blocks even when not a prefix", () => {
     const input = {
       role: "user",

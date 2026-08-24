@@ -85,6 +85,10 @@ async function createTranscriptFixture(prefix: string) {
 function createChatAbortContext(overrides: Record<string, unknown> = {}): {
   chatAbortControllers: Map<string, ReturnType<typeof createActiveRun>>;
   chatRunBuffers: Map<string, string>;
+  chatDeltaRevisions: Map<string, number>;
+  chatDeltaSeqs: Map<string, number>;
+  chatDeltaLastBroadcastRevisions: Map<string, number>;
+  chatDeltaLastNodeRevisions: Map<string, number>;
   chatDeltaSentAt: Map<string, number>;
   chatAbortedRuns: Map<string, number>;
   removeChatRun: ReturnType<typeof vi.fn>;
@@ -97,6 +101,10 @@ function createChatAbortContext(overrides: Record<string, unknown> = {}): {
   return {
     chatAbortControllers: new Map(),
     chatRunBuffers: new Map(),
+    chatDeltaRevisions: new Map(),
+    chatDeltaSeqs: new Map(),
+    chatDeltaLastBroadcastRevisions: new Map(),
+    chatDeltaLastNodeRevisions: new Map(),
     chatDeltaSentAt: new Map(),
     chatAbortedRuns: new Map<string, number>(),
     removeChatRun: vi
@@ -137,6 +145,10 @@ describe("chat abort transcript persistence", () => {
     const context = createChatAbortContext({
       chatAbortControllers: new Map([[runId, createActiveRun("main", sessionId)]]),
       chatRunBuffers: new Map([[runId, "Partial from run abort"]]),
+      chatDeltaRevisions: new Map([[runId, 2]]),
+      chatDeltaSeqs: new Map([[runId, 2]]),
+      chatDeltaLastBroadcastRevisions: new Map([[runId, 1]]),
+      chatDeltaLastNodeRevisions: new Map([[runId, 1]]),
       chatDeltaSentAt: new Map([[runId, Date.now()]]),
       removeChatRun: vi
         .fn()
@@ -155,9 +167,17 @@ describe("chat abort transcript persistence", () => {
     const [ok1, payload1] = respond.mock.calls.at(-1) ?? [];
     expect(ok1).toBe(true);
     expect(payload1).toMatchObject({ aborted: true, runIds: [runId] });
+    expect(context.chatDeltaRevisions.has(runId)).toBe(false);
+    expect(context.chatDeltaSeqs.has(runId)).toBe(false);
+    expect(context.chatDeltaLastBroadcastRevisions.has(runId)).toBe(false);
+    expect(context.chatDeltaLastNodeRevisions.has(runId)).toBe(false);
 
     context.chatAbortControllers.set(runId, createActiveRun("main", sessionId));
     context.chatRunBuffers.set(runId, "Partial from run abort");
+    context.chatDeltaRevisions.set(runId, 3);
+    context.chatDeltaSeqs.set(runId, 3);
+    context.chatDeltaLastBroadcastRevisions.set(runId, 2);
+    context.chatDeltaLastNodeRevisions.set(runId, 2);
     context.chatDeltaSentAt.set(runId, Date.now());
 
     await invokeChatAbort(context, { sessionKey: "main", runId }, respond);
@@ -196,6 +216,22 @@ describe("chat abort transcript persistence", () => {
         ["run-a", "Session abort partial"],
         ["run-b", "   "],
       ]),
+      chatDeltaRevisions: new Map([
+        ["run-a", 2],
+        ["run-b", 1],
+      ]),
+      chatDeltaSeqs: new Map([
+        ["run-a", 2],
+        ["run-b", 1],
+      ]),
+      chatDeltaLastBroadcastRevisions: new Map([
+        ["run-a", 1],
+        ["run-b", 1],
+      ]),
+      chatDeltaLastNodeRevisions: new Map([
+        ["run-a", 1],
+        ["run-b", 1],
+      ]),
       chatDeltaSentAt: new Map([
         ["run-a", Date.now()],
         ["run-b", Date.now()],
@@ -208,6 +244,10 @@ describe("chat abort transcript persistence", () => {
     expect(ok).toBe(true);
     expect(payload).toMatchObject({ aborted: true });
     expect(payload.runIds).toEqual(expect.arrayContaining(["run-a", "run-b"]));
+    expect(context.chatDeltaRevisions.size).toBe(0);
+    expect(context.chatDeltaSeqs.size).toBe(0);
+    expect(context.chatDeltaLastBroadcastRevisions.size).toBe(0);
+    expect(context.chatDeltaLastNodeRevisions.size).toBe(0);
 
     const lines = await readTranscriptLines(transcriptPath);
     const runAPersisted = lines
@@ -234,6 +274,10 @@ describe("chat abort transcript persistence", () => {
     const context = createChatAbortContext({
       chatAbortControllers: new Map([["run-stop-1", createActiveRun("main", sessionId)]]),
       chatRunBuffers: new Map([["run-stop-1", "Partial from /stop"]]),
+      chatDeltaRevisions: new Map([["run-stop-1", 2]]),
+      chatDeltaSeqs: new Map([["run-stop-1", 2]]),
+      chatDeltaLastBroadcastRevisions: new Map([["run-stop-1", 1]]),
+      chatDeltaLastNodeRevisions: new Map([["run-stop-1", 1]]),
       chatDeltaSentAt: new Map([["run-stop-1", Date.now()]]),
       removeChatRun: vi.fn().mockReturnValue({ sessionKey: "main", clientRunId: "client-stop-1" }),
       agentRunSeq: new Map<string, number>([["run-stop-1", 1]]),
@@ -258,6 +302,10 @@ describe("chat abort transcript persistence", () => {
     const [ok, payload] = respond.mock.calls.at(-1) ?? [];
     expect(ok).toBe(true);
     expect(payload).toMatchObject({ aborted: true, runIds: ["run-stop-1"] });
+    expect(context.chatDeltaRevisions.has("run-stop-1")).toBe(false);
+    expect(context.chatDeltaSeqs.has("run-stop-1")).toBe(false);
+    expect(context.chatDeltaLastBroadcastRevisions.has("run-stop-1")).toBe(false);
+    expect(context.chatDeltaLastNodeRevisions.has("run-stop-1")).toBe(false);
 
     const lines = await readTranscriptLines(transcriptPath);
     const persisted = lines

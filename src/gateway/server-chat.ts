@@ -151,6 +151,10 @@ export function createChatRunRegistry(): ChatRunRegistry {
 export type ChatRunState = {
   registry: ChatRunRegistry;
   buffers: Map<string, string>;
+  deltaRevisions: Map<string, number>;
+  deltaLastBroadcastRevisions: Map<string, number>;
+  deltaLastNodeRevisions: Map<string, number>;
+  deltaSeqs: Map<string, number>;
   deltaSentAt: Map<string, number>;
   abortedRuns: Map<string, number>;
   clear: () => void;
@@ -159,12 +163,20 @@ export type ChatRunState = {
 export function createChatRunState(): ChatRunState {
   const registry = createChatRunRegistry();
   const buffers = new Map<string, string>();
+  const deltaRevisions = new Map<string, number>();
+  const deltaLastBroadcastRevisions = new Map<string, number>();
+  const deltaLastNodeRevisions = new Map<string, number>();
+  const deltaSeqs = new Map<string, number>();
   const deltaSentAt = new Map<string, number>();
   const abortedRuns = new Map<string, number>();
 
   const clear = () => {
     registry.clear();
     buffers.clear();
+    deltaRevisions.clear();
+    deltaLastBroadcastRevisions.clear();
+    deltaLastNodeRevisions.clear();
+    deltaSeqs.clear();
     deltaSentAt.clear();
     abortedRuns.clear();
   };
@@ -172,6 +184,10 @@ export function createChatRunState(): ChatRunState {
   return {
     registry,
     buffers,
+    deltaRevisions,
+    deltaLastBroadcastRevisions,
+    deltaLastNodeRevisions,
+    deltaSeqs,
     deltaSentAt,
     abortedRuns,
     clear,
@@ -285,6 +301,29 @@ export function createAgentEventHandler({
   clearAgentRunContext,
   toolEventRecipients,
 }: AgentEventHandlerOptions) {
+  const createChatDeltaPayload = (
+    sessionKey: string,
+    clientRunId: string,
+    seq: number,
+    text: string,
+    timestamp: number,
+  ) => ({
+    runId: clientRunId,
+    sessionKey,
+    seq,
+    state: "delta" as const,
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      timestamp,
+    },
+  });
+
+  const shouldSuppressChatDelta = (clientRunId: string, sourceRunId: string, text: string) =>
+    isSilentReplyText(text, SILENT_REPLY_TOKEN) ||
+    isSilentReplyPrefixText(text, SILENT_REPLY_TOKEN) ||
+    shouldHideHeartbeatChatOutput(clientRunId, sourceRunId);
+
   const emitChatDelta = (
     sessionKey: string,
     clientRunId: string,
@@ -297,13 +336,10 @@ export function createAgentEventHandler({
       return;
     }
     chatRunState.buffers.set(clientRunId, cleaned);
-    if (
-      isSilentReplyText(cleaned, SILENT_REPLY_TOKEN) ||
-      isSilentReplyPrefixText(cleaned, SILENT_REPLY_TOKEN)
-    ) {
-      return;
-    }
-    if (shouldHideHeartbeatChatOutput(clientRunId, sourceRunId)) {
+    const revision = (chatRunState.deltaRevisions.get(clientRunId) ?? 0) + 1;
+    chatRunState.deltaRevisions.set(clientRunId, revision);
+    chatRunState.deltaSeqs.set(clientRunId, seq);
+    if (shouldSuppressChatDelta(clientRunId, sourceRunId, cleaned)) {
       return;
     }
     const now = Date.now();
@@ -312,19 +348,48 @@ export function createAgentEventHandler({
       return;
     }
     chatRunState.deltaSentAt.set(clientRunId, now);
-    const payload = {
-      runId: clientRunId,
-      sessionKey,
-      seq,
-      state: "delta" as const,
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: cleaned }],
-        timestamp: now,
-      },
-    };
+    const payload = createChatDeltaPayload(sessionKey, clientRunId, seq, cleaned, now);
     broadcast("chat", payload, { dropIfSlow: true });
     nodeSendToSession(sessionKey, "chat", payload);
+    chatRunState.deltaLastNodeRevisions.set(clientRunId, revision);
+  };
+
+  // Boundary deltas reuse the seq of the latest assistant event they carry.
+  // A reliable repeat may therefore share a seq with the earlier droppable
+  // delta, while terminal events keep their own larger seq.
+  const flushBufferedChatDeltaIfNeeded = (
+    sessionKey: string,
+    clientRunId: string,
+    sourceRunId: string,
+  ) => {
+    const revision = chatRunState.deltaRevisions.get(clientRunId);
+    const sourceSeq = chatRunState.deltaSeqs.get(clientRunId);
+    if (revision === undefined || sourceSeq === undefined) {
+      return;
+    }
+    const needsReliableBroadcast =
+      revision !== chatRunState.deltaLastBroadcastRevisions.get(clientRunId);
+    const needsNodeSend = revision !== chatRunState.deltaLastNodeRevisions.get(clientRunId);
+    if (!needsReliableBroadcast && !needsNodeSend) {
+      return;
+    }
+    const cleaned = stripInlineDirectiveTagsForDisplay(
+      chatRunState.buffers.get(clientRunId) ?? "",
+    ).text;
+    if (!cleaned || shouldSuppressChatDelta(clientRunId, sourceRunId, cleaned)) {
+      return;
+    }
+    const now = Date.now();
+    const payload = createChatDeltaPayload(sessionKey, clientRunId, sourceSeq, cleaned, now);
+    if (needsReliableBroadcast) {
+      broadcast("chat", payload);
+      chatRunState.deltaLastBroadcastRevisions.set(clientRunId, revision);
+    }
+    if (needsNodeSend) {
+      nodeSendToSession(sessionKey, "chat", payload);
+      chatRunState.deltaLastNodeRevisions.set(clientRunId, revision);
+    }
+    chatRunState.deltaSentAt.set(clientRunId, now);
   };
 
   const emitChatFinal = (
@@ -334,7 +399,9 @@ export function createAgentEventHandler({
     seq: number,
     jobState: "done" | "error",
     error?: unknown,
+    assistantMessageId?: string,
   ) => {
+    flushBufferedChatDeltaIfNeeded(sessionKey, clientRunId, sourceRunId);
     const bufferedText = stripInlineDirectiveTagsForDisplay(
       chatRunState.buffers.get(clientRunId) ?? "",
     ).text.trim();
@@ -347,6 +414,10 @@ export function createAgentEventHandler({
     const shouldSuppressSilent =
       normalizedHeartbeatText.suppress || isSilentReplyText(text, SILENT_REPLY_TOKEN);
     chatRunState.buffers.delete(clientRunId);
+    chatRunState.deltaRevisions.delete(clientRunId);
+    chatRunState.deltaLastBroadcastRevisions.delete(clientRunId);
+    chatRunState.deltaLastNodeRevisions.delete(clientRunId);
+    chatRunState.deltaSeqs.delete(clientRunId);
     chatRunState.deltaSentAt.delete(clientRunId);
     if (jobState === "done") {
       const payload = {
@@ -355,6 +426,9 @@ export function createAgentEventHandler({
         seq,
         state: "final" as const,
         ...(shouldSuppressSilent ? { silent: true as const } : {}),
+        ...(text && !shouldSuppressSilent && assistantMessageId
+          ? { messageId: assistantMessageId }
+          : {}),
         message:
           text && !shouldSuppressSilent
             ? {
@@ -415,7 +489,9 @@ export function createAgentEventHandler({
     // Include sessionKey so Control UI can filter tool streams per session.
     const agentPayload = sessionKey ? { ...eventForClients, sessionKey } : eventForClients;
     const last = agentRunSeq.get(evt.runId) ?? 0;
+    const isReplay = evt.seq <= last;
     const isToolEvent = evt.stream === "tool";
+    const toolPhase = isToolEvent && typeof evt.data?.phase === "string" ? evt.data.phase : null;
     const toolVerbose = isToolEvent ? resolveToolVerboseLevel(evt.runId, sessionKey) : "off";
     // Build tool payload: strip result/partialResult unless verbose=full
     const toolPayload =
@@ -442,7 +518,10 @@ export function createAgentEventHandler({
         },
       });
     }
-    agentRunSeq.set(evt.runId, evt.seq);
+    agentRunSeq.set(evt.runId, Math.max(last, evt.seq));
+    if (!isReplay && !isAborted && sessionKey && toolPhase === "start") {
+      flushBufferedChatDeltaIfNeeded(sessionKey, clientRunId, evt.runId);
+    }
     if (isToolEvent) {
       // Always broadcast tool events to registered WS recipients with
       // tool-events capability, regardless of verboseLevel. The verbose
@@ -458,6 +537,12 @@ export function createAgentEventHandler({
 
     const lifecyclePhase =
       evt.stream === "lifecycle" && typeof evt.data?.phase === "string" ? evt.data.phase : null;
+    const assistantMessageId =
+      lifecyclePhase === "end" &&
+      typeof evt.data?.assistantMessageId === "string" &&
+      evt.data.assistantMessageId.trim()
+        ? evt.data.assistantMessageId
+        : undefined;
 
     if (sessionKey) {
       // Send tool events to node/channel subscribers only when verbose is enabled;
@@ -465,9 +550,18 @@ export function createAgentEventHandler({
       if (!isToolEvent || toolVerbose !== "off") {
         nodeSendToSession(sessionKey, "agent", isToolEvent ? toolPayload : agentPayload);
       }
-      if (!isAborted && evt.stream === "assistant" && typeof evt.data?.text === "string") {
+      if (
+        !isReplay &&
+        !isAborted &&
+        evt.stream === "assistant" &&
+        typeof evt.data?.text === "string"
+      ) {
         emitChatDelta(sessionKey, clientRunId, evt.runId, evt.seq, evt.data.text);
-      } else if (!isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
+      } else if (
+        !isReplay &&
+        !isAborted &&
+        (lifecyclePhase === "end" || lifecyclePhase === "error")
+      ) {
         if (chatLink) {
           const finished = chatRunState.registry.shift(evt.runId);
           if (!finished) {
@@ -481,6 +575,7 @@ export function createAgentEventHandler({
             evt.seq,
             lifecyclePhase === "error" ? "error" : "done",
             evt.data?.error,
+            assistantMessageId,
           );
         } else {
           emitChatFinal(
@@ -490,12 +585,17 @@ export function createAgentEventHandler({
             evt.seq,
             lifecyclePhase === "error" ? "error" : "done",
             evt.data?.error,
+            assistantMessageId,
           );
         }
       } else if (isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
         chatRunState.abortedRuns.delete(clientRunId);
         chatRunState.abortedRuns.delete(evt.runId);
         chatRunState.buffers.delete(clientRunId);
+        chatRunState.deltaRevisions.delete(clientRunId);
+        chatRunState.deltaLastBroadcastRevisions.delete(clientRunId);
+        chatRunState.deltaLastNodeRevisions.delete(clientRunId);
+        chatRunState.deltaSeqs.delete(clientRunId);
         chatRunState.deltaSentAt.delete(clientRunId);
         if (chatLink) {
           chatRunState.registry.remove(evt.runId, clientRunId, sessionKey);
@@ -503,7 +603,7 @@ export function createAgentEventHandler({
       }
     }
 
-    if (lifecyclePhase === "end" || lifecyclePhase === "error") {
+    if (!isReplay && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
       toolEventRecipients.markFinal(evt.runId);
       clearAgentRunContext(evt.runId);
       agentRunSeq.delete(evt.runId);

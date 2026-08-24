@@ -5,6 +5,7 @@ import { stripEnvelope, stripMessageIdHints } from "../shared/chat-envelope.js";
 export { stripEnvelope };
 
 const MEDIA_ATTACHED_LINE_RE = /^\[media attached(?::| \d+\/\d+:) .*\]$/;
+const SYSTEM_EVENT_LINE_RE = /^System: \[[^\]\r\n]+\].*$/;
 
 export type LeadingInboundMediaPrompt = {
   mediaLines: string[];
@@ -31,12 +32,28 @@ export function scanLeadingInboundMediaPrompt(text: string): LeadingInboundMedia
   return { mediaLines, text: lines.slice(index).join("\n") };
 }
 
+function stripLeadingSystemEventBlock(text: string): string {
+  const lines = text.split(/\r?\n/);
+  let index = 0;
+  while (index < lines.length && SYSTEM_EVENT_LINE_RE.test(lines[index] ?? "")) {
+    index += 1;
+  }
+  if (index === 0) {
+    return text;
+  }
+  while (lines[index] === "") {
+    index += 1;
+  }
+  return lines.slice(index).join("\n");
+}
+
 function stripTextForDisplay(text: string, stripUserEnvelope: boolean): string {
   const inboundStripped = stripInboundMetadata(text);
   if (!stripUserEnvelope) {
     return inboundStripped;
   }
-  const mediaStripped = scanLeadingInboundMediaPrompt(inboundStripped).text;
+  const systemEventsStripped = stripLeadingSystemEventBlock(inboundStripped);
+  const mediaStripped = scanLeadingInboundMediaPrompt(systemEventsStripped).text;
   return stripMessageIdHints(stripEnvelope(mediaStripped));
 }
 

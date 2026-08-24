@@ -3181,6 +3181,7 @@ public struct ChatEvent: Codable, Sendable {
     public let seq: Int
     public let state: AnyCodable
     public let message: AnyCodable?
+    public let messageid: String?
     public let silent: Bool?
     public let errormessage: String?
     public let usage: AnyCodable?
@@ -3192,6 +3193,7 @@ public struct ChatEvent: Codable, Sendable {
         seq: Int,
         state: AnyCodable,
         message: AnyCodable? = nil,
+        messageid: String? = nil,
         silent: Bool? = nil,
         errormessage: String? = nil,
         usage: AnyCodable? = nil,
@@ -3202,6 +3204,7 @@ public struct ChatEvent: Codable, Sendable {
         self.seq = seq
         self.state = state
         self.message = message
+        self.messageid = messageid
         self.silent = silent
         self.errormessage = errormessage
         self.usage = usage
@@ -3214,6 +3217,7 @@ public struct ChatEvent: Codable, Sendable {
         case seq
         case state
         case message
+        case messageid = "messageId"
         case silent
         case errormessage = "errorMessage"
         case usage

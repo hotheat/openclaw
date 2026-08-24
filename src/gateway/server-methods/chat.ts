@@ -291,6 +291,10 @@ function createChatAbortOps(context: GatewayRequestContext): ChatAbortOps {
   return {
     chatAbortControllers: context.chatAbortControllers,
     chatRunBuffers: context.chatRunBuffers,
+    chatDeltaRevisions: context.chatDeltaRevisions,
+    chatDeltaSeqs: context.chatDeltaSeqs,
+    chatDeltaLastBroadcastRevisions: context.chatDeltaLastBroadcastRevisions,
+    chatDeltaLastNodeRevisions: context.chatDeltaLastNodeRevisions,
     chatDeltaSentAt: context.chatDeltaSentAt,
     chatAbortedRuns: context.chatAbortedRuns,
     removeChatRun: context.removeChatRun,

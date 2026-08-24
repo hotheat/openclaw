@@ -504,6 +504,44 @@ describe("subscribeEmbeddedPiSession", () => {
     expect(lifecycleError?.data?.error).toContain("API rate limit reached");
   });
 
+  it("emits the persisted assistant id after message_end persistence completes", () => {
+    const { session, emit } = createStubSessionHarness();
+    const onAgentEvent = vi.fn();
+    let leafEntry: unknown;
+    Object.assign(session, {
+      sessionManager: {
+        getLeafEntry: () => leafEntry,
+      },
+    });
+    subscribeEmbeddedPiSession({
+      session,
+      runId: "run-persisted-id",
+      onAgentEvent,
+      sessionKey: "test-session",
+    });
+    const assistantMessage = {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "done" }],
+    } as AssistantMessage;
+
+    emit({ type: "message_end", message: assistantMessage });
+    leafEntry = {
+      type: "message",
+      id: "entry-persisted-id",
+      message: assistantMessage,
+    };
+    emit({ type: "agent_end" });
+
+    expect(onAgentEvent).toHaveBeenCalledWith({
+      stream: "lifecycle",
+      data: {
+        phase: "end",
+        assistantMessageId: "entry-persisted-id",
+      },
+    });
+  });
+
   it("treats empty openai-responses stop completions as lifecycle errors", () => {
     const { emit, onAgentEvent } = createAgentEventHarness({
       runId: "run-silent-openai",

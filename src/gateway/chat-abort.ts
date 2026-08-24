@@ -35,6 +35,10 @@ export function resolveChatRunExpiresAtMs(params: {
 export type ChatAbortOps = {
   chatAbortControllers: Map<string, ChatAbortControllerEntry>;
   chatRunBuffers: Map<string, string>;
+  chatDeltaRevisions: Map<string, number>;
+  chatDeltaSeqs: Map<string, number>;
+  chatDeltaLastBroadcastRevisions: Map<string, number>;
+  chatDeltaLastNodeRevisions: Map<string, number>;
   chatDeltaSentAt: Map<string, number>;
   chatAbortedRuns: Map<string, number>;
   removeChatRun: (
@@ -98,6 +102,10 @@ export function abortChatRunById(
   active.controller.abort();
   ops.chatAbortControllers.delete(runId);
   ops.chatRunBuffers.delete(runId);
+  ops.chatDeltaRevisions.delete(runId);
+  ops.chatDeltaSeqs.delete(runId);
+  ops.chatDeltaLastBroadcastRevisions.delete(runId);
+  ops.chatDeltaLastNodeRevisions.delete(runId);
   ops.chatDeltaSentAt.delete(runId);
   const removed = ops.removeChatRun(runId, runId, sessionKey);
   broadcastChatAborted(ops, { runId, sessionKey, stopReason, partialText });
