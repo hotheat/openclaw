@@ -182,10 +182,19 @@ function resolveProviderToolPolicy(params: {
 
   const normalizedProvider = normalizeProviderKey(provider);
   const rawModelId = params.modelId?.trim().toLowerCase();
-  const fullModelId =
-    rawModelId && !rawModelId.includes("/") ? `${normalizedProvider}/${rawModelId}` : rawModelId;
+  const fullModelId = rawModelId
+    ? rawModelId.startsWith(`${normalizedProvider}/`)
+      ? rawModelId
+      : `${normalizedProvider}/${rawModelId}`
+    : undefined;
 
-  const candidates = [...(fullModelId ? [fullModelId] : []), normalizedProvider];
+  const candidates = Array.from(
+    new Set(
+      [fullModelId, rawModelId, normalizedProvider].filter(
+        (value): value is string => typeof value === "string",
+      ),
+    ),
+  );
 
   for (const key of candidates) {
     const match = lookup.get(key);

@@ -312,6 +312,32 @@ describe("Agent-specific tool filtering", () => {
     expect(toolNames).not.toContain("apply_patch");
   });
 
+  it("should apply model-specific tool policy to nested model ids", () => {
+    const cfg: OpenClawConfig = {
+      tools: {
+        byProvider: {
+          "qwen-openai/qwen/qwen3.8-27b": {
+            deny: ["exec"],
+          },
+        },
+      },
+    };
+
+    const tools = createOpenClawCodingTools({
+      config: cfg,
+      sessionKey: "agent:main:main",
+      workspaceDir: "/tmp/test-nested-model-policy",
+      agentDir: "/tmp/agent-nested-model-policy",
+      modelProvider: "qwen-openai",
+      modelId: "qwen/qwen3.8-27b",
+    });
+
+    const toolNames = tools.map((tool) => tool.name);
+    expect(toolNames).toContain("read");
+    expect(toolNames).not.toContain("exec");
+    expect(toolNames).not.toContain("apply_patch");
+  });
+
   it("should apply provider-specific tool profile overrides", () => {
     const cfg: OpenClawConfig = {
       tools: {
