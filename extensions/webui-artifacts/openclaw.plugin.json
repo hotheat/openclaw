@@ -22,7 +22,7 @@
       },
       "apiKey": {
         "type": "string",
-        "description": "API key for the openclaw-artifact-extension service identity."
+        "description": "One-time Service Token from Roles & Permissions for the artifact publisher Service Principal."
       }
     }
   }

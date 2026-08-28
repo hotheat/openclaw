@@ -168,4 +168,44 @@ describe("ArtifactClient", () => {
       vi.useRealTimers();
     }
   });
+
+  it("surfaces 401 for an unauthenticated init", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    const client = new ArtifactClient({
+      endpoint: "http://127.0.0.1:8303",
+      apiKey: "service-key",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.init({
+        sessionKey: "agent:a:webchat:n:s",
+        fileName: "report.txt",
+        contentType: "text/plain",
+        sizeBytes: 3,
+        sha256: "sha256",
+        md5Base64: "md5",
+      }),
+    ).rejects.toMatchObject({ phase: "init", status: 401 });
+  });
+
+  it("surfaces 403 when the Service Principal lacks publish access", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 403 }));
+    const client = new ArtifactClient({
+      endpoint: "http://127.0.0.1:8303",
+      apiKey: "service-key",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+
+    await expect(
+      client.init({
+        sessionKey: "agent:a:webchat:n:s",
+        fileName: "report.txt",
+        contentType: "text/plain",
+        sizeBytes: 3,
+        sha256: "sha256",
+        md5Base64: "md5",
+      }),
+    ).rejects.toMatchObject({ phase: "init", status: 403 });
+  });
 });
