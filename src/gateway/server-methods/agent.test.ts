@@ -298,6 +298,21 @@ describe("gateway agent handler", () => {
     expect(capturedEntry?.claudeCliSessionId).toBeUndefined();
   });
 
+  it("preserves a user-defined session title when starting an agent run", async () => {
+    mockMainSessionEntry({ title: "Custom research title" });
+
+    const getCapturedEntry = captureUpdatedMainEntry();
+
+    mocks.agentCommand.mockResolvedValue({
+      payloads: [{ text: "ok" }],
+      meta: { durationMs: 100 },
+    });
+
+    await runMainAgent("continue", "test-idem-preserve-title");
+
+    expect(getCapturedEntry()?.title).toBe("Custom research title");
+  });
+
   it("prunes legacy main alias keys when writing a canonical session entry", async () => {
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {
