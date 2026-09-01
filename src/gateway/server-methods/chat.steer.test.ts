@@ -31,6 +31,7 @@ function createContext(runId = "run-1", sessionKey = "agent:main:main") {
           sessionKey,
           startedAtMs: now,
           expiresAtMs: now + 30_000,
+          continuationExpiresAtMs: now + 60_000,
           steerIdempotencyKeys: new Set<string>(),
         },
       ],
@@ -76,6 +77,8 @@ describe("chat.steer", () => {
 
   it("sanitizes and injects exactly once for a repeated idempotency key", async () => {
     const context = createContext();
+    const continuationExpiresAtMs =
+      context.chatAbortControllers.get("run-1")?.continuationExpiresAtMs;
     const firstRespond = await invokeSteer(context, params);
     const secondRespond = await invokeSteer(context, params);
 
@@ -93,6 +96,7 @@ describe("chat.steer", () => {
       undefined,
       { cached: true, runId: "run-1" },
     );
+    expect(context.chatAbortControllers.get("run-1")?.expiresAtMs).toBe(continuationExpiresAtMs);
   });
 
   it("returns diagnostic not-steerable results without recording idempotency", async () => {

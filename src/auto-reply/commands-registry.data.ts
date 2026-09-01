@@ -358,15 +358,10 @@ function buildChatCommands(): ChatCommandDefinition[] {
     defineChatCommand({
       key: "steer",
       nativeName: "steer",
-      description: "Send guidance to a running subagent.",
+      description: "Send guidance to the current session's active run.",
       textAlias: "/steer",
       category: "management",
       args: [
-        {
-          name: "target",
-          description: "Label, run id, or index",
-          type: "string",
-        },
         {
           name: "message",
           description: "Steering message",
@@ -695,7 +690,6 @@ function buildChatCommands(): ChatCommandDefinition[] {
   registerAlias(commands, "verbose", "/v");
   registerAlias(commands, "reasoning", "/reason");
   registerAlias(commands, "elevated", "/elev");
-  registerAlias(commands, "steer", "/tell");
 
   assertCommandRegistry(commands);
   return commands;

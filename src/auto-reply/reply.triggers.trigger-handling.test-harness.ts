@@ -35,6 +35,10 @@ export function getQueueEmbeddedPiMessageMock(): AnyMock {
   return piEmbeddedMocks.queueEmbeddedPiMessage;
 }
 
+export function getIsEmbeddedPiRunActiveMock(): AnyMock {
+  return piEmbeddedMocks.isEmbeddedPiRunActive;
+}
+
 vi.mock("../agents/pi-embedded.js", () => ({
   abortEmbeddedPiRun: (...args: unknown[]) => piEmbeddedMocks.abortEmbeddedPiRun(...args),
   compactEmbeddedPiSession: (...args: unknown[]) =>

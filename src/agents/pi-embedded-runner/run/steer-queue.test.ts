@@ -8,6 +8,7 @@ describe("createEmbeddedSteerQueue", () => {
     const agent = {
       steer: vi.fn((text: string) => queued.push(text)),
       hasQueuedMessages: vi.fn(() => queued.length > 0),
+      onSteerAccepted: vi.fn(),
       continue: vi.fn(async () => {
         const text = queued.shift();
         if (text) {
@@ -21,8 +22,10 @@ describe("createEmbeddedSteerQueue", () => {
     await steerQueue.drainAfterPrompt();
 
     expect(processed).toEqual(["late steer"]);
+    expect(agent.onSteerAccepted).toHaveBeenCalledOnce();
     expect(agent.continue).toHaveBeenCalledOnce();
     expect(steerQueue.queue("after close")).toBe(false);
+    expect(agent.onSteerAccepted).toHaveBeenCalledOnce();
   });
 
   it("keeps accepting while a continuation is running, then closes atomically", async () => {

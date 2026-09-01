@@ -1,6 +1,7 @@
 type SteerQueueAgent = {
   steer: (text: string) => void;
   hasQueuedMessages: () => boolean;
+  onSteerAccepted?: () => void;
   continue: () => Promise<void>;
 };
 
@@ -38,6 +39,7 @@ export function createEmbeddedSteerQueue(agent: SteerQueueAgent) {
         return false;
       }
       agent.steer(text);
+      agent.onSteerAccepted?.();
       return true;
     },
 

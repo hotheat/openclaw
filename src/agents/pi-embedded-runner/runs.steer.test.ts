@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  abortEmbeddedPiRun,
   clearActiveEmbeddedRun,
-  registerPendingEmbeddedRun,
   isEmbeddedPiRunCompacting,
   queueEmbeddedPiMessage,
+  registerPendingEmbeddedRun,
   setActiveEmbeddedRun,
   steerEmbeddedPiRun,
+  steerEmbeddedPiRunAllowPending,
   steerEmbeddedPiRunById,
   type EmbeddedPiQueueHandle,
 } from "./runs.js";
@@ -97,5 +99,51 @@ describe("steerEmbeddedPiRun", () => {
     const handle = registerHandle("pending", { streaming: false, compacting: false });
     expect(handle.queueMessage).toHaveBeenCalledOnce();
     expect(handle.queueMessage).toHaveBeenCalledWith("early");
+  });
+
+  it("queues guidance for the only pending run and replays it on registration", () => {
+    registerPendingEmbeddedRun("pending-allow", "run-pending-allow");
+
+    expect(steerEmbeddedPiRunAllowPending("pending-allow", "early guidance")).toEqual({
+      status: "accepted",
+      mode: "queued",
+    });
+
+    const handle = registerHandle("pending-allow", { streaming: false, compacting: false });
+    expect(handle.queueMessage).toHaveBeenCalledOnce();
+    expect(handle.queueMessage).toHaveBeenCalledWith("early guidance");
+  });
+
+  it("rejects an ambiguous pending target", () => {
+    registerPendingEmbeddedRun("multiple-pending", "run-pending-1");
+    registerPendingEmbeddedRun("multiple-pending", "run-pending-2");
+
+    expect(steerEmbeddedPiRunAllowPending("multiple-pending", "ambiguous")).toEqual({
+      status: "not_steerable",
+      reason: "run_inactive",
+    });
+
+    abortEmbeddedPiRun("multiple-pending");
+  });
+
+  it("steers an active handle through the allow-pending entry point", () => {
+    const handle = registerHandle("active-allow", { streaming: true, compacting: false });
+
+    expect(steerEmbeddedPiRunAllowPending("active-allow", "active guidance")).toEqual({
+      status: "accepted",
+      mode: "steered",
+    });
+    expect(handle.queueMessage).toHaveBeenCalledWith("active guidance");
+  });
+
+  it("keeps the no-run-id API inactive for a pending-only session", () => {
+    registerPendingEmbeddedRun("pending-contract", "run-pending-contract");
+
+    expect(steerEmbeddedPiRun("pending-contract", "must not queue")).toEqual({
+      status: "not_steerable",
+      reason: "run_inactive",
+    });
+
+    abortEmbeddedPiRun("pending-contract");
   });
 });

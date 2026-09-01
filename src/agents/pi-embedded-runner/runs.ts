@@ -102,6 +102,10 @@ export type EmbeddedPiSteerResult =
       reason: "run_inactive" | "not_streaming" | "compacting";
     };
 
+export type EmbeddedPiAllowPendingSteerResult =
+  | { status: "accepted"; mode: "steered" | "queued" }
+  | Exclude<EmbeddedPiSteerResult, { status: "accepted" }>;
+
 export function steerEmbeddedPiRun(sessionId: string, text: string): EmbeddedPiSteerResult {
   return steerEmbeddedPiRunHandle(sessionId, text);
 }
@@ -112,6 +116,30 @@ export function steerEmbeddedPiRunById(
   text: string,
 ): EmbeddedPiSteerResult {
   return steerEmbeddedPiRunHandle(sessionId, text, runId);
+}
+
+export function steerEmbeddedPiRunAllowPending(
+  sessionId: string,
+  text: string,
+): EmbeddedPiAllowPendingSteerResult {
+  if (ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
+    const result = steerEmbeddedPiRunHandle(sessionId, text);
+    return result.status === "accepted" ? { ...result, mode: "steered" } : result;
+  }
+
+  const pendingTokens = PENDING_EMBEDDED_RUNS.get(sessionId)?.tokens;
+  if (pendingTokens?.length !== 1) {
+    diag.debug(
+      `queue pending message failed: sessionId=${sessionId} reason=${
+        pendingTokens?.length ? "ambiguous_pending_runs" : "no_pending_run"
+      }`,
+    );
+    return { status: "not_steerable", reason: "run_inactive" };
+  }
+
+  pendingTokens[0].steerMessages.push(text);
+  logMessageQueued({ sessionId, source: "pi-embedded-runner-pending" });
+  return { status: "accepted", mode: "queued" };
 }
 
 function steerEmbeddedPiRunHandle(

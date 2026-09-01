@@ -33,8 +33,6 @@ export { extractAssistantText, stripToolMessages };
 
 export const COMMAND = "/subagents";
 export const COMMAND_KILL = "/kill";
-export const COMMAND_STEER = "/steer";
-export const COMMAND_TELL = "/tell";
 export const COMMAND_FOCUS = "/focus";
 export const COMMAND_UNFOCUS = "/unfocus";
 export const COMMAND_AGENTS = "/agents";
@@ -219,17 +217,13 @@ export function resolveHandledPrefix(normalized: string): string | null {
     ? COMMAND
     : normalized.startsWith(COMMAND_KILL)
       ? COMMAND_KILL
-      : normalized.startsWith(COMMAND_STEER)
-        ? COMMAND_STEER
-        : normalized.startsWith(COMMAND_TELL)
-          ? COMMAND_TELL
-          : normalized.startsWith(COMMAND_FOCUS)
-            ? COMMAND_FOCUS
-            : normalized.startsWith(COMMAND_UNFOCUS)
-              ? COMMAND_UNFOCUS
-              : normalized.startsWith(COMMAND_AGENTS)
-                ? COMMAND_AGENTS
-                : null;
+      : normalized.startsWith(COMMAND_FOCUS)
+        ? COMMAND_FOCUS
+        : normalized.startsWith(COMMAND_UNFOCUS)
+          ? COMMAND_UNFOCUS
+          : normalized.startsWith(COMMAND_AGENTS)
+            ? COMMAND_AGENTS
+            : null;
 }
 
 export function resolveSubagentsAction(params: {
@@ -374,8 +368,6 @@ export function buildSubagentsHelp() {
     "- /agents",
     "- /session ttl <duration|off>",
     "- /kill <id|#|all>",
-    "- /steer <id|#> <message>",
-    "- /tell <id|#> <message>",
     "",
     "Ids: use the list index (#), runId/session prefix, label, or full session key.",
   ].join("\n");

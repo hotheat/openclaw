@@ -6,6 +6,7 @@ export type ChatAbortControllerEntry = {
   sessionKey: string;
   startedAtMs: number;
   expiresAtMs: number;
+  continuationExpiresAtMs?: number;
   steerIdempotencyKeys: Set<string>;
 };
 

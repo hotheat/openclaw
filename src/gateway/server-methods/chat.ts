@@ -550,6 +550,9 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     if (result.status === "accepted") {
+      if (active?.continuationExpiresAtMs !== undefined) {
+        active.expiresAtMs = Math.max(active.expiresAtMs, active.continuationExpiresAtMs);
+      }
       active?.steerIdempotencyKeys.add(idempotencyKey);
       context.dedupe.set(steerDedupeKey, {
         ts: Date.now(),
@@ -814,6 +817,10 @@ export const chatHandlers: GatewayRequestHandlers = {
         sessionKey: rawSessionKey,
         startedAtMs: now,
         expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
+        continuationExpiresAtMs: resolveChatRunExpiresAtMs({
+          now,
+          timeoutMs: timeoutMs * 2,
+        }),
         steerIdempotencyKeys: new Set(),
       });
       const ackPayload = {

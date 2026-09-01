@@ -23,6 +23,9 @@ Use `/subagents` to inspect or control sub-agent runs for the **current session*
 - `/subagents steer <id|#> <message>`
 - `/subagents spawn <agentId> <task> [--model <model>] [--thinking <level>]`
 
+`/subagents steer` is the only slash-command entry point for steering a sub-agent.
+The standalone `/steer <message>` command guides the current session's active or pending run instead; see [Slash commands](/tools/slash-commands).
+
 Thread binding controls:
 
 These commands work on channels that support persistent thread bindings. See **Thread supporting channels** below.

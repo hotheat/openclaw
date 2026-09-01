@@ -142,6 +142,7 @@ import {
   selectCompactionTimeoutSnapshot,
   shouldFlagCompactionTimeout,
 } from "./compaction-timeout.js";
+import { createEmbeddedRunDeadline } from "./deadline.js";
 import { detectAndLoadPromptImages } from "./images.js";
 import { createEmbeddedSteerQueue } from "./steer-queue.js";
 import type { EmbeddedRunAttemptParams, EmbeddedRunAttemptResult } from "./types.js";
@@ -1409,9 +1410,53 @@ export async function runEmbeddedAttempt(
         getSdkAutoCompactionCount,
       } = subscription;
 
+      let abortWarnTimer: NodeJS.Timeout | undefined;
+      const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
+      const attemptTimeoutMs = Math.max(1, params.timeoutMs);
+      const runDeadline = createEmbeddedRunDeadline({
+        timeoutMs: attemptTimeoutMs,
+        onTimeout: () => {
+          if (!isProbeSession) {
+            log.warn(
+              `embedded run timeout: runId=${params.runId} sessionId=${params.sessionId} timeoutMs=${params.timeoutMs}`,
+            );
+          }
+          if (
+            shouldFlagCompactionTimeout({
+              isTimeout: true,
+              isCompactionPendingOrRetrying: subscription.isCompacting(),
+              isCompactionInFlight: activeSession.isCompacting,
+            })
+          ) {
+            timedOutDuringCompaction = true;
+          }
+          abortRun(true);
+          if (!abortWarnTimer) {
+            abortWarnTimer = setTimeout(() => {
+              if (!activeSession.isStreaming) {
+                return;
+              }
+              if (!isProbeSession) {
+                log.warn(
+                  `embedded run abort still streaming: runId=${params.runId} sessionId=${params.sessionId}`,
+                );
+              }
+            }, 10_000);
+          }
+        },
+      });
       const steerQueue = createEmbeddedSteerQueue({
         steer: (text) => activeSession.steer(text),
         hasQueuedMessages: () => activeSession.agent.hasQueuedMessages(),
+        onSteerAccepted: () => {
+          const extension = runDeadline.extendForContinuation();
+          if (extension.extended && !isProbeSession) {
+            log.debug(
+              `embedded run steer continuation budget: runId=${params.runId} ` +
+                `deadlineAt=${extension.deadlineAt} maxDeadlineAt=${extension.maxDeadlineAt}`,
+            );
+          }
+        },
         continue: () => activeSession.agent.continue(),
       });
       const queueHandle: EmbeddedPiQueueHandle = {
@@ -1422,40 +1467,6 @@ export async function runEmbeddedAttempt(
         abort: abortRun,
       };
       setActiveEmbeddedRun(params.sessionId, queueHandle, params.sessionKey);
-
-      let abortWarnTimer: NodeJS.Timeout | undefined;
-      const isProbeSession = params.sessionId?.startsWith("probe-") ?? false;
-      const attemptTimeoutMs = Math.max(1, params.timeoutMs);
-      const currentAttemptDeadlineAt = Date.now() + attemptTimeoutMs;
-      const abortTimer = setTimeout(() => {
-        if (!isProbeSession) {
-          log.warn(
-            `embedded run timeout: runId=${params.runId} sessionId=${params.sessionId} timeoutMs=${params.timeoutMs}`,
-          );
-        }
-        if (
-          shouldFlagCompactionTimeout({
-            isTimeout: true,
-            isCompactionPendingOrRetrying: subscription.isCompacting(),
-            isCompactionInFlight: activeSession.isCompacting,
-          })
-        ) {
-          timedOutDuringCompaction = true;
-        }
-        abortRun(true);
-        if (!abortWarnTimer) {
-          abortWarnTimer = setTimeout(() => {
-            if (!activeSession.isStreaming) {
-              return;
-            }
-            if (!isProbeSession) {
-              log.warn(
-                `embedded run abort still streaming: runId=${params.runId} sessionId=${params.sessionId}`,
-              );
-            }
-          }, 10_000);
-        }
-      }, attemptTimeoutMs);
 
       let messagesSnapshot: AgentMessage[] = [];
       let promptStartMessageCount = activeSession.messages.length;
@@ -1502,9 +1513,7 @@ export async function runEmbeddedAttempt(
           toolSettlementPromise = flushPendingToolResultsAfterIdle({
             agent: activeSession.agent,
             sessionManager,
-            timeoutMs: cleanup
-              ? CLEANUP_IDLE_WAIT_TIMEOUT_MS
-              : Math.max(1, currentAttemptDeadlineAt - Date.now()),
+            timeoutMs: cleanup ? CLEANUP_IDLE_WAIT_TIMEOUT_MS : runDeadline.remainingMs(),
             abortAgent: cleanup ? () => activeSession.abort() : () => abortRun(true),
             abortSignal: runAbortController.signal,
           }).then((result) => {
@@ -2233,7 +2242,7 @@ export async function runEmbeddedAttempt(
             );
           }
         }
-        clearTimeout(abortTimer);
+        runDeadline.close();
         if (abortWarnTimer) {
           clearTimeout(abortWarnTimer);
         }
