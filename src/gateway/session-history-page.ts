@@ -31,6 +31,8 @@ const CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES = 128 * 1024;
 const CHAT_HISTORY_OVERSIZED_PLACEHOLDER = "[chat.history omitted: message too large]";
 const CHAT_HISTORY_ATTACHMENTS_PER_MESSAGE = 16;
 const CHAT_HISTORY_ATTACHMENTS_PER_RESPONSE = 256;
+const HISTORY_TIMESTAMP_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
 const WEBCHAT_INPUT_ARTIFACT_PATH_RE =
   /[\\/]uploads[\\/]webchat[\\/][^\\/\s\]|]+[\\/]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-([^\s\]|]+)(?:\s+\(([^)]+)\))?/gi;
 
@@ -327,11 +329,78 @@ function jsonUtf8Bytes(value: unknown): number {
   }
 }
 
+function parseHistoryTimestampString(timestamp: unknown): number | undefined {
+  if (typeof timestamp !== "string") {
+    return undefined;
+  }
+  const match = HISTORY_TIMESTAMP_RE.exec(timestamp);
+  if (!match) {
+    return undefined;
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, timezone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const daysInMonth = resolveDaysInMonth(year, month);
+  if (
+    daysInMonth === undefined ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
+    !isValidIsoTimezone(timezone)
+  ) {
+    return undefined;
+  }
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function normalizeHistoryTimestamp(
+  message: unknown,
+  recordTimestamp?: unknown,
+): number | undefined {
+  if (message && typeof message === "object" && !Array.isArray(message)) {
+    const timestamp = (message as Record<string, unknown>).timestamp;
+    if (typeof timestamp === "number" && Number.isFinite(timestamp) && timestamp > 0) {
+      return timestamp;
+    }
+    const parsedTimestamp = parseHistoryTimestampString(timestamp);
+    if (parsedTimestamp !== undefined) {
+      return parsedTimestamp;
+    }
+  }
+  return parseHistoryTimestampString(recordTimestamp);
+}
+
+function resolveDaysInMonth(year: number, month: number): number | undefined {
+  if (month < 1 || month > 12) {
+    return undefined;
+  }
+  if (month === 2) {
+    const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    return leapYear ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+function isValidIsoTimezone(timezone: string): boolean {
+  if (timezone === "Z") {
+    return true;
+  }
+  const [hourText, minuteText] = timezone.slice(1).split(":");
+  return Number(hourText) <= 23 && Number(minuteText) <= 59;
+}
+
 function buildOversizedHistoryPlaceholder(message?: unknown): Record<string, unknown> {
   const source =
     message && typeof message === "object" ? (message as Record<string, unknown>) : undefined;
   const role = source && typeof source.role === "string" ? source.role : "assistant";
-  const timestamp = source && typeof source.timestamp === "number" ? source.timestamp : Date.now();
+  const timestamp = normalizeHistoryTimestamp(message);
   const metadata = Object.fromEntries(
     ["historyEntryId", "provider", "model"].flatMap((key) =>
       source && typeof source[key] === "string" ? [[key, source[key]]] : [],
@@ -339,7 +408,7 @@ function buildOversizedHistoryPlaceholder(message?: unknown): Record<string, unk
   );
   return {
     role,
-    timestamp,
+    ...(timestamp === undefined ? {} : { timestamp }),
     ...metadata,
     content: [{ type: "text", text: CHAT_HISTORY_OVERSIZED_PLACEHOLDER }],
     __openclaw: { truncated: true, reason: "oversized" },
@@ -523,14 +592,31 @@ function resolveHistoryEntryId(record: Record<string, unknown>, startOffset: num
   return typeof record.id === "string" && record.id.length > 0 ? record.id : `off-${startOffset}`;
 }
 
-function attachHistoryEntryId(message: unknown, historyEntryId: string): unknown {
+function attachHistoryMetadata(
+  message: unknown,
+  historyEntryId: string,
+  recordTimestamp?: unknown,
+): unknown {
+  const timestamp = normalizeHistoryTimestamp(message, recordTimestamp);
   if (message && typeof message === "object" && !Array.isArray(message)) {
-    return { ...(message as Record<string, unknown>), historyEntryId };
+    const entry: Record<string, unknown> = {
+      ...(message as Record<string, unknown>),
+      historyEntryId,
+    };
+    if (timestamp === undefined) {
+      delete entry.timestamp;
+      return entry;
+    }
+    return {
+      ...entry,
+      timestamp,
+    };
   }
   return {
     role: "system",
     content: [{ type: "text", text: String(message) }],
     historyEntryId,
+    ...(timestamp === undefined ? {} : { timestamp }),
   };
 }
 
@@ -548,14 +634,13 @@ function toHistoryPageRecord(
       historyEntryId,
       startOffset: line.startOffset,
       endOffset: line.endOffset,
-      message: attachHistoryEntryId(record.message, historyEntryId),
+      message: attachHistoryMetadata(record.message, historyEntryId, record.timestamp),
     };
   }
   if (record.type !== "compaction") {
     return null;
   }
-  const timestampValue =
-    typeof record.timestamp === "string" ? Date.parse(record.timestamp) : Number.NaN;
+  const timestamp = normalizeHistoryTimestamp(undefined, record.timestamp);
   return {
     historyEntryId,
     startOffset: line.startOffset,
@@ -563,7 +648,7 @@ function toHistoryPageRecord(
     message: {
       role: "system",
       content: [{ type: "text", text: "Compaction" }],
-      timestamp: Number.isFinite(timestampValue) ? timestampValue : Date.now(),
+      ...(timestamp === undefined ? {} : { timestamp }),
       historyEntryId,
       __openclaw: { kind: "compaction", id: historyEntryId },
     },

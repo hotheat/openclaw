@@ -123,6 +123,7 @@ describe("chat history protocol", () => {
         historyEntryId: "entry-1",
         role: "assistant",
         content: [{ type: "text", text: "hello" }],
+        timestamp: 1_787_875_200_123,
         provider: "otr",
         model: "gpt-5.6-sol",
       },
@@ -140,6 +141,14 @@ describe("chat history protocol", () => {
   });
 
   it("requires stable message identity and explicit pagination state", () => {
+    const messageWithoutTimestamp: Record<string, unknown> = { ...result.messages[0] };
+    delete messageWithoutTimestamp.timestamp;
+    expect(
+      validateChatHistoryResult({
+        ...result,
+        messages: [messageWithoutTimestamp],
+      }),
+    ).toBe(true);
     expect(
       validateChatHistoryResult({
         ...result,
@@ -148,6 +157,22 @@ describe("chat history protocol", () => {
     ).toBe(false);
     expect(validateChatHistoryResult({ ...result, hasMore: "yes" })).toBe(false);
     expect(validateChatHistoryResult({ ...result, cursorReset: undefined })).toBe(false);
+    for (const timestamp of [-1, 0]) {
+      expect(
+        validateChatHistoryResult({
+          ...result,
+          messages: [{ ...result.messages[0], timestamp }],
+        }),
+      ).toBe(false);
+    }
+    for (const timestamp of ["1787875200123", null, {}]) {
+      expect(
+        validateChatHistoryResult({
+          ...result,
+          messages: [{ ...result.messages[0], timestamp }],
+        }),
+      ).toBe(false);
+    }
   });
 });
 

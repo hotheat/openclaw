@@ -111,6 +111,7 @@ describe("gateway server chat", () => {
             message: {
               role: "assistant",
               content: "two",
+              timestamp: 1_787_875_200_123,
               provider: "otr",
               model: "gpt-5.6-sol",
               usage: { output: 2 },
@@ -135,6 +136,7 @@ describe("gateway server chat", () => {
         "entry-3",
       ]);
       expect(latest.payload?.messages?.[0]).toMatchObject({
+        timestamp: 1_787_875_200_123,
         provider: "otr",
         model: "gpt-5.6-sol",
       });
@@ -175,9 +177,42 @@ describe("gateway server chat", () => {
       expect(history.payload?.messages?.[1]).toMatchObject({
         role: "system",
         content: [{ type: "text", text: "Compaction" }],
+        timestamp: Date.parse("2026-08-20T00:00:00.000Z"),
         historyEntryId: "compact-1",
         __openclaw: { kind: "compaction", id: "compact-1" },
       });
+    });
+  });
+
+  test("chat.history normalizes an inner RFC3339 timestamp to epoch milliseconds", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      await writeMainSessionStore();
+      const timestamp = "2026-08-28T08:01:02.345+08:00";
+      await writeMainSessionTranscript(
+        sessionDir,
+        v3HistoryLines([
+          {
+            type: "message",
+            id: "legacy-inner-timestamp",
+            message: { role: "assistant", content: "legacy", timestamp },
+          },
+        ]),
+      );
+
+      const history = await rpcReq<ChatHistoryResult>(ws, "chat.history", {
+        sessionKey: "main",
+        limit: 10,
+      });
+
+      expect(history.ok).toBe(true);
+      expect(history.payload?.messages).toEqual([
+        expect.objectContaining({
+          historyEntryId: "legacy-inner-timestamp",
+          timestamp: Date.parse(timestamp),
+        }),
+      ]);
     });
   });
 
@@ -375,7 +410,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.history hard-caps single oversized nested payloads", async () => {
+  test("chat.history hard-caps oversized nested payloads without fabricating timestamps", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       const historyMaxBytes = 64 * 1024;
       __setMaxChatHistoryMessagesBytesForTest(historyMaxBytes);
@@ -385,26 +420,35 @@ describe("gateway server chat", () => {
       await writeMainSessionStore();
 
       const hugeNestedText = "n".repeat(120_000);
-      const oversizedLine = JSON.stringify({
-        message: {
-          role: "assistant",
-          timestamp: Date.now(),
-          content: [
-            {
-              type: "tool_result",
-              toolUseId: "tool-1",
-              output: {
-                nested: {
-                  payload: hugeNestedText,
+      const trustedTimestamp = 1_787_875_200_123;
+      const oversizedLine = (timestamp?: unknown) =>
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            ...(timestamp === undefined ? {} : { timestamp }),
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "tool-1",
+                output: {
+                  nested: {
+                    payload: hugeNestedText,
+                  },
                 },
               },
-            },
-          ],
-        },
-      });
-      await writeMainSessionTranscript(sessionDir, [oversizedLine]);
+            ],
+          },
+        });
+      await writeMainSessionTranscript(sessionDir, [
+        oversizedLine(trustedTimestamp),
+        oversizedLine(),
+        oversizedLine("1787875200123"),
+      ]);
       const messages = await fetchHistoryMessages(ws);
-      expect(messages.length).toBe(1);
+      expect(messages.length).toBe(3);
+      expect(messages[0]).toMatchObject({ timestamp: trustedTimestamp });
+      expect(messages[1]).not.toHaveProperty("timestamp");
+      expect(messages[2]).not.toHaveProperty("timestamp");
 
       const serialized = JSON.stringify(messages);
       const bytes = Buffer.byteLength(serialized, "utf8");
@@ -424,6 +468,7 @@ describe("gateway server chat", () => {
       await writeMainSessionStore();
 
       const baseText = "s".repeat(1_200);
+      const oversizedTimestamp = 1_787_875_201_123;
       const lines: string[] = [];
       for (let i = 0; i < 30; i += 1) {
         lines.push(
@@ -442,7 +487,7 @@ describe("gateway server chat", () => {
         JSON.stringify({
           message: {
             role: "assistant",
-            timestamp: Date.now() + 1_000,
+            timestamp: oversizedTimestamp,
             content: [
               {
                 type: "tool_result",
@@ -465,6 +510,7 @@ describe("gateway server chat", () => {
 
       expect(bytes).toBeLessThanOrEqual(historyMaxBytes);
       expect(messages.length).toBeGreaterThan(1);
+      expect(messages.at(-1)).toMatchObject({ timestamp: oversizedTimestamp });
       expect(serialized).toContain("small-29:");
       expect(serialized).toContain("[chat.history omitted: message too large]");
       expect(serialized.includes(hugeNestedText.slice(0, 256))).toBe(false);

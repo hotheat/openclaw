@@ -34,11 +34,12 @@ export const ChatHistoryParamsSchema = Type.Object(
 );
 
 export const ChatHistoryMessageSchema = Type.Unsafe<
-  { historyEntryId: string } & Record<string, unknown>
+  { historyEntryId: string; timestamp?: number } & Record<string, unknown>
 >({
   type: "object",
   properties: {
     historyEntryId: NonEmptyString,
+    timestamp: Type.Optional(Type.Number({ minimum: 1 })),
   },
   required: ["historyEntryId"],
   additionalProperties: true,

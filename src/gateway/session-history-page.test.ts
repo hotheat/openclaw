@@ -132,6 +132,64 @@ describe("loadSessionHistoryPage", () => {
     ).toEqual(["entry-1"]);
     expect(older.hasMore).toBe(false);
   });
+
+  it("preserves a trusted timestamp on a final budget placeholder", async () => {
+    const text = "b".repeat(400);
+    const timestamp = 1_787_875_200_123;
+    const expectedMessage = {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      timestamp,
+      historyEntryId: "budget-placeholder",
+    };
+    __setMaxChatHistoryMessagesBytesForTest(
+      Buffer.byteLength(JSON.stringify(expectedMessage), "utf8") + 1,
+    );
+    const transcript = await createTranscript([
+      messageRecord("budget-placeholder", text, { timestamp }),
+    ]);
+
+    const result = await loadSessionHistoryPage({
+      sessionId: transcript.sessionId,
+      storePath: undefined,
+      sessionFile: transcript.filePath,
+      limit: 1,
+    });
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      timestamp,
+      __openclaw: { truncated: true, reason: "oversized" },
+    });
+    expect(result.diagnostics.placeholderCount).toBe(1);
+  });
+
+  it("omits a missing timestamp on a final budget placeholder", async () => {
+    const text = "b".repeat(400);
+    const expectedMessage = {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      historyEntryId: "budget-placeholder",
+    };
+    __setMaxChatHistoryMessagesBytesForTest(
+      Buffer.byteLength(JSON.stringify(expectedMessage), "utf8") + 1,
+    );
+    const transcript = await createTranscript([messageRecord("budget-placeholder", text)]);
+
+    const result = await loadSessionHistoryPage({
+      sessionId: transcript.sessionId,
+      storePath: undefined,
+      sessionFile: transcript.filePath,
+      limit: 1,
+    });
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).not.toHaveProperty("timestamp");
+    expect(result.messages[0]).toMatchObject({
+      __openclaw: { truncated: true, reason: "oversized" },
+    });
+    expect(result.diagnostics.placeholderCount).toBe(1);
+  });
 });
 
 describe("readSessionHistoryPage", () => {
@@ -162,6 +220,74 @@ describe("readSessionHistoryPage", () => {
     expect(older.records.map((record) => record.historyEntryId)).toEqual(["entry-1"]);
     expect(older.hasMore).toBe(false);
     expect(older.nextOffset).toBeUndefined();
+  });
+
+  it("normalizes trusted message and transcript timestamps without guessing legacy values", async () => {
+    const envelopeTimestamp = "2026-08-28T00:00:00.123Z";
+    const innerRfc3339Timestamp = "2026-08-28T08:01:02.345+08:00";
+    const transcript = await createTranscript([
+      {
+        type: "message",
+        id: "inner-wins",
+        timestamp: envelopeTimestamp,
+        message: { role: "assistant", content: "one", timestamp: 1_787_875_200_456 },
+      },
+      {
+        type: "message",
+        id: "envelope-fallback",
+        timestamp: envelopeTimestamp,
+        message: { role: "assistant", content: "two" },
+      },
+      {
+        type: "message",
+        id: "inner-rfc3339",
+        message: {
+          role: "assistant",
+          content: "legacy string timestamp",
+          timestamp: innerRfc3339Timestamp,
+        },
+      },
+      {
+        type: "message",
+        id: "zero-falls-back",
+        timestamp: envelopeTimestamp,
+        message: { role: "assistant", content: "zero", timestamp: 0 },
+      },
+      {
+        type: "message",
+        id: "invalid",
+        timestamp: 1_787_875_200_789,
+        message: { role: "assistant", content: "three", timestamp: "1787875200789" },
+      },
+      ...["01", "08/28/2026", "2026-02-30T00:00:00.000Z"].map((timestamp, index) => ({
+        type: "message",
+        id: `invalid-envelope-${index}`,
+        timestamp,
+        message: { role: "assistant", content: `invalid ${index}` },
+      })),
+    ]);
+
+    const page = await readPage({ ...transcript, limit: 10 });
+
+    expect(page.records.map((record) => record.message)).toEqual([
+      expect.objectContaining({ historyEntryId: "inner-wins", timestamp: 1_787_875_200_456 }),
+      expect.objectContaining({
+        historyEntryId: "envelope-fallback",
+        timestamp: Date.parse(envelopeTimestamp),
+      }),
+      expect.objectContaining({
+        historyEntryId: "inner-rfc3339",
+        timestamp: Date.parse(innerRfc3339Timestamp),
+      }),
+      expect.objectContaining({
+        historyEntryId: "zero-falls-back",
+        timestamp: Date.parse(envelopeTimestamp),
+      }),
+      expect.not.objectContaining({ timestamp: expect.anything() }),
+      expect.not.objectContaining({ timestamp: expect.anything() }),
+      expect.not.objectContaining({ timestamp: expect.anything() }),
+      expect.not.objectContaining({ timestamp: expect.anything() }),
+    ]);
   });
 
   it("keeps UTF-8 intact across small chunk boundaries and skips malformed lines", async () => {
@@ -234,8 +360,19 @@ describe("readSessionHistoryPage", () => {
     expect(second.records[0]?.historyEntryId).toBe(first.records[0]?.historyEntryId);
     expect(first.records[1]?.message).toMatchObject({
       historyEntryId: "compact-1",
+      timestamp: Date.parse("2026-08-18T00:00:00.000Z"),
       __openclaw: { kind: "compaction", id: "compact-1" },
     });
+  });
+
+  it("omits timestamps when compaction records have no trusted time", async () => {
+    const transcript = await createTranscript([
+      { type: "compaction", id: "compact-invalid", timestamp: "not-a-date" },
+    ]);
+
+    const page = await readPage({ ...transcript, limit: 10 });
+
+    expect(page.records[0]?.message).not.toHaveProperty("timestamp");
   });
 
   it("keeps an existing cursor valid when the transcript is appended", async () => {

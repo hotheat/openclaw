@@ -172,10 +172,11 @@ describe("agent event handler", () => {
     expect(chatCalls).toHaveLength(1);
     const payload = chatCalls[0]?.[1] as {
       state?: string;
-      message?: { content?: Array<{ text?: string }> };
+      message?: { content?: Array<{ text?: string }>; timestamp?: number };
     };
     expect(payload.state).toBe("delta");
     expect(payload.message?.content?.[0]?.text).toBe("Hello world");
+    expect(payload.message?.timestamp).toBe(1_000);
     expect(sessionChatCalls(nodeSendToSession)).toHaveLength(1);
     nowSpy?.mockRestore();
   });
@@ -448,7 +449,7 @@ describe("agent event handler", () => {
     const finalCall = chatBroadcastCalls(broadcast).at(-1);
     expect(finalCall?.[1]).toMatchObject({
       state: "final",
-      message: { content: [{ text: "world" }] },
+      message: { content: [{ text: "world" }], timestamp: 1_600 },
     });
     nowSpy?.mockRestore();
   });
