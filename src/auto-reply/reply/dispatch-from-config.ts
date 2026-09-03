@@ -79,7 +79,7 @@ export type DispatchFromConfigResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
   handled?: boolean;
-  handledWithoutReplyReason?: "messaging_tool" | "silent" | "queued";
+  handledWithoutReplyReason?: "messaging_tool" | "silent" | "queued" | "dropped";
 };
 
 export async function dispatchReplyFromConfig(params: {

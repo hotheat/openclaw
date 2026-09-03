@@ -1093,6 +1093,7 @@ describe("runReplyAgent busy queue handling", () => {
     shouldFollowup?: boolean;
     isActive?: boolean;
     isStreaming?: boolean;
+    followupRun?: Partial<FollowupRun>;
   }) {
     const typing = createMockTypingController();
     const sessionCtx = {
@@ -1107,6 +1108,7 @@ describe("runReplyAgent busy queue handling", () => {
       prompt: "queued message",
       summaryLine: "queued message",
       enqueuedAt: Date.now(),
+      ...params.followupRun,
       run: {
         sessionId: "session",
         sessionKey: "main",
@@ -1154,6 +1156,8 @@ describe("runReplyAgent busy queue handling", () => {
   }
 
   it("marks an active-session queued followup as handled without an immediate reply", async () => {
+    const mockedQueue = await import("./queue.js");
+    vi.mocked(mockedQueue.enqueueFollowupRun).mockReturnValueOnce(true);
     const onHandledWithoutReply = vi.fn();
 
     const result = await createRun({
@@ -1163,6 +1167,48 @@ describe("runReplyAgent busy queue handling", () => {
     expect(result).toBeUndefined();
     expect(onHandledWithoutReply).toHaveBeenCalledWith("queued");
     expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("does not report queued when the follow-up was not enqueued", async () => {
+    const mockedQueue = await import("./queue.js");
+    vi.mocked(mockedQueue.enqueueFollowupRun).mockReturnValueOnce(false);
+    const onHandledWithoutReply = vi.fn();
+
+    const result = await createRun({
+      runOptions: { onHandledWithoutReply },
+    });
+
+    expect(result).toBeUndefined();
+    expect(onHandledWithoutReply).toHaveBeenCalledWith("dropped");
+    expect(onHandledWithoutReply).not.toHaveBeenCalledWith("queued");
+    expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("removes a queued followup and settles it as aborted when the caller aborts", async () => {
+    // This file stubs enqueueFollowupRun; use the real queue for this case so the
+    // abort wiring can find and remove the queued item.
+    const mockedQueue = await import("./queue.js");
+    const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
+    vi.mocked(mockedQueue.enqueueFollowupRun).mockImplementationOnce(
+      actualQueue.enqueueFollowupRun,
+    );
+    const onSettled = vi.fn();
+    const abortController = new AbortController();
+
+    try {
+      await createRun({
+        runOptions: { onHandledWithoutReply: vi.fn() },
+        followupRun: { abortSignal: abortController.signal, onSettled },
+      });
+
+      expect(actualQueue.getFollowupQueueDepth("main")).toBe(1);
+      abortController.abort();
+      expect(actualQueue.getFollowupQueueDepth("main")).toBe(0);
+      expect(onSettled).toHaveBeenCalledTimes(1);
+      expect(onSettled).toHaveBeenCalledWith({ outcome: "aborted" });
+    } finally {
+      actualQueue.clearFollowupQueue("main");
+    }
   });
 });
 

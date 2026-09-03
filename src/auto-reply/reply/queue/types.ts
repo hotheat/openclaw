@@ -18,8 +18,39 @@ export type QueueSettings = {
 
 export type QueueDedupeMode = "message-id" | "prompt" | "none";
 
+/**
+ * How a queued follow-up run finished, reported through `FollowupRun.onSettled`.
+ * - `done` / `error`: the queued prompt ran as its own agent run.
+ * - `merged`: the prompt was folded into another queued run (`runId` names that run when known).
+ * - `steered`: the prompt was injected into the active run instead of being queued.
+ * - `dropped`: the prompt never ran (queue cap, duplicate, cleared, or its overflow
+ *   summary was discarded before it could run).
+ * - `aborted`: the prompt was removed from the queue before it ran.
+ */
+export type FollowupRunSettlement =
+  | { outcome: "done" }
+  | { outcome: "error"; error: string }
+  | { outcome: "merged"; runId?: string }
+  | { outcome: "steered" }
+  | {
+      outcome: "dropped";
+      reason: "cap" | "duplicate" | "cleared" | "summary-discarded";
+    }
+  | { outcome: "aborted" };
+
 export type FollowupRun = {
   prompt: string;
+  /**
+   * Caller-provided run id reused when this queued prompt becomes its own agent run,
+   * so agent/chat events stay correlated with the original inbound message.
+   */
+  runId?: string;
+  /** Abort signal for the queued prompt: cancels it while queued and aborts the run once started. */
+  abortSignal?: AbortSignal;
+  /** Invoked when the queued prompt starts its own agent run. */
+  onAgentRunStart?: (runId: string) => void;
+  /** Invoked exactly once when the queued prompt settles (see `FollowupRunSettlement`). */
+  onSettled?: (settlement: FollowupRunSettlement) => void;
   /** Provider message ID, when available (for deduplication). */
   messageId?: string;
   summaryLine?: string;

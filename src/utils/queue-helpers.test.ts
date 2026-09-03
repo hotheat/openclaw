@@ -4,6 +4,7 @@ import {
   buildQueueSummaryPrompt,
   clearQueueSummaryState,
   drainCollectItemIfNeeded,
+  drainNextQueueItem,
   previewQueueSummaryPrompt,
 } from "./queue-helpers.js";
 
@@ -165,5 +166,25 @@ describe("drainCollectItemIfNeeded", () => {
 
     expect(result).toBe("empty");
     expect(forced).toBe(true);
+  });
+});
+
+describe("drainNextQueueItem", () => {
+  it("shifts the completed head only when it is still at the front", async () => {
+    const items = ["a", "b"];
+    const result = await drainNextQueueItem(items, async () => {});
+    expect(result).toBe(true);
+    expect(items).toEqual(["b"]);
+  });
+
+  it("does not shift a replacement head after the original item leaves the queue", async () => {
+    const items = ["started", "waiting"];
+    const result = await drainNextQueueItem(items, async (item) => {
+      expect(item).toBe("started");
+      items.splice(0, 1);
+      items.push("new");
+    });
+    expect(result).toBe(true);
+    expect(items).toEqual(["waiting", "new"]);
   });
 });

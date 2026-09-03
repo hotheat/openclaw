@@ -6,6 +6,7 @@ import { resolveThinkingDefault } from "../../agents/model-selection.js";
 import { steerEmbeddedPiRunById } from "../../agents/pi-embedded-runner/runs.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import type { FollowupRunSettlement } from "../../auto-reply/reply/queue.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import { isRoutableChannel, routeReply } from "../../auto-reply/reply/route-reply.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
@@ -346,6 +347,8 @@ function broadcastChatFinal(params: {
   runId: string;
   sessionKey: string;
   message?: Record<string, unknown>;
+  /** Settlement outcome for queued runs closed without their own reply (e.g. "merged"). */
+  stopReason?: string;
 }) {
   const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
   const strippedEnvelopeMessage = stripEnvelopeFromMessage(params.message) as
@@ -357,10 +360,57 @@ function broadcastChatFinal(params: {
     seq,
     state: "final" as const,
     message: stripInlineDirectiveTagsFromMessageForDisplay(strippedEnvelopeMessage),
+    stopReason: params.stopReason,
   };
   params.context.broadcast("chat", payload);
   params.context.nodeSendToSession(params.sessionKey, "chat", payload);
   params.context.agentRunSeq.delete(params.runId);
+}
+
+/**
+ * Terminal for a queued run whose batch was aborted through the primary run's
+ * id: the message will never get a reply, so clients must see an aborted state
+ * (not a merge-shaped silent final). Marking chatAbortedRuns keeps any stray
+ * later event from layering on top of this terminal.
+ */
+function broadcastChatSettlementAborted(params: {
+  context: Pick<
+    GatewayRequestContext,
+    "broadcast" | "nodeSendToSession" | "agentRunSeq" | "chatAbortedRuns"
+  >;
+  runId: string;
+  sessionKey: string;
+}) {
+  const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
+  const payload = {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    seq,
+    state: "aborted" as const,
+    stopReason: "aborted" as const,
+  };
+  params.context.broadcast("chat", payload);
+  params.context.nodeSendToSession(params.sessionKey, "chat", payload);
+  params.context.agentRunSeq.delete(params.runId);
+  params.context.chatAbortedRuns.set(params.runId, Date.now());
+}
+
+function broadcastChatQueued(params: {
+  context: Pick<GatewayRequestContext, "broadcast" | "nodeSendToSession">;
+  runId: string;
+  sessionKey: string;
+}) {
+  // seq 0 marks a pre-run notice without advancing agentRunSeq: the queued run later
+  // reuses this run id and its agent lifecycle events start at seq 1, so touching
+  // the shared counter here would fabricate a "seq gap" for every queued run.
+  const payload = {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    seq: 0,
+    state: "queued" as const,
+  };
+  params.context.broadcast("chat", payload);
+  params.context.nodeSendToSession(params.sessionKey, "chat", payload);
 }
 
 function broadcastChatError(params: {
@@ -919,6 +969,12 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
 
       let agentRunStarted = false;
+      // Resolved once a message parked on the session follow-up queue settles
+      // (runs under clientRunId, merges into another run, or never runs).
+      let resolveQueuedSettlement: ((settlement: FollowupRunSettlement) => void) | undefined;
+      const queuedSettlement = new Promise<FollowupRunSettlement>((resolve) => {
+        resolveQueuedSettlement = resolve;
+      });
       void dispatchInboundMessage({
         ctx,
         cfg,
@@ -928,8 +984,21 @@ export const chatHandlers: GatewayRequestHandlers = {
           abortSignal: abortController.signal,
           images: parsedImages.length > 0 ? parsedImages : undefined,
           webchatAttachmentRefs,
+          onQueuedRunSettled: (settlement) => resolveQueuedSettlement?.(settlement),
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
+            // A queued run starts long after chat.send registered its sweeper
+            // deadline; re-arm it from actual agent activity so the maintenance
+            // timeout measures this run's own window, not the time spent
+            // waiting behind the active run (which already aborted queued
+            // messages before their prompt ever reached the model).
+            const active = context.chatAbortControllers.get(runId);
+            if (active) {
+              active.expiresAtMs = Math.max(
+                active.expiresAtMs,
+                resolveChatRunExpiresAtMs({ now: Date.now(), timeoutMs }),
+              );
+            }
             const connId = typeof client?.connId === "string" ? client.connId : undefined;
             const wantsToolEvents = hasGatewayClientCap(
               client?.connect?.caps,
@@ -950,7 +1019,146 @@ export const chatHandlers: GatewayRequestHandlers = {
           onModelSelected,
         },
       })
-        .then(() => {
+        .then(async (dispatchResult) => {
+          const handledWithoutReply = dispatchResult?.handledWithoutReplyReason;
+          if (
+            !agentRunStarted &&
+            (handledWithoutReply === "queued" || handledWithoutReply === "dropped")
+          ) {
+            // The session was busy: the message waits on the follow-up queue instead of
+            // starting a run. Tell clients it is queued (not finished) and keep the run
+            // registered so probes report in_flight until the queued run settles.
+            // Enqueue failures report "dropped" and already settled; skip the queued flash.
+            if (handledWithoutReply === "queued") {
+              // chat.abort may have won the race and already broadcast the aborted
+              // terminal; a late queued notice would flip clients (e.g. TUI) back
+              // to running with no terminal left to clear it.
+              if (!context.chatAbortedRuns.has(clientRunId) && !abortController.signal.aborted) {
+                // The queued message can wait behind a run for longer than its
+                // own timeout window; extend the sweeper deadline to the
+                // continuation window so the maintenance sweep does not abort it
+                // before its prompt ever reaches the model.
+                const active = context.chatAbortControllers.get(clientRunId);
+                if (active?.continuationExpiresAtMs) {
+                  active.expiresAtMs = Math.max(active.expiresAtMs, active.continuationExpiresAtMs);
+                }
+                broadcastChatQueued({ context, runId: clientRunId, sessionKey: rawSessionKey });
+              }
+            }
+            // Safety valve: every queue path settles exactly once, but a missed one
+            // would hang this closure forever. An abort always unblocks it because
+            // chat.abort has already broadcast the aborted terminal state.
+            const abortSettlement = new Promise<FollowupRunSettlement>((resolve) => {
+              if (abortController.signal.aborted) {
+                resolve({ outcome: "aborted" });
+                return;
+              }
+              abortController.signal.addEventListener(
+                "abort",
+                () => resolve({ outcome: "aborted" }),
+                { once: true },
+              );
+            });
+            const settlement = await Promise.race([queuedSettlement, abortSettlement]);
+            if (settlement.outcome === "done") {
+              // Once the agent emitted activity, its lifecycle owns the terminal event.
+              // A queued runner can also finish before emitting any lifecycle event
+              // (for example, an early cancellation or empty pre-run result); close that
+              // run here so clients do not remain stuck on the queued state. Tag the
+              // outcome so clients keep "merged" reserved for real merges.
+              if (!agentRunStarted && !context.chatAbortedRuns.has(clientRunId)) {
+                broadcastChatFinal({
+                  context,
+                  runId: clientRunId,
+                  sessionKey: rawSessionKey,
+                  message: undefined,
+                  stopReason: "done",
+                });
+              }
+            } else if (settlement.outcome === "error" || settlement.outcome === "dropped") {
+              if (context.chatAbortedRuns.has(clientRunId)) {
+                // chat.abort already broadcast the aborted terminal state for this run;
+                // never layer an error on top of it.
+              } else if (settlement.outcome === "error") {
+                // If the queued agent run already started, lifecycle events already
+                // emitted the chat error under clientRunId. Synthesize a terminal only
+                // when this run never reached onAgentRunStart.
+                if (!agentRunStarted) {
+                  broadcastChatError({
+                    context,
+                    runId: clientRunId,
+                    sessionKey: rawSessionKey,
+                    errorMessage: settlement.error,
+                  });
+                }
+                context.dedupe.set(`chat:${clientRunId}`, {
+                  ts: Date.now(),
+                  ok: false,
+                  payload: {
+                    runId: clientRunId,
+                    status: "error" as const,
+                    summary: settlement.error,
+                  },
+                  error: errorShape(ErrorCodes.UNAVAILABLE, settlement.error),
+                });
+                return;
+              } else {
+                const reason =
+                  settlement.reason === "duplicate"
+                    ? "message already queued for this session"
+                    : settlement.reason === "cleared"
+                      ? "queued message discarded: session queue was cleared"
+                      : settlement.reason === "summary-discarded"
+                        ? "queued message discarded: queue overflow summary was dropped"
+                        : "message dropped: session follow-up queue is full";
+                broadcastChatError({
+                  context,
+                  runId: clientRunId,
+                  sessionKey: rawSessionKey,
+                  errorMessage: reason,
+                });
+                context.dedupe.set(`chat:${clientRunId}`, {
+                  ts: Date.now(),
+                  ok: false,
+                  payload: { runId: clientRunId, status: "error" as const, summary: reason },
+                  error: errorShape(ErrorCodes.UNAVAILABLE, reason),
+                });
+                return;
+              }
+            } else if (settlement.outcome === "aborted") {
+              // chat.abort already broadcast the aborted state for this run. A batch
+              // aborted through another run's id (collect merge) still needs a
+              // terminal here or this client would hang on the queued state — and
+              // it must say "aborted" (no reply will ever come), not a merge-shaped
+              // silent final that clients render as "folded into the next reply".
+              if (!context.chatAbortedRuns.has(clientRunId)) {
+                broadcastChatSettlementAborted({
+                  context,
+                  runId: clientRunId,
+                  sessionKey: rawSessionKey,
+                });
+              }
+            } else {
+              // merged / steered: the reply arrives under another run; close this
+              // one silently, tagging the settlement outcome so clients can tell a
+              // real merge apart from an aborted batch or an empty completion.
+              if (!context.chatAbortedRuns.has(clientRunId)) {
+                broadcastChatFinal({
+                  context,
+                  runId: clientRunId,
+                  sessionKey: rawSessionKey,
+                  message: undefined,
+                  stopReason: settlement.outcome,
+                });
+              }
+            }
+            context.dedupe.set(`chat:${clientRunId}`, {
+              ts: Date.now(),
+              ok: true,
+              payload: { runId: clientRunId, status: "ok" as const },
+            });
+            return;
+          }
           if (!agentRunStarted) {
             const combinedReply = finalReplyParts
               .map((part) => part.trim())

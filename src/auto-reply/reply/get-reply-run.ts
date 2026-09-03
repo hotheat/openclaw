@@ -448,6 +448,11 @@ export async function runPreparedReply(
     messageId: sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
     summaryLine: baseBodyTrimmedRaw,
     enqueuedAt: Date.now(),
+    // Keep queued runs correlated with the inbound message (webchat run ids, abort, settlement).
+    runId: opts?.runId,
+    abortSignal: opts?.abortSignal,
+    onAgentRunStart: opts?.onAgentRunStart,
+    onSettled: opts?.onQueuedRunSettled,
     // Originating channel for reply routing.
     originatingChannel: ctx.OriginatingChannel,
     originatingTo: ctx.OriginatingTo,

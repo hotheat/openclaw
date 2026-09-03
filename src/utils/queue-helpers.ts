@@ -153,7 +153,11 @@ export async function drainNextQueueItem<T>(
     return false;
   }
   await run(next);
-  items.shift();
+  // Only consume the item we actually ran. Cap eviction or a concurrent enqueue
+  // may have replaced the head while `run` was in flight.
+  if (items[0] === next) {
+    items.shift();
+  }
   return true;
 }
 

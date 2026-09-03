@@ -1,5 +1,6 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { WebchatAttachmentRef } from "../sessions/webchat-attachment-refs.js";
+import type { FollowupRunSettlement } from "./reply/queue/types.js";
 import type { TypingController } from "./reply/typing.js";
 
 export type BlockReplyContext = {
@@ -55,7 +56,14 @@ export type GetReplyOptions = {
   /** Called when a tool phase starts/updates, before summary payloads are emitted. */
   onToolStart?: (payload: { name?: string; phase?: string }) => Promise<void> | void;
   /** Called when a run completed user-visible work without dispatcher payloads. */
-  onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => Promise<void> | void;
+  onHandledWithoutReply?: (
+    reason: "messaging_tool" | "silent" | "queued" | "dropped",
+  ) => Promise<void> | void;
+  /**
+   * Called once a message reported as `queued` settles: it ran as its own agent run
+   * (reusing `runId`), was merged/steered into another run, or never ran.
+   */
+  onQueuedRunSettled?: (settlement: FollowupRunSettlement) => void;
   /** Called when the actual model is selected (including after fallback).
    * Use this to get model/provider/thinkLevel for responsePrefix template interpolation. */
   onModelSelected?: (ctx: ModelSelectedContext) => void;

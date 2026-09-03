@@ -148,7 +148,8 @@ function isCurrentChatHistoryRequest(
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  /** "queued" is non-terminal: the message waits behind an active run in the same session. */
+  state: "delta" | "final" | "aborted" | "error" | "queued";
   message?: unknown;
   errorMessage?: string;
 };

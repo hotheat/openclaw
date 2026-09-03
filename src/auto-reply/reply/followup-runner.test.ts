@@ -462,3 +462,142 @@ describe("createFollowupRunner timeout resolution", () => {
     expect(onBlockReply).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("createFollowupRunner queued run correlation", () => {
+  function createRunner() {
+    return createFollowupRunner({
+      opts: { onBlockReply: vi.fn(async () => {}) },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+  }
+
+  it("reuses the caller run id, reports run start, and settles done", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockImplementationOnce(
+      async (args: {
+        onAgentEvent?: (evt: { stream: string; data: Record<string, unknown> }) => void;
+      }) => {
+        args.onAgentEvent?.({ stream: "lifecycle", data: { phase: "start" } });
+        return { payloads: [{ text: "queued answer" }] };
+      },
+    );
+    const onAgentRunStart = vi.fn();
+    const onSettled = vi.fn();
+    const abortController = new AbortController();
+    const queued: FollowupRun = {
+      ...baseQueuedRun(),
+      runId: "client-run-1",
+      abortSignal: abortController.signal,
+      onAgentRunStart,
+      onSettled,
+    };
+
+    await createRunner()(queued);
+
+    expect(onAgentRunStart).toHaveBeenCalledTimes(1);
+    expect(onAgentRunStart).toHaveBeenCalledWith("client-run-1");
+    expect(runEmbeddedPiAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "client-run-1", abortSignal: abortController.signal }),
+    );
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "done" });
+  });
+
+  it("does not report run start when the agent fails before any activity", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("No API key found for provider."));
+    const onAgentRunStart = vi.fn();
+    const onSettled = vi.fn();
+
+    await createRunner()({ ...baseQueuedRun(), onAgentRunStart, onSettled });
+
+    // Without agent activity, chat.send must stay responsible for broadcasting
+    // the error terminal under the client run id.
+    expect(onAgentRunStart).not.toHaveBeenCalled();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({
+      outcome: "error",
+      error: "No API key found for provider.",
+    });
+  });
+
+  it("settles done exactly once when the run produces no payloads", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({ payloads: [] });
+    const onSettled = vi.fn();
+
+    await createRunner()({ ...baseQueuedRun(), onSettled });
+
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "done" });
+  });
+
+  it("settles aborted without starting the agent when the signal is already aborted", async () => {
+    resetAgentMocks();
+    const abortController = new AbortController();
+    abortController.abort();
+    const onAgentRunStart = vi.fn();
+    const onSettled = vi.fn();
+
+    await createRunner()({
+      ...baseQueuedRun(),
+      runId: "client-run-aborted",
+      abortSignal: abortController.signal,
+      onAgentRunStart,
+      onSettled,
+    });
+
+    // chat.abort already terminated this run id; the model must never start and
+    // no lifecycle event may follow the aborted terminal.
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "aborted" });
+    expect(onAgentRunStart).not.toHaveBeenCalled();
+    expect(runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("settles with the error when the agent run fails", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("provider down"));
+    const onSettled = vi.fn();
+
+    await expect(createRunner()({ ...baseQueuedRun(), onSettled })).resolves.toBeUndefined();
+
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "error", error: "provider down" });
+  });
+
+  it("settles aborted instead of error when the run fails after the caller aborted", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockRejectedValueOnce(new Error("The operation was aborted"));
+    const onSettled = vi.fn();
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await createRunner()({ ...baseQueuedRun(), abortSignal: abortController.signal, onSettled });
+
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "aborted" });
+  });
+
+  it("settles delivery failures without rejecting the drain", async () => {
+    resetAgentMocks();
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({ payloads: [{ text: "queued answer" }] });
+    const onSettled = vi.fn();
+    const runner = createFollowupRunner({
+      opts: {
+        onBlockReply: async () => {
+          throw new Error("delivery failed");
+        },
+      },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+
+    await expect(runner({ ...baseQueuedRun(), onSettled })).resolves.toBeUndefined();
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenCalledWith({ outcome: "error", error: "delivery failed" });
+  });
+});

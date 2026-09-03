@@ -15,7 +15,12 @@ import type { OriginatingChannelType } from "../templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveRunAuthProfile } from "./agent-runner-utils.js";
-import type { FollowupRun } from "./queue.js";
+import {
+  type FollowupRun,
+  type FollowupRunSettlement,
+  markFollowupRunStarted,
+  settleFollowupRun,
+} from "./queue.js";
 import {
   applyReplyThreading,
   filterMessagingToolDuplicates,
@@ -114,8 +119,38 @@ export function createFollowupRunner(params: {
   };
 
   return async (queued: FollowupRun) => {
+    // Deliver the settlement exactly once per queued run, shared with the
+    // enqueue/abort/clear/drain settle sites.
+    const settle = (settlement: FollowupRunSettlement) => {
+      settleFollowupRun(queued, settlement);
+    };
+    // Abort already broadcast its own terminal state; a follow-on failure must not
+    // surface as a second error terminal under the same run id.
+    const settleFromFailure = (err: unknown): FollowupRunSettlement =>
+      queued.abortSignal?.aborted
+        ? { outcome: "aborted" }
+        : { outcome: "error", error: err instanceof Error ? err.message : String(err) };
     try {
-      const runId = crypto.randomUUID();
+      markFollowupRunStarted(queued);
+      // An already-aborted signal means chat.abort terminated this run id; never
+      // start the model under it or emit follow-up lifecycle events after abort.
+      if (queued.abortSignal?.aborted) {
+        settle({ outcome: "aborted" });
+        return;
+      }
+      const runId = queued.runId ?? crypto.randomUUID();
+      // Like the main runner, signal run start only after the embedded agent
+      // emits real activity. chat.send treats onAgentRunStart as proof that
+      // lifecycle events will deliver the terminal state; firing it earlier
+      // leaves clients without an error when the run fails before any event.
+      let didNotifyAgentRunStart = false;
+      const notifyAgentRunStart = () => {
+        if (didNotifyAgentRunStart) {
+          return;
+        }
+        didNotifyAgentRunStart = true;
+        queued.onAgentRunStart?.(runId);
+      };
       if (queued.run.sessionKey) {
         registerAgentRunContext(runId, {
           sessionKey: queued.run.sessionKey,
@@ -181,8 +216,15 @@ export function createFollowupRunner(params: {
               bashElevated: queued.run.bashElevated,
               timeoutMs: attemptTimeoutMs,
               runId,
+              abortSignal: queued.abortSignal,
               blockReplyBreak: queued.run.blockReplyBreak,
               onAgentEvent: (evt) => {
+                // Signal run start only after the embedded agent emits real activity.
+                const hasLifecyclePhase =
+                  evt.stream === "lifecycle" && typeof evt.data.phase === "string";
+                if (evt.stream !== "lifecycle" || hasLifecyclePhase) {
+                  notifyAgentRunStart();
+                }
                 if (evt.stream !== "compaction") {
                   return;
                 }
@@ -200,6 +242,7 @@ export function createFollowupRunner(params: {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         defaultRuntime.error?.(`Followup agent failed before reply: ${message}`);
+        settle(settleFromFailure(err));
         return;
       }
 
@@ -296,7 +339,10 @@ export function createFollowupRunner(params: {
       }
 
       await sendFollowupPayloads(finalPayloads, queued);
+    } catch (err) {
+      settle(settleFromFailure(err));
     } finally {
+      settle({ outcome: "done" });
       typing.markRunComplete();
     }
   };

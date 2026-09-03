@@ -145,6 +145,8 @@ export const ChatEventSchema = Type.Object(
       Type.Literal("final"),
       Type.Literal("aborted"),
       Type.Literal("error"),
+      // Non-terminal: the message is waiting behind an active run in the same session.
+      Type.Literal("queued"),
     ]),
     message: Type.Optional(Type.Unknown()),
     messageId: Type.Optional(NonEmptyString),

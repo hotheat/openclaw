@@ -219,7 +219,9 @@ describe("dispatchReplyFromConfig", () => {
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions & {
-        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
+        onHandledWithoutReply?: (
+          reason: "messaging_tool" | "silent" | "queued" | "dropped",
+        ) => void;
       },
       _cfg?: OpenClawConfig,
     ) => {
@@ -255,7 +257,9 @@ describe("dispatchReplyFromConfig", () => {
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions & {
-        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
+        onHandledWithoutReply?: (
+          reason: "messaging_tool" | "silent" | "queued" | "dropped",
+        ) => void;
       },
       _cfg?: OpenClawConfig,
     ) => {
@@ -292,7 +296,9 @@ describe("dispatchReplyFromConfig", () => {
     const replyResolver = async (
       _ctx: MsgContext,
       opts?: GetReplyOptions & {
-        onHandledWithoutReply?: (reason: "messaging_tool" | "silent" | "queued") => void;
+        onHandledWithoutReply?: (
+          reason: "messaging_tool" | "silent" | "queued" | "dropped",
+        ) => void;
       },
       _cfg?: OpenClawConfig,
     ) => {

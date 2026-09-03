@@ -50,7 +50,13 @@ import {
   readSessionMessages,
 } from "./post-compaction-audit.js";
 import { readPostCompactionContext } from "./post-compaction-context.js";
-import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
+import {
+  enqueueFollowupRun,
+  type FollowupRun,
+  type QueueSettings,
+  removeFollowupRun,
+  settleFollowupRun,
+} from "./queue.js";
 import { shouldSuppressMessagingToolReplies } from "./reply-payloads.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
@@ -231,6 +237,7 @@ export async function runReplyAgent(params: {
     const steered = queueEmbeddedPiMessage(followupRun.run.sessionId, followupRun.prompt);
     if (steered && !shouldFollowup) {
       await opts?.onHandledWithoutReply?.("queued");
+      followupRun.onSettled?.({ outcome: "steered" });
       await touchActiveSessionEntry();
       typing.cleanup();
       return undefined;
@@ -238,8 +245,25 @@ export async function runReplyAgent(params: {
   }
 
   if (isActive && (shouldFollowup || resolvedQueue.mode === "steer")) {
-    enqueueFollowupRun(queueKey, followupRun, resolvedQueue);
-    await opts?.onHandledWithoutReply?.("queued");
+    const enqueued = enqueueFollowupRun(queueKey, followupRun, resolvedQueue);
+    if (enqueued) {
+      const abortSignal = followupRun.abortSignal;
+      if (abortSignal) {
+        const cancelQueued = () => {
+          if (removeFollowupRun(queueKey, followupRun)) {
+            settleFollowupRun(followupRun, { outcome: "aborted" });
+          }
+        };
+        if (abortSignal.aborted) {
+          cancelQueued();
+        } else {
+          abortSignal.addEventListener("abort", cancelQueued, { once: true });
+        }
+      }
+      await opts?.onHandledWithoutReply?.("queued");
+    } else {
+      await opts?.onHandledWithoutReply?.("dropped");
+    }
     await touchActiveSessionEntry();
     typing.cleanup();
     return undefined;
