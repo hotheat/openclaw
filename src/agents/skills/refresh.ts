@@ -1,9 +1,11 @@
+import fs from "node:fs";
 import path from "node:path";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { OpenClawConfig } from "../../config/config.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveUserPath } from "../../utils.js";
 import { resolvePluginSkillDirs } from "./plugin-skills.js";
+import type { SkillSnapshot } from "./types.js";
 
 type SkillsChangeEvent = {
   workspaceDir?: string;
@@ -123,6 +125,35 @@ export function getSkillsSnapshotVersion(workspaceDir?: string): number {
   }
   const local = workspaceVersions.get(workspaceDir) ?? 0;
   return Math.max(globalVersion, local);
+}
+
+/**
+ * Detect snapshots whose resolved skill files no longer exist on disk.
+ *
+ * The in-memory snapshot version resets to 0 on every process restart, so a
+ * rename or deletion that happened outside the file watcher (watcher down,
+ * missed event, or changes applied while the service was stopped) cannot be
+ * detected through version comparison alone: a stale version-0 snapshot keeps
+ * being reused indefinitely. Checking that the snapshot's resolved files still
+ * exist closes that gap without a full workspace rescan per turn.
+ */
+export function skillsSnapshotHasMissingFiles(snapshot: SkillSnapshot | undefined): boolean {
+  if (!snapshot?.resolvedSkills?.length) {
+    return false;
+  }
+  for (const skill of snapshot.resolvedSkills) {
+    if (!skill.filePath) {
+      continue;
+    }
+    try {
+      if (!fs.existsSync(skill.filePath)) {
+        return true;
+      }
+    } catch {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function ensureSkillsWatcher(params: { workspaceDir: string; config?: OpenClawConfig }) {

@@ -25,6 +25,7 @@ vi.mock("../../agents/skills.js", () => ({
 
 vi.mock("../../agents/skills/refresh.js", () => ({
   getSkillsSnapshotVersion: vi.fn(() => "test"),
+  skillsSnapshotHasMissingFiles: vi.fn(() => false),
 }));
 
 vi.mock("../../agents/pi-tools.js", () => ({

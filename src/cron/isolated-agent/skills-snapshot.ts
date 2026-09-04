@@ -1,7 +1,10 @@
 import { resolveAgentSkillsFilter } from "../../agents/agent-scope.js";
 import { buildWorkspaceSkillSnapshot, type SkillSnapshot } from "../../agents/skills.js";
 import { matchesSkillFilter } from "../../agents/skills/filter.js";
-import { getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
+import {
+  getSkillsSnapshotVersion,
+  skillsSnapshotHasMissingFiles,
+} from "../../agents/skills/refresh.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 
@@ -23,7 +26,8 @@ export function resolveCronSkillsSnapshot(params: {
   const shouldRefresh =
     !existingSnapshot ||
     existingSnapshot.version !== snapshotVersion ||
-    !matchesSkillFilter(existingSnapshot.skillFilter, skillFilter);
+    !matchesSkillFilter(existingSnapshot.skillFilter, skillFilter) ||
+    skillsSnapshotHasMissingFiles(existingSnapshot);
   if (!shouldRefresh) {
     return existingSnapshot;
   }

@@ -37,6 +37,7 @@ vi.mock("../agents/skills.js", () => ({
 
 vi.mock("../agents/skills/refresh.js", () => ({
   getSkillsSnapshotVersion: vi.fn(() => 0),
+  skillsSnapshotHasMissingFiles: vi.fn(() => false),
 }));
 
 const runtime: RuntimeEnv = {

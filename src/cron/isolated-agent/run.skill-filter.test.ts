@@ -22,6 +22,7 @@ vi.mock("../../agents/skills.js", () => ({
 
 vi.mock("../../agents/skills/refresh.js", () => ({
   getSkillsSnapshotVersion: vi.fn().mockReturnValue(42),
+  skillsSnapshotHasMissingFiles: vi.fn(() => false),
 }));
 
 vi.mock("../../agents/workspace.js", () => ({
